@@ -36,8 +36,7 @@ internal object PhoneOperation {
             "create_note",
             "delete_note",
         )
-    // 个人上下文检索（NativePersonalQueries）属于下一批，本批只做系统与一方应用操作。
-    val tools = reads + writes
+    val tools = reads + writes + NativePersonalQueries.sources.keys
 
     fun error(code: String, message: String): Nothing = throw PhoneOperationFailure(code, message)
 

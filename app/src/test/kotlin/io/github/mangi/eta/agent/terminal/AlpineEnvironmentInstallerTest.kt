@@ -118,7 +118,6 @@ class AlpineEnvironmentInstallerTest {
         assertTrue(
             LinuxPackageProfiles.NODE.spec(LinuxDistribution.DEBIAN).packages.contains("libatomic1"),
         )
-        assertEquals(listOf("python", "node", "ssh"), LinuxPackageProfiles.ALL.map { it.id })
         LinuxDistribution.entries.forEach { distribution ->
             assertTrue(LinuxPackageProfiles.SSH.spec(distribution).packages.isNotEmpty())
         }

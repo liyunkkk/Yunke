@@ -27,10 +27,9 @@ internal object FakeAgentUiStates {
         conversations = listOf(
             ConversationSummaryUi(
                 id = "c-001",
-                title = "让 YUNKe 操作手机",
+                title = "让 Eta 操作手机",
                 preview = "准备接管屏幕与工具，等待下一步任务",
                 timeLabel = "现在",
-                isToday = true,
                 mode = ConversationModeUi.PhoneAgent,
                 isPinned = true,
                 isActiveRun = true,
@@ -40,7 +39,6 @@ internal object FakeAgentUiStates {
                 title = "今天的安排和提醒",
                 preview = "查询天气、同步日程，并设置出门提醒",
                 timeLabel = "10:41",
-                isToday = true,
                 mode = ConversationModeUi.Chat,
                 isPinned = true,
             ),
@@ -49,7 +47,6 @@ internal object FakeAgentUiStates {
                 title = "打开网易云音乐播放每日推荐",
                 preview = "已完成 4 个工具调用，用时 8 秒",
                 timeLabel = "10:23",
-                isToday = true,
                 mode = ConversationModeUi.PhoneAgent,
             ),
             ConversationSummaryUi(

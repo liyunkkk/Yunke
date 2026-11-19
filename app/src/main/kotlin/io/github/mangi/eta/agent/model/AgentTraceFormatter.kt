@@ -1,24 +1,31 @@
 package io.github.mangi.eta.agent.model
 
+import io.github.mangi.eta.agent.subagent.AgentSubagentToolCatalog
+import io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot
+import io.github.mangi.eta.agent.subagent.SubagentProfile
 import java.net.URI
 import java.util.Locale
 import org.json.JSONObject
 
 /** 工具摘要面向用户展示，不包含敏感参数；终端命令通过独立字段提供给用户核对。 */
-internal class AgentTraceFormatter(
-    private val linuxEnvironmentLabelProvider: () -> String = { "Linux" },
-    private val terminalSessionEnvironmentProvider: (String) -> String? = { null },
-    private val terminalSessionIdentityProvider: (String) -> String? = { null },
-) {
+internal class AgentTraceFormatter {
     fun summarizeArguments(toolCall: AgentModelClient.ToolCall): String =
         when (toolCall.name) {
             BROWSER_TOOL_NAME -> summarizeBrowserArguments(toolCall.argumentsJson)
+            "web_search" -> "搜索网页"
+            "fetch_url" -> summarizeFetchArguments(toolCall.argumentsJson)
             "open_uri" -> summarizeOpenUriArguments(toolCall.argumentsJson)
-            "terminal" -> summarizeTerminalArguments(toolCall.argumentsJson)
-            "run_command" -> summarizeRunCommandArguments(toolCall.argumentsJson)
+            in AgentTerminalToolCatalog.names -> summarizeTerminalArguments(toolCall.name, toolCall.argumentsJson)
+            "run_command" -> "执行命令 · Android"
             "write_file" -> summarizeTextLength("写入文件", toolCall.argumentsJson, "content")
             "read_file" -> "读取文件"
             "list_directory" -> "列出目录"
+            "edit_file" -> "精确编辑文件"
+            "stat_file" -> "查看文件信息"
+            "glob_files" -> "按路径查找文件"
+            "grep_files" -> "搜索文件内容"
+            "inspect_app" -> "检查应用"
+            "type_text" -> summarizeTypeText(toolCall.argumentsJson)
             "input_text" -> summarizeTextLength("输入文本", toolCall.argumentsJson, "text")
             "replace_text" -> summarizeTextLength("替换文本", toolCall.argumentsJson, "text")
             "paste_text", "set_clipboard" ->
@@ -27,7 +34,8 @@ internal class AgentTraceFormatter(
             "get_clipboard" -> "读取剪贴板"
             "search_apps" -> summarizeQueryArguments("搜索应用", toolCall.argumentsJson)
             "launch_app" -> "打开应用"
-            "get_current_context" -> "读取当前上下文"
+            "present_to_user" -> "呈现到主屏"
+            "get_current_context" -> "读取时间与位置"
             "observe_screen" -> summarizeObservationArguments(toolCall.argumentsJson)
             "tap" -> summarizePointArguments("点击屏幕", toolCall.argumentsJson)
             "long_press" -> summarizePointArguments("长按屏幕", toolCall.argumentsJson)
@@ -43,26 +51,23 @@ internal class AgentTraceFormatter(
             "wait_for_text" -> "等待文本出现"
             "wait_for_package" -> "等待应用就绪"
             "open_system_panel" -> "打开系统面板"
-            "read_image" -> "查看图片或视频"
-            "delegate_task" -> "委派子代理任务"
-            "manage_agent_workspace" -> "管理任务工作区"
-            "get_task_result" -> "查询子代理结果"
-            "continue_task" -> "继续子代理任务"
-            "cancel_task" -> "取消子代理任务"
-            "memory_get" -> summarizeMemoryGetArguments(toolCall.argumentsJson)
-            "memory_write" -> summarizeMemoryWriteArguments(toolCall.argumentsJson)
+            "read_image" -> "查看图片"
+            AgentSubagentToolCatalog.TOOL_NAME -> summarizeSubagentArguments(toolCall.argumentsJson)
+            AgentSubagentToolCatalog.PROFILE_TOOL_NAME -> summarizeSubagentProfileArguments(toolCall.argumentsJson)
+            AgentConversationToolCatalog.READ_HISTORY -> "读取当前会话历史"
+            "memory_get", "character_memory_get", "memory_write", "character_memory_write" ->
+                AgentPersonalResultFormatter.summarizeArguments(toolCall.name, toolCall.argumentsJson) ?: "记忆"
             "skills_list" -> "查看技能列表"
             "skills_read" -> "读取技能"
             "skills_read_resource" -> "读取技能资源"
             "skills_list_curated" -> "浏览精选技能"
             "skills_inspect_github" -> "查看技能详情"
             "skills_install_from_github" -> "安装技能"
-            "skills_install_local" -> "安装本地技能"
-            "eta_manage_models" -> "配置模型"
-            "eta_manage_subagents" -> "配置子代理"
-            "eta_configure_mcp" -> "配置 MCP"
             else -> {
                 val label = DEVICE_ACTION_LABELS[toolCall.name]
+                    ?: AgentPhoneToolCatalog.entries.firstOrNull { it.name == toolCall.name }?.title
+                    ?: io.github.mangi.eta.agent.context.PersonalSearchTools.searches.firstOrNull { it.name == toolCall.name }?.title
+                    ?: when (toolCall.name) { "search_notes" -> "查询便签"; "search_system_memories" -> "查询系统记忆"; "read_personal_item" -> "读取检索详情"; "summarize_bills" -> "汇总账单"; else -> null }
                 when {
                     label == null -> "准备执行"
                     toolCall.name.startsWith("search_") ->
@@ -74,7 +79,9 @@ internal class AgentTraceFormatter(
 
     /** 命令以脱敏后的用户可见投影进入运行轨迹；日志仍只记录长度。 */
     fun displayCommand(toolCall: AgentModelClient.ToolCall): String? =
-        if (toolCall.name == "terminal" || toolCall.name == "run_command") {
+        if (toolCall.name == AgentSubagentToolCatalog.TOOL_NAME) {
+            SubagentActivitySnapshot.initialFromArguments(toolCall.argumentsJson)?.encodeForWire()
+        } else if (toolCall.name in AgentTerminalToolCatalog.names || toolCall.name == "run_command") {
             runCatching {
                 JSONObject(toolCall.argumentsJson)
                     .optString("command")
@@ -116,43 +123,30 @@ internal class AgentTraceFormatter(
             listOfNotNull(action, host).joinToString(" · ")
         }.getOrElse { "浏览器操作" }
 
-    private fun summarizeRunCommandArguments(argumentsJson: String): String =
-        runCatching {
-            val arguments = JSONObject(argumentsJson)
-            val resolved = resolveTerminalRuntime(arguments)
-            buildList {
-                add("执行命令")
-                add(resolved.environment)
-                resolved.identity?.let(::add)
-            }.joinToString(" · ")
-        }.getOrDefault("执行命令")
+    private fun summarizeFetchArguments(argumentsJson: String): String = runCatching {
+        val arguments = JSONObject(argumentsJson)
+        val label = if (arguments.has("document_id")) "继续读取网页" else "读取网页"
+        listOfNotNull(label, safeHttpHost(arguments.optString("url"))?.removePrefix("www.")).joinToString(" · ")
+    }.getOrDefault("读取网页")
 
-    private fun summarizeTerminalArguments(argumentsJson: String): String =
+    private fun summarizeTerminalArguments(toolName: String, argumentsJson: String): String =
         runCatching {
             val arguments = JSONObject(argumentsJson)
-            val action = arguments.optString("action").terminalActionLabel()
-            val resolved = resolveTerminalRuntime(arguments)
+            val action = terminalActionLabel(toolName, arguments.optString("action", if (toolName == "terminal") "exec" else ""))
+            val hasEnvironment = !arguments.has("session_id") && (
+                toolName == "terminal" && arguments.optString("action", "exec") in setOf("open", "exec", "open_and_exec") ||
+                    arguments.optString("action") in setOf("start", "daemon_start"))
+            val environment = if (hasEnvironment) arguments.optString("environment", "android").terminalEnvironmentLabel() else null
+            val identity = arguments.optString("identity")
+                .takeIf { it == "root" || it == "user" }
             buildList {
-                add("终端")
+                add(terminalLabel(toolName))
                 add(action)
-                add(resolved.environment)
-                resolved.identity?.let(::add)
+                environment?.let(::add)
+                identity?.let(::add)
                 if (arguments.optBoolean("async", false)) add("后台")
             }.joinToString(" · ")
         }.getOrDefault("终端")
-
-    private fun resolveTerminalRuntime(arguments: JSONObject): TerminalRuntimeSummary {
-        val sessionId = arguments.optString("session_id").takeIf { it.isNotBlank() }
-        val environment = arguments.optString("environment")
-            .ifBlank { sessionId?.let(terminalSessionEnvironmentProvider).orEmpty() }
-            .ifBlank { "android" }
-            .terminalEnvironmentLabel()
-        val identity = arguments.optString("identity")
-            .ifBlank { sessionId?.let(terminalSessionIdentityProvider).orEmpty() }
-            .ifBlank { "root" }
-            .takeIf { it == "root" || it == "user" }
-        return TerminalRuntimeSummary(environment = environment, identity = identity)
-    }
 
     private fun summarizeTextLength(
         label: String,
@@ -163,6 +157,23 @@ internal class AgentTraceFormatter(
             val chars = JSONObject(argumentsJson).optString(key).length
             "$label · $chars 字符"
         }.getOrDefault(label)
+
+    /** 只展示动作与长度，不回显正文：输入内容可能是密码或私人消息。 */
+    private fun summarizeTypeText(argumentsJson: String): String =
+        runCatching {
+            val args = JSONObject(argumentsJson)
+            val chars = args.optString("text").length
+            val label = when {
+                chars == 0 -> "清空文本"
+                args.optString("mode") == "append" -> "追加文本"
+                else -> "输入文本"
+            }
+            buildString {
+                append(label)
+                if (chars > 0) append(" · $chars 字符")
+                if (args.optBoolean("submit")) append(" · 提交")
+            }
+        }.getOrDefault("输入文本")
 
     /** 搜索关键词是用户自己发起的查询，直接展示；仍做单行化与长度截断。 */
     private fun summarizeQueryArguments(label: String, argumentsJson: String): String =
@@ -231,100 +242,85 @@ internal class AgentTraceFormatter(
             }.joinToString(" · ")
         }.getOrDefault("观察屏幕")
 
-    private fun summarizeMemoryGetArguments(argumentsJson: String): String =
-        runCatching {
-            val arguments = JSONObject(argumentsJson)
-            if (arguments.optString("query").isNotBlank()) "检索记忆" else "读取记忆"
-        }.getOrDefault("读取记忆")
-
-    private fun summarizeMemoryWriteArguments(argumentsJson: String): String =
-        runCatching {
-            val arguments = JSONObject(argumentsJson)
-            val mode = when (arguments.optString("mode")) {
-                "replace_range" -> "替换片段"
-                "append" -> "追加"
-                "clear" -> "清空"
-                else -> null
-            }
-            val content = arguments.optString("content")
-            val lines = if (content.isEmpty()) 0 else content.count { it == '\n' } + 1
-            buildList {
-                add("更新记忆")
-                mode?.let(::add)
-                add("$lines 行")
-                add("${content.toByteArray(Charsets.UTF_8).size} 字节")
-            }.joinToString(" · ")
-        }.getOrDefault("更新记忆")
-
     /** 结果成败供事件与 UI 状态使用，不再依赖摘要文本里的标记。 */
-    fun isSuccessResult(result: AgentModelClient.ToolResult): Boolean {
-        val json = parseResultJson(result) ?: return true
-        if (!json.optBoolean("ok", true)) return false
-        if (json.optString("tool") in setOf("terminal", "run_command")) {
-            if (json.optBoolean("timed_out", false)) return false
-            if (json.has("exit_code") && !json.isNull("exit_code") && json.optInt("exit_code") != 0) return false
-        }
-        return true
-    }
+    fun isSuccessResult(result: AgentModelClient.ToolResult): Boolean =
+        parseResultJson(result)?.optBoolean("ok", true) ?: true
 
     fun summarizeResult(
         toolName: String,
         result: AgentModelClient.ToolResult,
     ): String {
         val json = parseResultJson(result)
+        if (toolName == "web_search" || toolName == "fetch_url") return summarizeWebResult(toolName, json)
         // 终端 exit_code != 0 时 ok=false 但没有 code 字段，必须走专用分支保留退出码与输出
-        if (toolName == "terminal" || toolName == "run_command") {
-            return summarizeTerminalResult(json)
+        if (toolName in AgentTerminalToolCatalog.names || toolName == "run_command") {
+            return summarizeTerminalResult(toolName, json)
         }
+        if (json?.optString("status") == "unconfirmed") return "操作已提交，效果未确认"
         if (!isSuccessResult(result)) return summarizeFailure(json)
+        if (json != null) {
+            val summary = AgentDeviceResultFormatter.summarize(toolName, json)
+                ?: AgentPhoneResultFormatter.summarize(toolName, json)
+                ?: AgentPersonalResultFormatter.summarize(toolName, json)
+                ?: AgentFileResultFormatter.summarize(toolName, json)
+            if (summary != null) return summary
+        }
         return when (toolName) {
             BROWSER_TOOL_NAME -> json?.let(::summarizeBrowserResult) ?: "浏览器操作完成"
-            "memory_get", "memory_write" ->
-                json?.let { summarizeMemoryResult(toolName, it) } ?: "完成"
-            "delegate_task", "get_task_result", "continue_task", "cancel_task" -> summarizeSubAgentResult(json)
+            AgentSubagentToolCatalog.TOOL_NAME -> json?.let(::summarizeSubagentResult) ?: "完成"
+            AgentSubagentToolCatalog.PROFILE_TOOL_NAME -> json?.let(::summarizeSubagentProfileResult) ?: "完成"
+            AgentConversationToolCatalog.READ_HISTORY -> "已读取历史分页"
+            "observe_screen" -> if (result.images.isNotEmpty()) "已截取当前屏幕" else "已获取当前界面"
+            "tap", "tap_element", "tap_area" -> "已点击"
+            "long_press", "long_press_element" -> "已长按"
+            "swipe" -> "已滑动"
+            "scroll", "scroll_element" -> "已滚动"
+            "type_text", "input_text", "paste_text" -> "已输入文本"
+            "clear_text" -> "已清空文本"
+            "press_key" -> "已按键"
+            "wait" -> "等待完成"
+            "wait_for_text" -> "已出现目标文本"
+            "wait_for_package" -> "应用已就绪"
+            "inspect_app" -> "已获取应用信息"
+            "get_clipboard" -> "已读取剪贴板"
+            "set_clipboard" -> "已复制到剪贴板"
             "search_apps" -> json?.let(::summarizeSearchAppsResult) ?: "完成"
             "launch_app" -> json?.let(::summarizeLaunchAppResult) ?: "已打开"
+            "present_to_user" -> json?.let(::summarizePresentToUserResult) ?: "已呈现到主屏"
+            "skills_list", "skills_list_curated", "skills_inspect_github", "skills_install_from_github" -> json?.let {
+                summarizeSkillResult(toolName, it) ?: summarizeGenericResult(it, result)
+            } ?: "完成"
             else -> json?.let { summarizeGenericResult(it, result) } ?: "完成"
-        }
-    }
-
-    /** A delegate reply records submission; it is not a live task-status subscription. */
-    private fun summarizeSubAgentResult(json: JSONObject?): String {
-        if (json == null) return "未取得子代理状态"
-        val tasks = json.optJSONArray("tasks")
-        if (tasks != null) {
-            if (tasks.length() == 0) return if (json.optInt("total", 0) == 0) "暂无子代理任务" else "本页无子代理任务"
-            val counts = linkedMapOf<String, Int>()
-            for (i in 0 until tasks.length()) {
-                val status = tasks.optJSONObject(i)?.optString("status").orEmpty()
-                val label = when (status) {
-                    "awaiting_decision" -> "超时待主代理决定"
-                    "queued" -> "排队中"
-                    "running" -> "执行中"
-                    "completed" -> "已完成"
-                    "cancelled" -> "已取消"
-                    "timed_out" -> "已超时"
-                    "failed" -> "失败"
-                    else -> "未提供状态"
-                }
-                counts[label] = (counts[label] ?: 0) + 1
-            }
-            return "子代理任务 · " + counts.entries.joinToString(" · ") { "${it.key} ${it.value}" }
-        }
-        return when (json.optString("status")) {
-            "awaiting_decision" -> "子代理超时 · 等待主代理继续或取消"
-            "queued" -> "子代理已提交 · 排队中"
-            "running" -> "子代理执行中"
-            "completed" -> "子代理已返回 · 等待主代理审核"
-            "cancelled" -> "子代理已取消"
-            "timed_out" -> "子代理超时 · 主代理接手"
-            "failed" -> "子代理失败 · 主代理接手"
-            else -> "未取得子代理状态"
         }
     }
 
     private fun parseResultJson(result: AgentModelClient.ToolResult): JSONObject? =
         runCatching { JSONObject(result.content) }.getOrNull()
+
+    /**
+     * 网页错误正文、搜索词和页面标题可能回显私密 URL，只保留计数。动作与主机已在参数摘要中，
+     * 结果只给出结论，避免工作过程同一行重复。
+     */
+    private fun summarizeWebResult(toolName: String, json: JSONObject?): String {
+        val label = if (toolName == "web_search") "网页搜索" else "网页读取"
+        if (json == null) return "完成"
+        if (!json.optBoolean("ok", true)) {
+            val code = json.optString("code").takeIf { it.matches(Regex("[A-Z][A-Z0-9_]{0,79}")) }
+            return listOfNotNull("${label}失败", code?.let { "code=$it" }).joinToString(" · ")
+        }
+        if (toolName == "web_search") {
+            val count = json.optJSONArray("results")?.length() ?: json.firstNonNegativeInt("count")
+            return when (count) {
+                null -> "完成"
+                0 -> "未找到相关结果"
+                else -> "找到 $count 条搜索结果"
+            }
+        }
+        val chars = (json.opt("text") as? String)?.length
+            ?: json.firstNonNegativeInt("returned_chars", "text_chars")
+            ?: return "完成"
+        return if (json.optBoolean("has_more")) "已读前 ${formatCharCount(chars)}" else "已读 ${formatCharCount(chars)}"
+    }
 
     /** 失败摘要保留 code= 标记，供运行日志提取稳定错误码；message 是工具侧给出的中文原因。 */
     private fun summarizeFailure(json: JSONObject?): String {
@@ -339,22 +335,95 @@ internal class AgentTraceFormatter(
         }.joinToString(" · ")
     }
 
-    private fun summarizeMemoryResult(toolName: String, json: JSONObject): String =
-        buildList {
-            add(if (toolName == "memory_get") "已读取记忆" else "已更新记忆")
-            if (json.has("line_count")) add("${json.optInt("line_count")} 行")
-            if (json.has("bytes")) add("${json.optInt("bytes")} 字节")
-        }.joinToString(" · ")
+    private fun summarizeSubagentArguments(argumentsJson: String): String = runCatching {
+        val args = JSONObject(argumentsJson)
+        val resumeId = sanitizeSummaryValue(args.optString("resume"), 32)
+        val subagentType = sanitizeSummaryValue(args.optString("subagent_type"), 32)
+            .lowercase()
+            .ifBlank { if (resumeId.isNotBlank()) "subagent" else SubagentProfile.DEFAULT_TYPE }
+        val description = sanitizeSummaryValue(args.optString("description"), MAX_QUERY_SUMMARY_CHARS)
+        listOfNotNull(
+            subagentType,
+            description.takeIf { it.isNotBlank() },
+        ).joinToString(" · ").ifBlank { "Subagent" }
+    }.getOrDefault("Subagent")
+
+    private fun summarizeSubagentResult(json: JSONObject): String {
+        val toolCalls = json.optInt("tool_calls", 0)
+        return if (toolCalls > 0) "完成 · $toolCalls 次工具调用" else "完成"
+    }
+
+    private fun summarizeSubagentProfileArguments(argumentsJson: String): String = runCatching {
+        val args = JSONObject(argumentsJson)
+        val action = args.optString("action").trim().lowercase()
+        val name = sanitizeSummaryValue(args.optString("name"), 32)
+        val label = when (action) {
+            "save" -> "保存 Subagent"
+            "delete" -> "删除 Subagent"
+            "get" -> "读取 Subagent"
+            else -> "查看 Subagent 列表"
+        }
+        if (name.isNotBlank() && action != "list") "$label · $name" else label
+    }.getOrDefault("管理 Subagent")
+
+    private fun summarizeSubagentProfileResult(json: JSONObject): String =
+        when (json.optString("action")) {
+            "save" -> listOfNotNull("已保存", json.optString("name").takeIf(String::isNotBlank)).joinToString(" · ")
+            "delete" -> listOfNotNull("已删除", json.optString("name").takeIf(String::isNotBlank)).joinToString(" · ")
+            "list" -> "${json.optJSONArray("profiles")?.length() ?: 0} 个 Subagent"
+            else -> "完成"
+        }
+
+    private fun summarizeSkillResult(toolName: String, json: JSONObject): String? {
+        if (toolName == "skills_install_from_github") {
+            val installed = json.optJSONArray("installed") ?: return null
+            return "已安装 ${installed.length()} 个技能" +
+                if (json.optString("available") == "next_turn") " · 下一轮可用" else ""
+        }
+        val items = json.optJSONArray("items") ?: return null
+        val installed = (0 until items.length()).count { items.optJSONObject(it)?.opt("installed") == true }
+        return "找到 ${items.length()} 个技能" + if (installed > 0) " · $installed 个已安装" else ""
+    }
 
     private fun summarizeGenericResult(
         json: JSONObject,
         result: AgentModelClient.ToolResult,
     ): String =
         buildList {
-            add("完成")
-            json.optJSONArray("apps")?.let { add("找到 ${it.length()} 个应用") }
-            json.optJSONArray("candidates")?.let { add("${it.length()} 个候选") }
-            if (result.images.isNotEmpty()) add("${result.images.size} 张图片")
+            if (json.has("verified") && !json.optBoolean("verified")) {
+                add("已执行，效果未确认")
+            }
+            val items = json.optJSONArray("items") ?: json.optJSONArray("results")
+            val matches = json.optJSONArray("matches")
+            val entries = json.optJSONArray("entries")
+            val apps = json.optJSONArray("apps")
+            val candidates = json.optJSONArray("candidates")
+
+            when {
+                items != null -> {
+                    if (items.length() == 0) add("未找到相关结果")
+                    else add("找到 ${items.length()} 条结果")
+                }
+                matches != null -> {
+                    if (matches.length() == 0) add("未找到匹配内容")
+                    else add("找到 ${matches.length()} 处匹配")
+                }
+                entries != null -> {
+                    if (entries.length() == 0) add("暂无内容")
+                    else add("已获取 ${entries.length()} 项内容")
+                }
+                apps != null -> {
+                    if (apps.length() == 0) add("未找到匹配应用")
+                    else add("找到 ${apps.length()} 个应用")
+                }
+                candidates != null -> add("${candidates.length()} 个候选")
+                json.has("bytes_read") -> add("已读 ${json.optLong("bytes_read")} 字节")
+                json.has("replacements") -> add("已替换 ${json.optInt("replacements")} 处")
+                result.images.isNotEmpty() -> add("${result.images.size} 张图片")
+                isEmpty() -> add("完成")
+            }
+            if (json.optBoolean("truncated") || json.optBoolean("has_more")) add("还有更多")
+            if (json.optBoolean("partial") || json.optBoolean("scan_limited")) add("采集范围有限")
         }.joinToString(" · ")
 
     private fun summarizeSearchAppsResult(json: JSONObject): String {
@@ -378,19 +447,27 @@ internal class AgentTraceFormatter(
 
     private fun summarizeLaunchAppResult(json: JSONObject): String {
         val appName = sanitizeSummaryValue(json.optString("app_name"))
-        return if (appName.isNotBlank()) "已打开 · $appName" else "已打开"
+        val virtual = json.optString("canvas") == "virtual"
+        val action = if (json.optString("launch_status") == "unconfirmed") "已请求打开，待确认" else "已打开"
+        val base = if (appName.isNotBlank()) "$action · $appName" else action
+        return if (virtual) "$base · 虚拟屏" else base
+    }
+
+    private fun summarizePresentToUserResult(json: JSONObject): String {
+        val appName = sanitizeSummaryValue(json.optString("app_name"))
+        return if (appName.isNotBlank()) "已呈现到主屏 · $appName" else "已呈现到主屏"
     }
 
     /**
      * 终端结果面向用户展示退出状态与输出预览；输出可能很长，
      * 只保留开头几行，截断时追加省略标记。
      */
-    private fun summarizeTerminalResult(json: JSONObject?): String {
-        if (json == null) return "终端"
+    private fun summarizeTerminalResult(toolName: String, json: JSONObject?): String {
+        if (json == null) return terminalLabel(toolName)
         if (json.optString("code").isNotBlank()) return summarizeFailure(json)
         if (!json.has("exit_code") || json.isNull("exit_code")) {
-            val action = json.optString("action").terminalActionLabel()
-            return if (json.optBoolean("ok", true)) "终端 · $action" else "失败 · $action"
+            val action = terminalActionLabel(toolName, json.optString("action"))
+            return if (json.optBoolean("ok", true)) "${terminalLabel(toolName)} · $action" else "失败 · $action"
         }
         val exitCode = json.optInt("exit_code")
         val timedOut = json.optBoolean("timed_out", false)
@@ -399,20 +476,15 @@ internal class AgentTraceFormatter(
             exitCode == 0 -> "执行完成"
             else -> "失败 · 退出码 $exitCode"
         }
-        // Preview streams separately: long stdout must not hide stderr warnings.
-        // Stderr alone is not a failure; exit status and structured diagnostics decide that.
-        val stdout = terminalOutputPreview(json.optString("stdout"), json.optBoolean("stdout_truncated", false))
-        val stderr = terminalOutputPreview(json.optString("stderr"), json.optBoolean("stderr_truncated", false))
-        return buildList {
-            add(status)
-            if (exitCode != 0 || timedOut) {
-                stderr?.let { add(it) }
-                stdout?.let { add(it) }
-            } else {
-                stdout?.let { add(it) }
-                stderr?.let { add("警告 · stderr\n$it") }
-            }
-        }.joinToString("\n")
+        val output = if (exitCode == 0) {
+            json.optString("stdout", json.optString("output"))
+        } else {
+            json.optString("stderr").ifBlank { json.optString("stdout", json.optString("output")) }
+        }
+        val truncated = json.optBoolean("stdout_truncated", false) ||
+            json.optBoolean("stderr_truncated", false)
+        val preview = terminalOutputPreview(output, truncated) ?: return status
+        return "$status\n$preview"
     }
 
     private fun terminalOutputPreview(output: String, truncated: Boolean): String? {
@@ -567,7 +639,33 @@ internal class AgentTraceFormatter(
         else -> null
     }
 
+    private fun terminalLabel(toolName: String): String = when (toolName) {
+        "terminal_job" -> "异步命令"
+        "terminal_daemon" -> "后台服务"
+        else -> "终端"
+    }
+
+    private fun terminalActionLabel(toolName: String, action: String): String = when (toolName) {
+        "terminal_job" -> when (action) {
+            "start" -> "启动命令"
+            "list" -> "任务列表"
+            "read" -> "读取输出"
+            "wait" -> "等待完成"
+            "stop" -> "停止命令"
+            else -> "任务操作"
+        }
+        "terminal_daemon" -> when (action) {
+            "start" -> "启动服务"
+            "list" -> "服务列表"
+            "logs" -> "查看日志"
+            "stop" -> "停止服务"
+            else -> "服务操作"
+        }
+        else -> action.terminalActionLabel()
+    }
+
     private fun String.terminalActionLabel(): String = when (this) {
+        "check_root" -> "检测 Root 授权"
         "open" -> "创建会话"
         "exec" -> "执行命令"
         "open_and_exec" -> "单次执行"
@@ -581,24 +679,19 @@ internal class AgentTraceFormatter(
     }
 
     private fun String.terminalEnvironmentLabel(): String = when (this) {
+        "linux" -> "Linux"
         "alpine" -> "Alpine"
         "debian" -> "Debian"
-        "linux" -> linuxEnvironmentLabelProvider()
         else -> "Android"
     }
-
-    private data class TerminalRuntimeSummary(
-        val environment: String,
-        val identity: String?,
-    )
 
     private companion object {
         const val BROWSER_TOOL_NAME = "browser_use"
         const val MAX_DISPLAY_COMMAND_CHARS = 4_000
         const val MAX_QUERY_SUMMARY_CHARS = 30
         const val MAX_LISTED_APP_NAMES = 3
-        const val MAX_TERMINAL_PREVIEW_LINES = 3
-        const val MAX_TERMINAL_PREVIEW_CHARS = 240
+        const val MAX_TERMINAL_PREVIEW_LINES = 10
+        const val MAX_TERMINAL_PREVIEW_CHARS = 800
         val SENSITIVE_ASSIGNMENT = Regex(
             """(?i)\b([A-Z0-9_]*(?:API[_-]?KEY|ACCESS[_-]?TOKEN|AUTH[_-]?TOKEN|TOKEN|PASSWORD|PASSWD|SECRET)[A-Z0-9_]*)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s;&|]+)"""
         )

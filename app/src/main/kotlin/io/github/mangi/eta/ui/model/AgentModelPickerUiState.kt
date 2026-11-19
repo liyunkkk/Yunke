@@ -1,15 +1,10 @@
 package io.github.mangi.eta.ui.model
 
 import androidx.compose.runtime.Immutable
-import io.github.mangi.eta.agent.model.AgentContextBudget
-import io.github.mangi.eta.agent.model.AgentFileReference
-import io.github.mangi.eta.agent.model.AgentFileReferenceKind
-import io.github.mangi.eta.agent.model.AgentFileReferencePromptCodec
-import io.github.mangi.eta.agent.model.AgentModelClient
+import io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot
 import io.github.mangi.eta.data.model.Model
-import io.github.mangi.eta.data.model.ReasoningEffort
+import io.github.mangi.eta.data.model.ProviderAuthModes
 import io.github.mangi.eta.data.model.ProviderSetting
-import io.github.mangi.eta.data.model.SpeechSynthesisModels
 import io.github.mangi.eta.data.provider.ProviderSourceRegistry
 import java.text.NumberFormat
 import java.util.Locale
@@ -38,25 +33,64 @@ internal data class AgentModelOptionUi(
     val modelId: String,
     val displayName: String,
     val contextWindow: Int?,
-    val preferredReasoningEffort: ReasoningEffort? = null,
-    val supportsVision: Boolean = true,
-    val supportsImageGeneration: Boolean = false,
-    val supportsVideo: Boolean = false,
-    val supportsVideoGeneration: Boolean = false,
-    val gptSpeedSupported: Boolean = false,
-    val requestEndpoint: io.github.mangi.eta.agent.model.EndpointKind = io.github.mangi.eta.agent.model.EndpointKind.CHAT_COMPLETIONS,
 )
+
+@Immutable
+internal data class SessionStatsSummaryUi(
+    val turns: Int = 0,
+    val steps: Int = 0,
+    val llmMs: Long = 0L,
+    val toolMs: Long = 0L,
+    val ttftMs: Long = 0L,
+    val ttftSteps: Int = 0,
+    val decodeMs: Long = 0L,
+    val decodeTokens: Int = 0,
+    val promptTokens: Int = 0,
+    val uncachedInputTokens: Int = 0,
+    val cacheWriteTokens: Int = 0,
+    val hasCacheWriteTokens: Boolean = false,
+    val cachedTokens: Int = 0,
+    val outputTokens: Int = 0,
+    val reasoningTokens: Int = 0,
+    val compactionCount: Int = 0,
+    val compactionPromptTokens: Int = 0,
+    val compactionUncachedTokens: Int = 0,
+    val compactionCacheWriteTokens: Int = 0,
+    val compactionCachedTokens: Int = 0,
+    val compactionOutputTokens: Int = 0,
+    val lastCompactionPromptTokens: Int? = null,
+    val lastCompactionCachedTokens: Int? = null,
+    val lastCompactionCacheWriteTokens: Int? = null,
+    val lastCompactionOutputTokens: Int? = null,
+    val lastCompactionArchiveId: String = "",
+    val lastCompactionPaybackTurns: Int? = null,
+    val lastCompactionTurnsAfter: Int = 0,
+    val lastCompactionPaidBack: Boolean = false,
+    val subagentCount: Int = 0,
+    val subagentPromptTokens: Int = 0,
+    val subagentCachedTokens: Int = 0,
+    val subagentOutputTokens: Int = 0,
+    val ttlOrPrefixMissTokens: Int = 0,
+    val compactionRepayTokens: Int = 0,
+    val hasTokenUsage: Boolean = false,
+) {
+    val totalTokens: Int
+        get() = promptTokens +
+            outputTokens +
+            compactionPromptTokens +
+            compactionOutputTokens +
+            subagentPromptTokens +
+            subagentOutputTokens
+
+    val hasPerformanceStats: Boolean
+        get() = llmMs > 0L || toolMs > 0L || ttftSteps > 0 || (decodeMs > 0L && decodeTokens > 0)
+}
 
 @Immutable
 internal data class AgentContextUsageUi(
     val contextTokens: Int?,
     val contextWindow: Int?,
-    val estimated: Boolean = false,
-    val firstTurn: Boolean = false,
-    /** 已回执的历史消息 token（分项展示用，独立估算）。 */
-    val historyTokens: Int? = null,
-    /** 已回执的固定请求开销 token（系统提示 + 工具 schema 等）。 */
-    val overheadTokens: Int? = null,
+    val sessionStats: SessionStatsSummaryUi = SessionStatsSummaryUi(),
 ) {
     val progress: Float?
         get() = contextUsageProgress(contextTokens, contextWindow)
@@ -67,30 +101,37 @@ internal object AgentModelPickerProjector {
         providers: List<ProviderSetting>,
         selectedProviderId: String?,
         selectedModelId: String?,
-        includeSpeechModels: Boolean = false,
-        speechOnly: Boolean = false,
     ): AgentModelPickerUiState {
         val enabledProviders = providers
             .asSequence()
             .filter(ProviderSetting::isEnabled)
-            .filter { !speechOnly || SpeechSynthesisModels.isReadAloudProvider(it) }
+            .filter { it.authMode == ProviderAuthModes.API_KEY || ProviderAuthModes.isOAuth(it.authMode) }
             .sortedBy(ProviderSetting::sortOrder)
             .toList()
         val selectedProvider = enabledProviders.firstOrNull { it.id == selectedProviderId }
-        val selectedModel = selectedProvider?.let { provider ->
-            listedModels(provider, includeSpeechModels || speechOnly, speechOnly)
-                .firstOrNull { it.id == selectedModelId && it.isEnabled }
-                ?.let { model -> provider.toOption(model) }
-        }
+        val selectedModel = selectedProvider
+            ?.models
+            ?.firstOrNull { it.id == selectedModelId && it.isEnabled }
+            ?.let { model -> selectedProvider.toOption(model) }
+            ?: enabledProviders.asSequence()
+                .flatMap { provider ->
+                    provider.models.asSequence()
+                        .filter { it.isEnabled }
+                        .map { model -> provider.toOption(model) }
+                }
+                .firstOrNull { it.id == selectedModelId }
         val groups = enabledProviders
             .asSequence()
-            .filter { it.apiKey.isNotBlank() }
-            .filter { includeSpeechModels || speechOnly || !SpeechSynthesisModels.isSpeechOnlyProvider(it) }
+            .filter {
+                ProviderAuthModes.isOAuth(it.authMode) ||
+                    (it.authMode == ProviderAuthModes.API_KEY && it.apiKey.isNotBlank())
+            }
             .mapNotNull { provider ->
                 val sourceType = ProviderSourceRegistry.resolve(provider)
-                val models = listedModels(provider, includeSpeechModels || speechOnly, speechOnly)
+                val models = provider.models
                     .asSequence()
                     .filter { it.isEnabled }
+                    .sortedBy { it.sortOrder }
                     .map { model -> provider.toOption(model) }
                     .toList()
                 models.takeIf(List<*>::isNotEmpty)?.let {
@@ -109,17 +150,6 @@ internal object AgentModelPickerProjector {
         )
     }
 
-
-    private fun listedModels(provider: ProviderSetting, includeSpeechModels: Boolean, speechOnly: Boolean): List<Model> {
-        val seen = HashSet<String>()
-        return SpeechSynthesisModels.mergeCatalog(provider).filter { model ->
-            if (!model.isEnabled) return@filter false
-            if (speechOnly && !SpeechSynthesisModels.isReadAloudModel(model, provider)) return@filter false
-            if (!includeSpeechModels && model.supportsSpeechSynthesis) return@filter false
-            seen.add(model.modelId.lowercase())
-        }
-    }
-
     private fun ProviderSetting.toOption(model: Model): AgentModelOptionUi =
         AgentModelOptionUi(
             id = model.id,
@@ -129,297 +159,196 @@ internal object AgentModelPickerProjector {
             modelId = model.modelId,
             displayName = model.displayName.ifBlank { model.modelId },
             contextWindow = model.effectiveContextWindow,
-            preferredReasoningEffort = model.preferredReasoningEffort,
-            gptSpeedSupported = io.github.mangi.eta.data.model.supportsGptSpeedBinding(this, model),
-            supportsVision = model.supportsVision,
-            supportsImageGeneration = model.supportsImageGeneration,
-            supportsVideo = model.supportsVideo,
-            supportsVideoGeneration = model.supportsVideoGeneration,
-            requestEndpoint = when (this) {
-                is io.github.mangi.eta.data.model.AnthropicProviderSetting -> io.github.mangi.eta.agent.model.EndpointKind.ANTHROPIC_MESSAGES
-                else -> {
-                    val mode = when (this) {
-                        is io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting -> endpointMode
-                        is io.github.mangi.eta.data.model.CustomProviderSetting -> endpointMode
-                        else -> ""
-                    }
-                    if (mode == io.github.mangi.eta.data.model.OpenAiEndpointMode.RESPONSES)
-                        io.github.mangi.eta.agent.model.EndpointKind.RESPONSES
-                    else io.github.mangi.eta.agent.model.EndpointKind.CHAT_COMPLETIONS
-                }
-            },
         )
 }
 
-internal fun defaultExpandedModelProviderIds(selectedModel: AgentModelOptionUi?): Set<String> =
-    selectedModel?.providerId?.let(::setOf).orEmpty()
+internal val AgentModelPickerUiState.modelCount: Int
+    get() = providerGroups.sumOf { it.models.size }
+
+/** 服务商名称也参与匹配：搜索服务商时列出它的全部模型。 */
+internal fun AgentModelPickerUiState.filterGroups(query: String): List<AgentModelProviderGroupUi> {
+    val search = ModelSearchQuery(query)
+    if (search.isEmpty) return providerGroups
+    return providerGroups.mapNotNull { group ->
+        val models = group.models.filter { model ->
+            search.matches(model.displayName, model.modelId, group.providerName)
+        }
+        models.takeIf(List<*>::isNotEmpty)?.let { group.copy(models = it) }
+    }
+}
 
 internal fun latestContextUsage(
     messages: List<AgentChatMessageUi>,
     selectedModel: AgentModelOptionUi?,
-): AgentContextUsageUi = AgentContextUsageUi(
-    contextTokens = latestBilledContextTokens(messages),
-    contextWindow = selectedModel?.contextWindow,
-)
-
-/**
- * Reads a bill only within a still-valid message context. Callers must not use
- * message bills to restore occupancy after model/history invalidation.
- * A compaction marker's baseline is local metadata, never cloud occupancy.
- */
-internal fun latestBilledContextTokens(messages: List<AgentChatMessageUi>): Int? {
-    val compactIndex = messages.indexOfLast { it is ContextCompactedMessageUi }
-    val marker = messages.getOrNull(compactIndex) as? ContextCompactedMessageUi
-    fun runPrefix(message: AgentMessageUi): String? =
-        if (messageRoundFromId(message.id) == null) null
-        else message.id.substringBeforeLast("-").substringBeforeLast("-")
-    // Rounds restart in a new run: apply the marker only to its preceding run.
-    val compactedRun = if (compactIndex >= 0) messages.take(compactIndex)
-        .filterIsInstance<AgentMessageUi>().lastOrNull()?.let(::runPrefix) else null
-    for (index in messages.lastIndex downTo (compactIndex + 1)) {
-        val message = messages[index] as? AgentMessageUi ?: continue
-        val round = messageRoundFromId(message.id)
-        if (compactedRun != null && runPrefix(message) == compactedRun &&
-            round != null && round < (marker?.resumeRound ?: 0)) continue
-        windowTokensFromUsage(message.usage)?.let { return it }
-    }
-    return null
-}
-
-internal fun countUnbilledTail(
-    messages: List<AgentChatMessageUi>,
-    startIndex: Int,
-    resumeRound: Int = 0,
-    billedIndex: Int = -1,
-): Int {
-    var tail = 0
-    for (index in startIndex until messages.size) {
-        val message = messages[index]
-        if (resumeRound > 0) {
-            val round = messageRoundFromId(message.id)
-            if (round == null || round < resumeRound) continue
-        }
-        if (index == billedIndex && message is AgentMessageUi) {
-            tail += countAssistantLiveTokens(message)
-            continue
-        }
-        if (index < billedIndex && message is UserMessageUi) continue
-        tail += countLiveMessageTokens(message)
-    }
-    return tail
-}
-
-internal fun countUncommittedLiveTokens(messages: List<AgentChatMessageUi>): Int {
-    val lastCompletedAssistant = messages.indices.lastOrNull { index ->
-        val message = messages[index]
-        message is AgentMessageUi && !message.isStreaming
-    } ?: -1
-    var tail = 0
-    for (index in lastCompletedAssistant + 1 until messages.size) {
-        val message = messages[index]
-        if (message is UserMessageUi) continue
-        tail += countLiveMessageTokens(message)
-    }
-    return tail
-}
-
-internal fun countLiveMessageTokens(message: AgentChatMessageUi): Int =
-    when (message) {
-        is UserMessageUi -> {
-            if (message.content.isBlank() && message.images.isEmpty()) {
-                0
-            } else {
-                AgentContextBudget.countCurrentTurn(message.content, emptyList()) +
-                    AgentContextBudget.countStoredImages(message.images.size)
-            }
-        }
-        is AgentMessageUi -> countAssistantLiveTokens(message)
-        is ThinkingMessageUi -> {
-            if (message.content.isBlank()) 0
-            else AgentContextBudget.countCurrentTurn(message.content, emptyList())
-        }
-        is ToolActivityMessageUi -> {
-            val text = buildString {
-                if (message.argumentsSummary.isNotBlank()) append(message.argumentsSummary)
-                message.command?.takeIf { it.isNotBlank() }?.let { append("\n").append(it) }
-                message.resultSummary?.takeIf { it.isNotBlank() }?.let { append("\n").append(it) }
-            }
-            if (text.isBlank()) 0 else AgentContextBudget.countCurrentTurn(text, emptyList())
-        }
-        else -> 0
-    }
-
-internal fun countAssistantLiveTokens(message: AgentMessageUi): Int {
-    if (message.content.isBlank()) return 0
-    val estimated = AgentContextBudget.countCurrentTurn(message.content, emptyList())
-    val billedOutput = message.usage?.outputTokens ?: 0
-    return when {
-        windowTokensFromUsage(message.usage) == null -> estimated
-        message.isStreaming -> (estimated - billedOutput).coerceAtLeast(0)
-        else -> 0
-    }
-}
-
-internal fun messageRoundFromId(id: String): Int? {
-    Regex("""-thinking-(\d+)-""").find(id)?.groupValues?.getOrNull(1)?.toIntOrNull()?.let { return it }
-    Regex("""-tool-(\d+)-""").find(id)?.groupValues?.getOrNull(1)?.toIntOrNull()?.let { return it }
-    Regex("""-hosted-(\d+)-""").find(id)?.groupValues?.getOrNull(1)?.toIntOrNull()?.let { return it }
-    if (id.startsWith("assistant-run-")) {
-        val parts = id.split("-")
-        if (parts.size >= 9) return parts[parts.size - 2].toIntOrNull()
-    }
-    return null
-}
-
-internal fun windowTokensFromUsage(usage: TokenUsageUi?): Int? {
-    if (usage == null || usage.isEmpty) return null
-    usage.inputTokens?.let { return it.takeIf { tokens -> tokens > 0 } }
-    // A total accompanying output without prompt usage is not measured input.
-    if (usage.outputTokens != null || usage.reasoningTokens != null) return null
-    return usage.contextTokens?.takeIf { it > 0 }
-}
-
-/** Ring display: only a real cloud measurement moves the ring. Unmeasured contexts are never
- * rendered from local counts, drafted text, images or learned sample/receipt ratios: a first
- * turn shows a display-only "0k", every other unmeasured state stays "未知" with an unmoved ring. */
-internal fun liveContextUsage(
-    billedContextTokens: Int? = null,
-    activeRunContextWindow: Int? = null,
-    selectedModel: AgentModelOptionUi? = null,
-    contextDisplayPolicy: ContextDisplayPolicy = ContextDisplayPolicy(),
-    billedHistoryTokens: Int? = null,
-    billedOverheadTokens: Int? = null,
 ): AgentContextUsageUi {
-    // An in-flight run keeps the window it was launched with, so a mid-run settings
-    // change must not restate the percentage of a request that never saw the new limit.
-    val window = activeRunContextWindow?.takeIf { it > 0 } ?: selectedModel?.contextWindow
-    val history = billedHistoryTokens?.takeIf { it >= 0 }
-    val overhead = billedOverheadTokens?.takeIf { it >= 0 }
-    if (billedContextTokens != null && billedContextTokens > 0) {
-        return AgentContextUsageUi(billedContextTokens, window, historyTokens = history, overheadTokens = overhead)
+    val sessionStats = deriveSessionStatsSummary(messages)
+    for (message in messages.asReversed()) {
+        when (message) {
+            is AgentMessageUi -> message.usage?.contextTokens?.let {
+                return AgentContextUsageUi(it, selectedModel?.contextWindow, sessionStats)
+            }
+            is SystemNoticeMessageUi -> if (message.code == SystemNoticeCode.ContextCompaction) {
+                return AgentContextUsageUi(null, selectedModel?.contextWindow, sessionStats)
+            }
+            else -> Unit
+        }
     }
-    if (contextDisplayPolicy.awaitingReceipt) return AgentContextUsageUi(null, window)
-    return AgentContextUsageUi(null, window, firstTurn = contextDisplayPolicy.firstTurn)
+    return AgentContextUsageUi(null, selectedModel?.contextWindow, sessionStats)
 }
 
-/** Predict the next cloud input: a validated receipt is the full prompt baseline, including cache.
- * Keep an unchanged baseline marked as actual so the ring does not show a false estimate. */
-internal fun compressionContextUsage(
-    history: List<AgentModelClient.ConversationMessage>,
-    currentInput: String,
-    pendingImages: List<PendingImageUi>,
-    selectedModel: AgentModelOptionUi?,
-    pendingFileReferences: List<PendingFileReferenceUi> = emptyList(),
-    pendingConversationMentions: List<PendingConversationMentionUi> = emptyList(),
-    historyTokenCount: Int? = null,
-    billedContextTokens: Int? = null,
-    requestOverheadTokens: Int = 0,
-    billedOverheadTokens: Int? = null,
-    billedHistoryTokens: Int? = null,
-    localHistoryTokenCount: Int? = null,
-    activeRunContextWindow: Int? = null,
-    projectedContextTokens: Int? = null,
-): AgentContextUsageUi {
-    if (billedContextTokens == null || billedContextTokens <= 0 ||
-        billedHistoryTokens == null || billedOverheadTokens == null) {
-        // Legacy cloud receipts keep the ring accurate, but lack the calibration
-        // needed for a safe delta. Only the silent budget falls back to a full estimate.
-        // Unknown UI must not remove the conservative internal budget or change send blocking.
-        val draft = draftContextTokens(currentInput, pendingImages, selectedModel, pendingFileReferences, pendingConversationMentions)
-        val local = (localHistoryTokenCount ?: io.github.mangi.eta.agent.model.AgentRequestTokenEstimate.history(
-            history, selectedModel?.supportsVision == true, selectedModel?.supportsVideo == true)).toLong() +
-            requestOverheadTokens.coerceAtLeast(0) + draft
-        val floor = (billedContextTokens?.coerceAtLeast(0)?.toLong() ?: 0L) + draft
-        return AgentContextUsageUi(maxOf(local, floor).coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
-            activeRunContextWindow?.takeIf { it > 0 } ?: selectedModel?.contextWindow, estimated = true)
+internal fun deriveSessionStatsSummary(messages: List<AgentChatMessageUi>): SessionStatsSummaryUi {
+    var turns = 0
+    var steps = 0
+    var llmMs = 0L
+    var toolMs = 0L
+    var ttftMs = 0L
+    var ttftSteps = 0
+    var decodeMs = 0L
+    var decodeTokens = 0
+    var promptTokens = 0
+    var uncachedInputTokens = 0
+    var cacheWriteTokens = 0
+    var hasCacheWriteTokens = false
+    var cachedTokens = 0
+    var outputTokens = 0
+    var reasoningTokens = 0
+    var compactionCount = 0
+    var compactionPromptTokens = 0
+    var compactionUncachedTokens = 0
+    var compactionCacheWriteTokens = 0
+    var compactionCachedTokens = 0
+    var compactionOutputTokens = 0
+    var lastCompactionPromptTokens: Int? = null
+    var lastCompactionCachedTokens: Int? = null
+    var lastCompactionCacheWriteTokens: Int? = null
+    var lastCompactionOutputTokens: Int? = null
+    var lastCompactionArchiveId = ""
+    var subagentCount = 0
+    var subagentPromptTokens = 0
+    var subagentCachedTokens = 0
+    var subagentOutputTokens = 0
+    var hasTokenUsage = false
+
+    messages.forEach { message ->
+        when (message) {
+            is AgentMessageUi -> {
+                val usage = message.usage ?: return@forEach
+                val turnSteps = (usage.stepCount ?: 1).coerceAtLeast(1)
+                turns += 1
+                steps += turnSteps
+                usage.llmMs?.takeIf { it > 0L }?.let { llmMs += it }
+                usage.toolMs?.takeIf { it > 0L }?.let { toolMs += it }
+                val recordedTtftSteps = usage.ttftSteps ?: if (usage.ttftMs != null) 1 else 0
+                if (recordedTtftSteps > 0 && usage.ttftMs != null && usage.ttftMs > 0L) {
+                    ttftMs += usage.ttftMs
+                    ttftSteps += recordedTtftSteps
+                }
+                val turnDecodeTokens = usage.decodeTokens ?: usage.outputTokens
+                if (usage.decodeMs != null && usage.decodeMs > 0L && turnDecodeTokens != null && turnDecodeTokens > 0) {
+                    decodeMs += usage.decodeMs
+                    decodeTokens += turnDecodeTokens
+                }
+                val rawOut = usage.outputTokens ?: 0
+                val rawReasoning = usage.reasoningTokens ?: 0
+                if (usage.inputTokens != null ||
+                    usage.cachedTokens != null ||
+                    usage.cacheWriteTokens != null ||
+                    usage.outputTokens != null ||
+                    usage.contextTokens != null
+                ) {
+                    hasTokenUsage = true
+                    val breakdown = CacheUsageDiagnostics.resolvePromptBreakdown(usage)
+                    if (breakdown.hasWriteTokens) hasCacheWriteTokens = true
+                    promptTokens += breakdown.promptTokens
+                    uncachedInputTokens += breakdown.uncachedInputTokens
+                    cacheWriteTokens += breakdown.cacheWriteTokens
+                    cachedTokens += breakdown.cacheReadTokens
+                    outputTokens += rawOut
+                    reasoningTokens += rawReasoning
+                }
+            }
+            is SystemNoticeMessageUi -> {
+                if (message.code == SystemNoticeCode.ContextCompaction && !message.running) {
+                    val usage = message.usage ?: return@forEach
+                    val breakdown = CacheUsageDiagnostics.resolvePromptBreakdown(usage)
+                    val out = usage.outputTokens ?: 0
+                    if (breakdown.promptTokens > 0 || out > 0 || breakdown.cacheReadTokens > 0) {
+                        hasTokenUsage = true
+                        compactionCount += 1
+                        compactionPromptTokens += breakdown.promptTokens
+                        compactionUncachedTokens += breakdown.uncachedInputTokens
+                        compactionCacheWriteTokens += breakdown.cacheWriteTokens
+                        compactionCachedTokens += breakdown.cacheReadTokens
+                        compactionOutputTokens += out
+                        lastCompactionPromptTokens = breakdown.promptTokens
+                        lastCompactionCachedTokens = breakdown.cacheReadTokens
+                        lastCompactionCacheWriteTokens = breakdown.cacheWriteTokens
+                        lastCompactionOutputTokens = out
+                        lastCompactionArchiveId = message.archiveId
+                        usage.llmMs?.takeIf { it > 0L }?.let { llmMs += it }
+                    }
+                }
+            }
+            is ToolActivityMessageUi -> {
+                if (message.toolName == "subagent" && !message.command.isNullOrBlank()) {
+                    val snapshot = SubagentActivitySnapshot.decode(message.command)
+                    snapshot?.usage?.let { subUsage ->
+                        if (subUsage.inputTokens > 0 || subUsage.outputTokens > 0 || subUsage.cachedTokens > 0) {
+                            hasTokenUsage = true
+                            subagentCount += 1
+                            subagentPromptTokens += subUsage.inputTokens
+                            subagentCachedTokens += subUsage.cachedTokens
+                            subagentOutputTokens += subUsage.outputTokens
+                        }
+                    }
+                }
+            }
+            else -> Unit
+        }
     }
-    // Both calibration snapshots belong to the validated cloud receipt.
-    val delta = billedHistoryTokens?.let { baseline ->
-        (historyTokenCount ?: history.sumOf { AgentContextBudget.countMessage(it) }).toLong() - baseline
-    } ?: 0L
-    val fixedDelta = billedOverheadTokens?.let { requestOverheadTokens.toLong() - it } ?: 0L
-    val draft = draftContextTokens(currentInput, pendingImages, selectedModel, pendingFileReferences, pendingConversationMentions)
-    val projected = (billedContextTokens.toLong() + delta + fixedDelta + draft)
-        .coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
-    return AgentContextUsageUi(
-        projected,
-        activeRunContextWindow?.takeIf { it > 0 } ?: selectedModel?.contextWindow,
-        estimated = projected != billedContextTokens,
+
+    val diagnostics = CacheUsageDiagnostics.analyze(messages)
+    val payback = diagnostics.lastCompactionPayback
+
+    return SessionStatsSummaryUi(
+        turns = turns,
+        steps = steps,
+        llmMs = llmMs,
+        toolMs = toolMs,
+        ttftMs = ttftMs,
+        ttftSteps = ttftSteps,
+        decodeMs = decodeMs,
+        decodeTokens = decodeTokens,
+        promptTokens = promptTokens,
+        uncachedInputTokens = uncachedInputTokens,
+        cacheWriteTokens = cacheWriteTokens,
+        hasCacheWriteTokens = hasCacheWriteTokens,
+        cachedTokens = cachedTokens,
+        outputTokens = outputTokens,
+        reasoningTokens = reasoningTokens,
+        compactionCount = compactionCount,
+        compactionPromptTokens = compactionPromptTokens,
+        compactionUncachedTokens = compactionUncachedTokens,
+        compactionCacheWriteTokens = compactionCacheWriteTokens,
+        compactionCachedTokens = compactionCachedTokens,
+        compactionOutputTokens = compactionOutputTokens,
+        lastCompactionPromptTokens = lastCompactionPromptTokens,
+        lastCompactionCachedTokens = lastCompactionCachedTokens,
+        lastCompactionCacheWriteTokens = lastCompactionCacheWriteTokens,
+        lastCompactionOutputTokens = lastCompactionOutputTokens,
+        lastCompactionArchiveId = lastCompactionArchiveId,
+        lastCompactionPaybackTurns = payback?.paybackTurns,
+        lastCompactionTurnsAfter = payback?.turnsAfter ?: 0,
+        lastCompactionPaidBack = payback?.paidBack ?: false,
+        subagentCount = subagentCount,
+        subagentPromptTokens = subagentPromptTokens,
+        subagentCachedTokens = subagentCachedTokens,
+        subagentOutputTokens = subagentOutputTokens,
+        ttlOrPrefixMissTokens = diagnostics.attribution.ttlOrPrefixMissTokens,
+        compactionRepayTokens = diagnostics.attribution.compactionRepayTokens,
+        hasTokenUsage = hasTokenUsage,
     )
 }
-
-private fun draftContextTokens(
-    input: String, pendingImages: List<PendingImageUi>, selectedModel: AgentModelOptionUi?,
-    files: List<PendingFileReferenceUi>, mentions: List<PendingConversationMentionUi>,
-): Int {
-    val vision = selectedModel?.supportsVision == true
-    val video = selectedModel?.supportsVideo == true
-    fun accepted(image: PendingImageUi): Boolean = if (image.isVideo) video || vision else vision
-    val imageFiles = pendingImages.mapIndexedNotNull { index, image ->
-        if (accepted(image)) null else AgentFileReference(displayName = image.cacheDisplayName(index),
-            absolutePath = "/cache/chat-image-${index + 1}", kind = AgentFileReferenceKind.File)
-    }
-    val prompt = AgentFileReferencePromptCodec.format(input, files.map { it.reference } + imageFiles, mentions.toMentionedConversations())
-    val images = pendingImages.filter(::accepted).map { it.toOutboundModelImage(video) }
-    return if (prompt.isEmpty() && images.isEmpty()) 0 else AgentContextBudget.countCurrentTurn(prompt, images)
-}
-
-internal fun PendingImageUi.toLiveModelImage(): AgentModelClient.ModelImage =
-    if (isVideo) {
-        AgentModelClient.ModelImage(
-            reference = uri,
-            mimeType = mimeType,
-            bytes = byteSize,
-            source = uri,
-        )
-    } else {
-        AgentModelClient.ModelImage(
-            reference = dataUrl,
-            mimeType = mimeType,
-            bytes = dataUrl.length,
-            source = uri,
-        )
-    }
-
-internal fun PendingImageUi.toOutboundModelImage(supportsVideo: Boolean): AgentModelClient.ModelImage =
-    if (isVideo && !supportsVideo) {
-        AgentModelClient.ModelImage(
-            reference = dataUrl,
-            mimeType = "image/jpeg",
-            bytes = dataUrl.length,
-            source = uri,
-        )
-    } else {
-        toLiveModelImage()
-    }
-
-internal fun PendingImageUi.cacheDisplayName(index: Int): String {
-    if (isVideo) {
-        val extension = io.github.mangi.eta.agent.media.AgentVideoCodec.extensionForMime(mimeType, uri)
-        return "chat-video-${index + 1}.$extension"
-    }
-    val extension = when {
-        mimeType.contains("png", ignoreCase = true) -> "png"
-        mimeType.contains("webp", ignoreCase = true) -> "webp"
-        mimeType.contains("gif", ignoreCase = true) -> "gif"
-        else -> "jpg"
-    }
-    return "chat-image-${index + 1}.$extension"
-}
-
-internal fun isContextWindowExceeded(
-    usage: AgentContextUsageUi,
-    thresholdPercent: Float = 0.99f,
-): Boolean {
-    val tokens = usage.contextTokens ?: return false
-    val window = usage.contextWindow ?: return false
-    return window > 0 && tokens.toFloat() / window.toFloat() >= thresholdPercent
-}
-
-internal fun shouldBlockSendForContextWindow(
-    autoCompressEnabled: Boolean,
-    usage: AgentContextUsageUi,
-): Boolean = !autoCompressEnabled && isContextWindowExceeded(usage)
 
 internal fun contextUsageProgress(contextTokens: Int?, contextWindow: Int?): Float? {
     if (contextTokens == null || contextTokens < 0 || contextWindow == null || contextWindow <= 0) {
@@ -430,33 +359,22 @@ internal fun contextUsageProgress(contextTokens: Int?, contextWindow: Int?): Flo
 
 internal fun formatContextUsage(
     usage: AgentContextUsageUi,
-    noUsageText: String = "No conversation context yet",
-    noLimitText: String = "The current model does not provide a context limit",
+    noUsageText: String = "No usage data yet",
+    noLimitText: String = "Context window unknown, so automatic compaction is off",
     locale: Locale = Locale.getDefault(),
-): String {
-    // A first-turn "0k" is a display-only label, not a measured zero.
-    // Unmeasured states keep null occupancy/progress and omit a percentage;
-    // measured values and trusted estimates are formatted separately below.
-    val measured = usage.contextTokens
-    val window = usage.contextWindow
-    if (measured == null) {
-        // Only the numerator is unknown; the configured window the ring is measured against is
-        // already known, so keep it in the same denominator format a measured reading uses.
-        // The ratio stays null, so the ring is still shown unmoved for both unmeasured states.
-        val state = if (usage.firstTurn) "0k" else "未知"
-        if (window == null || window <= 0) return state
-        return "$state / ${formatCompactTokenCount(window, locale)} tokens"
+): String = when {
+    usage.contextWindow == null || usage.contextWindow <= 0 -> noLimitText
+    usage.contextTokens == null -> noUsageText
+    else -> {
+        val percent = usage.contextTokens.toDouble() / usage.contextWindow.toDouble() * 100.0
+        val percentFormat = NumberFormat.getNumberInstance(locale).apply {
+            minimumFractionDigits = 1
+            maximumFractionDigits = 1
+        }
+        "${formatCompactTokenCount(usage.contextTokens, locale)} / " +
+            "${formatCompactTokenCount(usage.contextWindow, locale)} tokens · " +
+            "${percentFormat.format(percent)}%"
     }
-    val tokens = measured.coerceAtLeast(0)
-    val tokenText = (if (usage.estimated) "≈" else "") +
-        (if (tokens == 0) "0K" else formatCompactTokenCount(tokens, locale))
-    if (window == null || window <= 0) return "$tokenText tokens" + 10.toChar() + noLimitText
-    val percentFormat = NumberFormat.getNumberInstance(locale).apply {
-        minimumFractionDigits = 1
-        maximumFractionDigits = 1
-    }
-    return "$tokenText / ${formatCompactTokenCount(window, locale)} tokens · " +
-        "${percentFormat.format(tokens.toDouble() / window * 100.0)}%"
 }
 
 internal fun formatCompactTokenCount(value: Int, locale: Locale = Locale.getDefault()): String {

@@ -11,6 +11,81 @@ class AgentTraceFormatterTest {
     private val formatter = AgentTraceFormatter()
 
     @Test
+    fun currentContextIsPresentedAsTimeAndLocationWithoutRequiringAnOkField() {
+        assertEquals("读取时间与位置", formatter.summarizeArguments(
+            AgentModelClient.ToolCall("context", "get_current_context", "{}"),
+        ))
+        assertEquals("2026-10-28 12:30 +08:00 · 系统定位已关闭", formatter.summarizeResult(
+            "get_current_context",
+            AgentModelClient.ToolResult("""{"datetime":"2026-10-28T12:30:00+08:00","location":{"status":"location_disabled"}}"""),
+        ))
+    }
+
+    @Test
+    fun terminalLifecyclesHaveDistinctLabelsAndKeepCommandRedaction() {
+        listOf(
+            "terminal" to """{"command":"echo secret-marker"}""",
+            "terminal_job" to """{"action":"start","command":"echo secret-marker"}""",
+            "terminal_daemon" to """{"action":"start","command":"echo secret-marker"}""",
+        ).forEach { (name, args) ->
+            val call = AgentModelClient.ToolCall("task", name, args)
+            val summary = formatter.summarizeArguments(call)
+            assertFalse(summary.contains("secret-marker"))
+            val label = when (name) { "terminal_job" -> "异步命令"; "terminal_daemon" -> "后台服务"; else -> "终端" }
+            assertTrue(summary, summary.contains(label))
+            assertEquals("echo secret-marker", formatter.displayCommand(call))
+        }
+        val result = formatter.summarizeResult("terminal_job", AgentModelClient.ToolResult(
+            """{"ok":true,"tool":"terminal_job","action":"read","stdout":"done","exit_code":0}"""))
+        assertTrue(result, result.contains("done"))
+    }
+
+    @Test
+    fun publicWebArgumentsExposeOnlyActionAndHost() {
+        val search = formatter.summarizeArguments(AgentModelClient.ToolCall(
+            "search", "web_search", """{"query":"private-query","max_results":3}""",
+        ))
+        assertEquals("搜索网页", search)
+        val fetch = formatter.summarizeArguments(AgentModelClient.ToolCall(
+            "fetch", "fetch_url", """{"url":"https://alice:password@example.com/private-path?token=secret-query#private-fragment"}""",
+        ))
+        assertEquals("读取网页 · example.com", fetch)
+        val next = formatter.summarizeArguments(AgentModelClient.ToolCall(
+            "next", "fetch_url", """{"document_id":"private-document-id","offset_chars":12000}""",
+        ))
+        assertEquals("继续读取网页", next)
+    }
+
+    @Test
+    fun publicWebResultsNeverEchoQueryTitlesBodyOrCompleteUrl() {
+        val search = formatter.summarizeResult("web_search", AgentModelClient.ToolResult(
+            """{"ok":true,"query":"private-query","results":[{"title":"private-title","url":"https://example.com/private-path","snippet":"private-body"}]}""",
+        ))
+        assertEquals("找到 1 条搜索结果", search)
+        val fetch = formatter.summarizeResult("fetch_url", AgentModelClient.ToolResult(
+            """{"ok":true,"final_url":"https://alice:password@example.com/private-path?token=secret-query","title":"private-title","text":"private-body","has_more":true}""",
+        ))
+        assertEquals("已读前 12 字", fetch)
+        listOf("private-query", "private-title", "private-body", "private-path", "password", "secret-query").forEach {
+            assertFalse(search.contains(it))
+            assertFalse(fetch.contains(it))
+        }
+    }
+
+    @Test
+    fun publicWebFailureSummaryDoesNotEchoServerMessages() {
+        listOf("web_search", "fetch_url").forEach { name ->
+            val failure = formatter.summarizeResult(name, AgentModelClient.ToolResult(
+                """{"ok":false,"code":"HTTP_ERROR","message":"private-query https://alice:password@example.com/private-path?token=secret-query"}""",
+            ))
+            assertTrue(failure.contains("code=HTTP_ERROR"))
+            assertFalse(failure.contains("private"))
+            assertFalse(failure.contains("password"))
+            assertFalse(failure.contains("secret-query"))
+        }
+    }
+
+    @Test
     fun sensitiveToolArgumentsAreSummarizedWithoutRawValues() {
         val cases = listOf(
             RedactionCase(
@@ -23,7 +98,7 @@ class AgentTraceFormatterTest {
             RedactionCase(
                 toolName = "run_command",
                 argumentsJson = """{"command":"cat /data/local/tmp/private-token"}""",
-                expectedParts = listOf("执行命令", "Android", "root"),
+                expectedParts = listOf("执行命令", "Android"),
                 sensitiveParts = listOf("cat ", "/data/local/tmp/private-token", "private-token"),
             ),
             RedactionCase(
@@ -60,7 +135,7 @@ class AgentTraceFormatterTest {
             RedactionCase(
                 toolName = "memory_write",
                 argumentsJson = """{"mode":"append","revision":"secret-revision","content":"private memory"}""",
-                expectedParts = listOf("更新记忆", "追加", "行", "字节"),
+                expectedParts = listOf("追加记忆"),
                 sensitiveParts = listOf("secret-revision", "private memory"),
             ),
         )
@@ -90,47 +165,82 @@ class AgentTraceFormatterTest {
     }
 
     @Test
-    fun runCommandSummaryReflectsRealEnvironment() {
-        val debian = AgentModelClient.ToolCall(
-            id = "rc-d",
-            name = "run_command",
-            argumentsJson = """{"command":"gh --version","environment":"debian","identity":"root"}""",
+    fun stateChangeWithoutReadbackIsShownAsUnconfirmed() {
+        val result = AgentModelClient.ToolResult(
+            content = """{"ok":false,"status":"unconfirmed","verified":false,"code":"STATE_CHANGE_UNCONFIRMED"}""",
         )
-        val android = AgentModelClient.ToolCall(
-            id = "rc-a",
-            name = "run_command",
-            argumentsJson = """{"command":"pm list packages","identity":"root"}""",
-        )
-        assertTrue(formatter.summarizeArguments(debian).contains("Debian"))
-        assertTrue(formatter.summarizeArguments(debian).contains("root"))
-        assertFalse(formatter.summarizeArguments(debian).contains("Android"))
-        assertTrue(formatter.summarizeArguments(android).contains("Android"))
-        assertFalse(formatter.summarizeArguments(android).contains("gh --version"))
+        assertEquals("操作已提交，效果未确认", formatter.summarizeResult("set_device_state", result))
+        assertFalse(formatter.isSuccessResult(result))
     }
 
     @Test
-    fun terminalExecSummaryUsesSessionEnvironmentWhenOmitted() {
-        val sessionFormatter = AgentTraceFormatter(
-            terminalSessionEnvironmentProvider = { id ->
-                if (id == "term_linux") "debian" else null
-            },
-            terminalSessionIdentityProvider = { id ->
-                if (id == "term_linux") "root" else null
-            },
+    fun deviceStateResultShowsObservedChangesWithoutInventingPreviousState() {
+        listOf(
+            """{"target":"auto_rotate","before":false,"after":true}""" to "自动旋转：关闭 → 开启",
+            """{"target":"auto_brightness","before":true,"after":false}""" to "自动亮度：开启 → 关闭",
+            """{"target":"wifi","before":true,"after":true}""" to "Wi-Fi：保持开启",
+            """{"target":"auto_rotate","before":false,"after":false}""" to "自动旋转：保持关闭",
+            """{"target":"auto_rotate","before":null,"after":true}""" to "自动旋转：已开启",
+        ).forEach { (observed, expectedSummary) ->
+            val result = JSONObject(observed).put("ok", true).put("verified", true)
+            assertEquals(expectedSummary, formatter.summarizeResult("set_device_state", AgentModelClient.ToolResult(result.toString())))
+        }
+    }
+
+    @Test
+    fun deviceStateResultRequiresVerifiedBooleanReadback() {
+        listOf(
+            """{"ok":true,"verified":true,"target":"auto_rotate","expected":true}""" to "完成",
+            """{"ok":true,"verified":true,"target":"auto_rotate","after":"false"}""" to "完成",
+            """{"ok":true,"verified":true,"target":"private-target","after":true}""" to "完成",
+            """{"ok":true,"verified":false,"target":"auto_rotate","before":false,"after":true}""" to "已执行，效果未确认",
+            """{"ok":false,"status":"unconfirmed","verified":false,"target":"auto_rotate","before":false,"after":false,"expected":true}""" to "操作已提交，效果未确认",
+            """{"ok":false,"code":"ROOT_REQUIRED","target":"auto_rotate","before":false,"after":true}""" to "失败 · code=ROOT_REQUIRED",
+        ).forEach { (content, expectedSummary) ->
+            assertEquals(expectedSummary, formatter.summarizeResult("set_device_state", AgentModelClient.ToolResult(content)))
+        }
+    }
+
+    @Test
+    fun skillResultsShowReturnedCountsAndWhenInstalledSkillsBecomeAvailable() {
+        val listed = AgentModelClient.ToolResult(
+            """{"ok":true,"count":99,"items":[{"name":"private-name","installed":true},{"path":"private-path","installed":false}]}""",
         )
-        val exec = AgentModelClient.ToolCall(
-            id = "term-exec",
-            name = "terminal",
-            argumentsJson = """{"action":"exec","session_id":"term_linux","command":"gh run list"}""",
+        assertEquals("找到 2 个技能 · 1 个已安装", formatter.summarizeResult("skills_inspect_github", listed))
+        val installed = AgentModelClient.ToolResult(
+            """{"ok":true,"installed":[{"name":"private-name"}],"available":"next_turn","message":"private-message"}""",
         )
-        val summary = sessionFormatter.summarizeArguments(exec)
-        assertTrue(summary.contains("Debian"))
-        assertTrue(summary.contains("root"))
-        assertFalse(summary.contains("Android"))
-        assertFalse(summary.contains("gh run list"))
-        assertTrue(
-            formatter.summarizeArguments(exec).contains("Android"),
+        assertEquals("已安装 1 个技能 · 下一轮可用", formatter.summarizeResult("skills_install_from_github", installed))
+    }
+
+    @Test
+    fun genericQueryResultsShowPageSizeWithoutExposingRecords() {
+        val result = AgentModelClient.ToolResult(
+            """{"ok":true,"count":99,"items":[{"content":"private-record"},{"value":"private-value"}],"has_more":true,"partial":true}""",
+            sensitive = true,
         )
+        assertEquals("找到 2 条短信 · 还有更多 · 采集范围有限", formatter.summarizeResult("search_messages", result))
+
+        val generic = AgentModelClient.ToolResult(
+            """{"ok":true,"items":[{"content":"one"},{"content":"two"}],"has_more":true,"partial":true}""",
+        )
+        assertEquals("找到 2 条结果 · 还有更多 · 采集范围有限", formatter.summarizeResult("custom_search", generic))
+    }
+
+    @Test
+    fun specializedResultsKeepFailureAndSubmissionSemantics() {
+        assertEquals("自动息屏：30 秒 → 2 分钟", formatter.summarizeResult("set_screen_timeout", AgentModelClient.ToolResult(
+            """{"ok":true,"verified":true,"before":30000,"after":120000}""",
+        )))
+        assertEquals("已提交计时请求 · 5 分钟", formatter.summarizeResult("set_timer", AgentModelClient.ToolResult(
+            """{"ok":true,"status":"dispatched","verified":false,"duration_seconds":300}""",
+        )))
+        assertEquals("已追加 512 字节", formatter.summarizeResult("write_file", AgentModelClient.ToolResult(
+            """{"ok":true,"mode":"append","bytes_written":512}""",
+        )))
+        assertEquals("失败 · code=FILE_INPUT_FAILED", formatter.summarizeResult("write_file", AgentModelClient.ToolResult(
+            """{"ok":false,"code":"FILE_INPUT_FAILED","mode":"append","bytes_written":512}""",
+        )))
     }
 
     @Test
@@ -149,7 +259,7 @@ class AgentTraceFormatterTest {
 
         assertEquals("git status --short", formatter.displayCommand(terminal))
         assertEquals("pm list packages | head", formatter.displayCommand(runCommand))
-        assertTrue(formatter.summarizeArguments(terminal).contains("Linux"))
+        assertEquals("终端 · 单次执行 · Linux", formatter.summarizeArguments(terminal))
         assertFalse(formatter.summarizeArguments(terminal).contains("git status"))
         assertNull(
             formatter.displayCommand(
@@ -165,6 +275,23 @@ class AgentTraceFormatterTest {
                 )
             )
         )
+    }
+
+    @Test
+    fun terminalSummaryPreservesExplicitEnvironmentNames() {
+        listOf("android" to "Android", "alpine" to "Alpine", "debian" to "Debian")
+            .forEach { (environment, label) ->
+                val summary = formatter.summarizeArguments(
+                    AgentModelClient.ToolCall(
+                        id = "terminal-environment",
+                        name = "terminal",
+                        argumentsJson =
+                            """{"action":"open_and_exec","environment":"$environment"}""",
+                    ),
+                )
+
+                assertEquals("终端 · 单次执行 · $label", summary)
+            }
     }
 
     @Test
@@ -279,12 +406,12 @@ class AgentTraceFormatterTest {
         assertFalse(formatter.isSuccessResult(failed))
         assertTrue(formatter.isSuccessResult(noFlag))
         assertTrue(formatter.isSuccessResult(malformed))
-        assertEquals("完成", formatter.summarizeResult("tap", ok))
+        assertEquals("已点击", formatter.summarizeResult("tap", ok))
         assertEquals("失败 · code=X", formatter.summarizeResult("tap", failed))
     }
 
     @Test
-    fun memoryResultSummaryContainsOnlyStatusLineAndByteMetadata() {
+    fun memoryResultSummaryPresentsNaturalStatusWithoutByteOrLineCounts() {
         val summary = formatter.summarizeResult(
             "memory_get",
             AgentModelClient.ToolResult(
@@ -293,11 +420,20 @@ class AgentTraceFormatterTest {
             ),
         )
 
-        assertTrue(summary.contains("已读取记忆"))
-        assertTrue(summary.contains("9 行"))
-        assertTrue(summary.contains("321 字节"))
-        assertFalse(summary.contains("ok="))
+        assertEquals("已读取记忆", summary)
+        assertFalse(summary.contains("9 行"))
+        assertFalse(summary.contains("321 字节"))
         assertFalse(summary.contains("private memory"))
+
+        val querySummary = formatter.summarizeResult(
+            "memory_get",
+            AgentModelClient.ToolResult(
+                content = """{"ok":true,"matched_lines":3,"line_count":200,"bytes":8000}""",
+            ),
+        )
+        assertEquals("找到 3 条相关记忆", querySummary)
+        assertFalse(querySummary.contains("200"))
+        assertFalse(querySummary.contains("8000"))
     }
 
     @Test
@@ -385,6 +521,18 @@ class AgentTraceFormatterTest {
     }
 
     @Test
+    fun unconfirmedLaunchDoesNotClaimTheAppHasOpened() {
+        val summary = formatter.summarizeResult(
+            "launch_app",
+            AgentModelClient.ToolResult(
+                content = """{"ok":true,"app_name":"示例应用","canvas":"virtual","launch_status":"unconfirmed"}""",
+            ),
+        )
+
+        assertEquals("已请求打开，待确认 · 示例应用 · 虚拟屏", summary)
+    }
+
+    @Test
     fun terminalResultShowsExitCodeAndOutputPreview() {
         val success = formatter.summarizeResult(
             "run_command",
@@ -438,6 +586,22 @@ class AgentTraceFormatterTest {
             ),
         )
         assertEquals("终端 · 关闭终端", closed)
+
+        val multiLineOutput = (1..12).joinToString("\n") { "line-$it" }
+        val multiLinePreview = formatter.summarizeResult(
+            "terminal",
+            AgentModelClient.ToolResult(
+                content = JSONObject()
+                    .put("ok", true)
+                    .put("tool", "terminal")
+                    .put("exit_code", 0)
+                    .put("stdout", multiLineOutput)
+                    .toString(),
+            ),
+        )
+        assertTrue(multiLinePreview.contains("line-10"))
+        assertFalse(multiLinePreview.contains("line-11"))
+        assertTrue(multiLinePreview.endsWith("\n…"))
     }
 
     @Test
@@ -461,7 +625,7 @@ class AgentTraceFormatterTest {
 
     @Test
     fun terminalResultPreviewIsBounded() {
-        val longOutput = (1..10).joinToString("\n") { "line-$it-${"x".repeat(100)}" }
+        val longOutput = (1..15).joinToString("\n") { "line-$it-${"x".repeat(100)}" }
         val summary = formatter.summarizeResult(
             "run_command",
             AgentModelClient.ToolResult(
@@ -476,8 +640,8 @@ class AgentTraceFormatterTest {
         )
 
         val previewLines = summary.lines()
-        // 状态行 + 最多 3 行预览 + 省略标记
-        assertTrue(previewLines.size <= 5)
+        // 状态行 + 最多 10 行预览 + 省略标记（与 ToolActivityDetail 的 MAX_RESULT_LINES = 12 对齐）
+        assertTrue(previewLines.size <= 12)
         assertTrue(summary.endsWith("…"))
         assertTrue(summary.length < longOutput.length)
     }
@@ -488,18 +652,4 @@ class AgentTraceFormatterTest {
         val expectedParts: List<String>,
         val sensitiveParts: List<String>,
     )
-    @Test fun queuedChildAndTaskListingsNeverBecomeUnknownStatus() {
-        assertEquals("子代理已提交 · 排队中",formatter.summarizeResult("delegate_task",
-            AgentModelClient.ToolResult("""{"ok":true,"task_id":"a","status":"queued"}""")))
-        val summary=formatter.summarizeResult("get_task_result",AgentModelClient.ToolResult(
-            """{"ok":true,"total":3,"tasks":[{"status":"running"},{"status":"running"},{"status":"completed"}]}"""))
-        assertTrue(summary.contains("执行中 2"));assertTrue(summary.contains("已完成 1"));assertFalse(summary.contains("未知"))
-        assertEquals("暂无子代理任务",formatter.summarizeResult("get_task_result",AgentModelClient.ToolResult("""{"ok":true,"total":0,"tasks":[]}""")))
-    }
-    @Test fun delegationFailureKeepsActualReasonAndDoesNotClaimRunning() {
-        val summary=formatter.summarizeResult("delegate_task",AgentModelClient.ToolResult(
-            """{"ok":false,"code":"PROJECT_HAS_UNCOMMITTED_CHANGES","message":"工作区有未提交改动"}"""))
-        assertTrue(summary.contains("PROJECT_HAS_UNCOMMITTED_CHANGES"));assertTrue(summary.contains("未提交"));assertFalse(summary.contains("执行中"))
-    }
-
 }

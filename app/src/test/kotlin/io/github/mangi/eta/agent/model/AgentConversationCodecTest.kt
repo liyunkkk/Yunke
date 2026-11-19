@@ -1,5 +1,6 @@
 package io.github.mangi.eta.agent.model
 
+import io.github.mangi.eta.agent.runtime.AgentLegacyConversationProjection
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -8,35 +9,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AgentConversationCodecTest {
-    @Test
-    fun fromJsonObjectReadsReasoningAliasUsedBySomeGateways() {
-        val message = JSONObject()
-            .put("role", "assistant")
-            .put("content", "I will list it.")
-            .put("reasoning", "先确认路径")
-            .put(
-                "tool_calls",
-                JSONArray().put(
-                    JSONObject()
-                        .put("id", "call-1")
-                        .put("type", "function")
-                        .put(
-                            "function",
-                            JSONObject()
-                                .put("name", "list_directory")
-                                .put("arguments", "{}"),
-                        ),
-                ),
-            )
-
-        val durable = AgentConversationCodec.fromJsonObject(message)
-        val replayed = AgentConversationCodec.toJsonObject(durable)
-
-        assertEquals("先确认路径", durable.reasoningContent)
-        assertEquals("先确认路径", replayed.getString("reasoning_content"))
-        assertFalse(replayed.has("reasoning"))
-    }
-
     @Test
     fun toolRoundTripPreservesReasoningContentForCompatibleProviders() {
         val assistant = JSONObject()
@@ -85,70 +57,30 @@ class AgentConversationCodecTest {
     }
 
     @Test
-    fun durableUserAttachmentKeepsImageFilePathWithoutBase64() {
-        val message = AgentConversationCodec.durableMessage(
-            AgentConversationCodec.userPersistedImageMessage(
-                text = "看这张图",
-                images = listOf(
-                    AgentConversationCodec.PersistedImage(
-                        path = "/data/user/0/io.github.mangi.eta/cache/eta-chat-images/c1/a.jpg",
-                        mimeType = "image/jpeg",
-                        displayName = "chat-image-1.jpg",
-                    ),
-                ),
-            )
-        )
-        assertTrue(message.contentJson.contains("image_file"))
-        assertTrue(message.contentJson.contains("/data/user/0/io.github.mangi.eta/cache/eta-chat-images/c1/a.jpg"))
-        assertFalse(message.contentJson.contains("base64"))
-        assertFalse(message.contentJson.contains("未写入持久会话"))
-    }
-
-    @Test
-    fun persistedImageSourcesReadsImageFilePaths() {
-        val message = AgentConversationCodec.durableMessage(
-            AgentConversationCodec.userPersistedImageMessage(
-                text = "看这张图",
-                images = listOf(
-                    AgentConversationCodec.PersistedImage(
-                        path = "/data/user/0/io.github.mangi.eta/cache/eta-chat-images/c1/a.jpg",
-                        mimeType = "image/jpeg",
-                        displayName = "chat-image-1.jpg",
-                    ),
-                ),
-            ),
-        )
-        assertEquals(
-            listOf("/data/user/0/io.github.mangi.eta/cache/eta-chat-images/c1/a.jpg"),
-            AgentConversationCodec.persistedImageSources(message),
-        )
-    }
-
-    @Test
     fun ipcTranscriptHasHardBudgetAndNeverStartsWithOrphanToolResult() {
         val messages = buildList {
-            repeat(30) { index ->
+            repeat(20) { index ->
                 add(
                     AgentModelClient.ConversationMessage(
                         role = "assistant",
-                        content = "回答-$index-${"x".repeat(40_000)}",
+                        content = "回答-$index-${"x".repeat(20_000)}",
                     )
                 )
                 add(
                     AgentModelClient.ConversationMessage(
                         role = "tool",
                         toolCallId = "call-$index",
-                        content = "结果-${"y".repeat(40_000)}",
+                        content = "结果-${"y".repeat(20_000)}",
                     )
                 )
             }
             add(AgentModelClient.ConversationMessage(role = "assistant", content = "最终答案"))
         }
 
-        val encoded = AgentConversationCodec.encodeTranscriptForIpc(messages)
+        val encoded = AgentLegacyConversationProjection.encode(messages, AgentLegacyConversationProjection.DIRECT_CHARS)
         val decoded = AgentConversationCodec.decodeTranscript(encoded)
 
-        assertTrue(encoded.length <= AgentConversationCodec.MAX_IPC_TRANSCRIPT_CHARS)
+        assertTrue(encoded.length <= AgentLegacyConversationProjection.DIRECT_CHARS)
         assertTrue(decoded.isNotEmpty())
         assertFalse(decoded.first().role == "tool")
         assertTrue(decoded.first().content.contains("容量上限已压缩"))
@@ -156,33 +88,13 @@ class AgentConversationCodecTest {
     }
 
     @Test
-    fun transferTranscriptKeepsHistoryThatWouldBeCutAtTheBinderLimit() {
+    fun conversationCheckpointPreservesEveryMessageBeyondLegacyBudget() {
         val messages = buildList {
-            repeat(40) { index ->
-                add(AgentModelClient.ConversationMessage(role = "user", content = "问-$index"))
-                add(AgentModelClient.ConversationMessage(
-                    role = "assistant",
-                    content = "答-$index-${"x".repeat(40_000)}",
-                    turnId = "turn-$index",
-                ))
-            }
-        }
-        val encoded = AgentConversationCodec.encodeTranscriptForTransfer(messages)
-        val decoded = AgentConversationCodec.decodeTranscript(encoded)
-        assertTrue(encoded.length > AgentConversationCodec.MAX_IPC_TRANSCRIPT_CHARS)
-        assertEquals(messages.size, decoded.size)
-        assertEquals(messages.first().content, decoded.first().content)
-        assertFalse(decoded.first().content.contains("容量上限已压缩"))
-    }
-
-    @Test
-    fun conversationCheckpointHasHardBudgetAndKeepsNewestContext() {
-        val messages = buildList {
-            repeat(30) { index ->
+            repeat(20) { index ->
                 add(
                     AgentModelClient.ConversationMessage(
                         role = "assistant",
-                        content = "回答-$index-${"x".repeat(50_000)}",
+                        content = "回答-$index-${"x".repeat(20_000)}",
                     )
                 )
             }
@@ -192,8 +104,8 @@ class AgentConversationCodecTest {
         val encoded = AgentConversationCodec.encodeConversationCheckpoint(messages)
         val decoded = AgentConversationCodec.decodeTranscript(encoded)
 
-        assertTrue(encoded.length <= AgentConversationCodec.MAX_CONVERSATION_CHECKPOINT_CHARS)
-        assertTrue(decoded.first().content.contains("容量上限已压缩"))
+        assertTrue(encoded.length > 96_000)
+        assertEquals(messages, decoded)
         assertEquals("继续处理最新任务", decoded.last().content)
     }
 
@@ -215,25 +127,5 @@ class AgentConversationCodecTest {
         val encoded = AgentConversationCodec.encodeTranscriptForStorage(listOf(stable))
         assertFalse(encoded.contains("opaque-secret"))
         assertFalse(encoded.contains("_eta_responses_output_items"))
-    }
-
-    @Test
-    fun durableUserAttachmentKeepsVideoFilePathWithoutBase64() {
-        val message = AgentConversationCodec.durableMessage(
-            AgentConversationCodec.userPersistedImageMessage(
-                text = "看这段视频",
-                images = listOf(
-                    AgentConversationCodec.PersistedImage(
-                        path = "/data/user/0/io.github.mangi.eta/cache/eta-chat-images/c1/a.mp4",
-                        mimeType = "video/mp4",
-                        displayName = "chat-video-1.mp4",
-                    ),
-                ),
-            )
-        )
-        assertTrue(message.contentJson.contains("video_file"))
-        assertTrue(message.contentJson.contains("/data/user/0/io.github.mangi.eta/cache/eta-chat-images/c1/a.mp4"))
-        assertFalse(message.contentJson.contains("base64"))
-        assertFalse(message.contentJson.contains("未写入持久会话"))
     }
 }

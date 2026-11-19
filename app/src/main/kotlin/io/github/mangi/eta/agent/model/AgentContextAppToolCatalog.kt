@@ -6,10 +6,6 @@ import org.json.JSONObject
 /** 上下文、应用入口与屏幕观察工具 schema。 */
 internal object AgentContextAppToolCatalog {
     fun appendTo(tools: JSONArray) {
-        for ((name,description) in listOf(
-            "start_virtual_session" to "启动本次后台副屏会话，重复调用不重复创建；失败不会回退主屏。",
-            "finish_virtual_session" to "移交已标记的交付任务到主屏后台。未标记交付任务时会清理本次中间任务并关闭副屏、不交付（handedOff=false, released=true）。必须检查 handedOff 和 released；失败时不杀进程，不声称交付成功。"
-        )) tools.put(AgentToolSchema.function(name=name,description=description,parameters=JSONObject().put("type","object").put("properties",JSONObject())))
         tools
             .put(
                 AgentToolSchema.function(
@@ -54,7 +50,7 @@ internal object AgentContextAppToolCatalog {
             .put(
                 AgentToolSchema.function(
                     name = "launch_app",
-                    description = "启动一个已安装 Android 应用。优先提供 package_name；只有应用名时允许模糊匹配，匹配多个会返回候选而不会启动。本次副屏已经打开的应用会切回原任务（reused=true）。已解析目标为代鱼自身（io.github.mangi.eta）时直接主屏前台打开，不触发ASK；后续自身GUI也是自身前台片段，不改变其它应用的ASK/后台偏好。不要为自身启动副屏或询问执行位置。",
+                    description = "启动一个已安装 Android 应用。优先提供 package_name；只有应用名时允许模糊匹配，匹配多个会返回候选而不会启动。ok=true 表示启动请求已提交；launch_status=window_observed 才表示已在目标画布观察到应用窗口，unconfirmed 时先 observe_screen 确认，不要直接重复启动。",
                     parameters = JSONObject()
                         .put("type", "object")
                         .put(
@@ -73,14 +69,14 @@ internal object AgentContextAppToolCatalog {
                                         .put("description", "应用显示名，例如 QQ")
                                 )
                                 .put(
-                                    "takeover",
+                                    "display",
                                     JSONObject()
-                                        .put("type", "boolean")
+                                        .put("type", "string")
+                                        .put("enum", JSONArray().put("auto").put("virtual").put("main"))
+                                        .put("default", "auto")
                                         .put(
                                             "description",
-                                            "仅副屏任务使用：目标应用已在主屏打开时，把它搬到副屏接管" +
-                                                "（不杀进程、不重置界面，收尾自动还回主屏）。" +
-                                                "只有在用户同意「接管」后才传 true。"
+                                            "启动目标画布：auto（默认，跨应用任务优先在后台虚拟屏执行，不打断用户当前主屏）、virtual（显式在后台虚拟屏启动）、main（显式在物理主屏前台打开）。"
                                         )
                                 )
                         )
@@ -88,37 +84,21 @@ internal object AgentContextAppToolCatalog {
             )
             .put(
                 AgentToolSchema.function(
-                    name = "inspect_virtual_backend",
-                    description = "用当前应用内的探针进行 Root 只读后端检查，不启动副屏。查询成功不等于授权；mutations_enabled 与 session_authenticated 恒为 false，不迁移、恢复或关闭应用。",
-                    parameters = JSONObject()
-                        .put("type", "object")
-                        .put("properties", JSONObject())
-                )
-            )
-            .put(
-                AgentToolSchema.function(
-                    name = "keep_virtual_result",
-                    description = "标记本次副屏会话要交付的任务。优先 task_ids；也可按本次已启动包名选择。这里只标记，必须再调用 finish_virtual_session 验证迁移及关闭。",
+                    name = "present_to_user",
+                    description = "将后台虚拟屏中已经准备就绪的应用画面无缝放大并移交到物理主屏前台，供用户直接查看、完成验证或确认付款。当任务在虚拟屏内已完成前置操作、到达收银台/二维码/结果页，或遇到安全窗口需要用户本人操作时调用。",
                     parameters = JSONObject()
                         .put("type", "object")
                         .put(
                             "properties",
                             JSONObject()
-                                .put("task_ids", JSONObject().put("type","array").put("items",JSONObject().put("type","integer")).put("description","本次启动工具返回的精确任务编号"))
                                 .put(
-                                    "package_name",
+                                    "reason",
                                     JSONObject()
                                         .put("type", "string")
-                                        .put("description", "一个最终应用的精确包名")
-                                )
-                                .put(
-                                    "packages",
-                                    JSONObject()
-                                        .put("type", "array")
-                                        .put("items", JSONObject().put("type", "string"))
-                                        .put("description", "多个最终应用的精确包名")
+                                        .put("description", "可选，向用户呈现画面的简短原因，例如“已到达支付确认页”")
                                 )
                         )
+                        .put("additionalProperties", false),
                 )
             )
             .put(
@@ -143,7 +123,7 @@ internal object AgentContextAppToolCatalog {
             .put(
                 AgentToolSchema.function(
                     name = "observe_screen",
-                    description = "观察当前手机屏幕，默认只返回前台应用、屏幕尺寸、observation_id 与可见 UI 节点，不附截图。节点为空、目标无法唯一识别、界面以 Canvas/地图/图片/二维码等视觉内容为主，或任务依赖颜色、图像、空间布局时，显式设置 include_screenshot=true；补截图时保持 include_ui_tree=true，以同一次新观察刷新节点和 observation_id，禁止把新截图与旧节点混用。节点动作必须原样携带同一次观察的 observation_id；树被截断但节点语义仍有效时，优先把 max_nodes 提高到 120 后重试，不要仅因截断请求截图。",
+                    description = "取得手机操作权并观察当前屏幕；其他会话占用时由 Runtime 等待。默认只返回前台应用、屏幕尺寸、observation_id 与可见 UI 节点，不附截图。节点为空、目标无法唯一识别、界面以 Canvas/地图/图片/二维码等视觉内容为主，或任务依赖颜色、图像、空间布局时，显式设置 include_screenshot=true；补截图时保持 include_ui_tree=true，以同一次新观察刷新节点和 observation_id，禁止把新截图与旧节点混用。节点动作必须原样携带同一次观察的 observation_id；树被截断但节点语义仍有效时，优先把 max_nodes 提高到 120 后重试。手机操作阶段完成后调用 release_gui，让其他会话继续；释放或用户接管后必须重新观察才能操作。",
                     parameters = JSONObject()
                         .put("type", "object")
                         .put(
@@ -177,43 +157,12 @@ internal object AgentContextAppToolCatalog {
             )
             .put(
                 AgentToolSchema.function(
-                    name = "get_assistant_config",
-                    description = "获取YUNKe自身当前的运行状态、模型配置与功能开关（已自动进行脱敏保护）。当用户询问当前使用的是什么模型、中转站/服务商、思考模式开关或自身设置时调用此工具直接静默读取，严禁操控屏幕去设置界面翻找。",
+                    name = "release_gui",
+                    description = "结束当前手机操作阶段并释放操作权，让其他会话使用手机。纯思考、网页、Shell 或文件工作不需要继续占用手机。释放后旧观察、节点与坐标全部失效；再次操作前先 observe_screen。没有持有操作权时调用也会成功。",
                     parameters = JSONObject()
                         .put("type", "object")
                         .put("properties", JSONObject())
-                )
-            )
-            .put(
-                AgentToolSchema.function(
-                    name = "update_assistant_config",
-                    description = "安全修改YUNKe自身的部分运行设置或切换已配置的模型/服务商。仅支持白名单受控项，严禁传入敏感 API Key/Token 明文。",
-                    parameters = JSONObject()
-                        .put("type", "object")
-                        .put(
-                            "properties",
-                            JSONObject()
-                                .put(
-                                    "action",
-                                    JSONObject()
-                                        .put("type", "string")
-                                        .put("enum", JSONArray().put("switch_model").put("switch_provider").put("toggle_setting").put("toggle_tool"))
-                                        .put("description", "修改动作类型：switch_model（切换模型）、switch_provider（切换服务商）、toggle_setting（切换开关）")
-                                )
-                                .put(
-                                    "target",
-                                    JSONObject()
-                                        .put("type", "string")
-                                        .put("description", "目标标识：若为 switch_model 则传入 model_id 或模型名称；若为 switch_provider 则传入 provider_id 或服务商名称；若为 toggle_setting 则传入开关名称（如 thinking_mode, terminal_tools, browser_tools, device_direct_tools, device_sensitive_read_tools, device_sensitive_action_tools；toggle_tool 时传入工具名）")
-                                )
-                                .put(
-                                    "value",
-                                    JSONObject()
-                                        .put("type", "string")
-                                        .put("description", "开关设置的新值，例如 \"true\" 或 \"false\"（仅 toggle_setting 时需要）")
-                                )
-                        )
-                        .put("required", JSONArray().put("action").put("target"))
+                        .put("additionalProperties", false),
                 )
             )
     }

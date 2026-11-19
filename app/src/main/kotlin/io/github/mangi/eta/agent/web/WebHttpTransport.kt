@@ -183,7 +183,7 @@ internal class WebHttpTransport(baseClient: OkHttpClient) : Closeable {
             }
         }
 
-        internal fun validateHeader(name: String, value: String) {
+        private fun validateHeader(name: String, value: String) {
             if (name.length > 128 || value.length > 4096 ||
                 name.any { it.isISOControl() || it == ':' || it.isWhitespace() } ||
                 value.any { it == '\r' || it == '\n' || it == '\u0000' }

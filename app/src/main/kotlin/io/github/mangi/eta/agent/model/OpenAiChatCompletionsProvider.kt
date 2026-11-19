@@ -5,6 +5,7 @@ import io.github.mangi.eta.agent.runtime.AgentTokenUsage
 import io.github.mangi.eta.data.model.OpenAiEndpointMode
 import io.github.mangi.eta.data.model.ProviderSourceTypes
 import io.github.mangi.eta.data.provider.ProviderSourceRegistry
+import java.util.UUID
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -13,7 +14,11 @@ import org.json.JSONObject
 
 internal object OpenAiChatCompletionsProvider : AgentProviderClient {
     private const val MAX_ERROR_CHARS = 600
-    private val JSON_MEDIA_TYPE = "application/json".toMediaType()
+    private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+    private val COMPACTION_FORBIDDEN_FIELDS = setOf(
+        "model", "stream", "messages", "input", "instructions", "system",
+        "system_instruction", "tools", "tool_choice", "stream_options",
+    )
 
     override val id: String = "openai_chat_completions"
 
@@ -33,26 +38,42 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
         runController: AgentRunController,
         onEvent: (ProviderEvent) -> Unit
     ): ProviderResponse {
-        val config = request.config
+        val config = request.effectiveConfig
         require(config.openAiEndpointMode == OpenAiEndpointMode.CHAT_COMPLETIONS) {
-            "Responses API 已预留配置位，但当前运行时仅支持 Chat Completions"
+            "当前 Provider 未配置为 Chat Completions API"
         }
         val url = ProviderUrls.openAiChatCompletionsUrl(config.baseUrl)
         val headers = okhttp3.Headers.Builder()
-            .add("Content-Type", "application/json")
+            .add("Content-Type", "application/json; charset=utf-8")
             .add("Accept", "text/event-stream")
             .apply {
                 if (config.apiKey.isNotBlank()) {
                     add("Authorization", "Bearer ${config.apiKey}")
                 }
             }
-            .also { ProviderRequestHeaders.mergeInto(it, config.baseUrl, config.customHeaders, request.sessionId) }
+            .also {
+                ProviderRequestHeaders.mergeInto(
+                    it, config.baseUrl, config.customHeaders, request.sessionId, config.authMode, config.model,
+                )
+            }
             .build()
 
-        val requestJson = request.restrictReconnectPayload(buildRequestJson(config, request.messages, request.tools), capabilities.endpoint)
-        val serializedBody = requestJson.toString()
-        val requestBody = serializedBody
-            .toRequestBody(JSON_MEDIA_TYPE)
+        val requestJson = buildRequestJson(config, request.messages, request.effectiveTools, request.purpose).apply {
+            if (request.purpose == ProviderRequestPurpose.COMPACTION) {
+                if (optJSONArray("tools")?.length()?.let { it > 0 } == true) {
+                    put("tool_choice", "none")
+                } else {
+                    remove("tools")
+                    remove("tool_choice")
+                }
+            } else if (!request.purpose.allowsTools) {
+                remove("tools")
+                remove("tool_choice")
+            }
+        }
+        val existingToolCallIds = ChatToolCallHistory.referencedIds(request.messages) +
+            requestJson.optJSONArray("messages")?.let(ChatToolCallHistory::referencedIds).orEmpty()
+        val requestBody = requestJson.toString().toRequestBody(JSON_MEDIA_TYPE)
 
         val httpRequest = Request.Builder()
             .url(url)
@@ -60,24 +81,32 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
             .post(requestBody)
             .build()
 
-        try {
-            runController.throwIfCancelled()
-            onEvent(ProviderEvent.RequestStarted)
-            AgentWireRequestEstimate.publish(requestJson, capabilities.endpoint, request, onEvent, requestBody.contentLength(), serializedBody)
-            val assistantMessage = readStreamingAssistantMessage(httpRequest, runController, onEvent, request.requiresCompleteStream)
+        runController.throwIfCancelled()
+        onEvent(ProviderEvent.RequestStarted)
+        return AuthorizedProviderHttp.execute(
+            client = AgentHttpClient.modelClient(request.purpose),
+            providerId = config.providerId,
+            authMode = config.authMode,
+            request = httpRequest,
+            controller = runController,
+        ) { response ->
+            onEvent(ProviderEvent.ResponseHeaders(response.code))
+            if (!response.isSuccessful) {
+                throw AgentModelFailure.http(response.code, response.peekBody(16_384).string())
+            }
+            val assistantMessage = readStreamingAssistantMessage(
+                response.body.byteStream(), runController, existingToolCallIds, onEvent,
+            )
             onEvent(ProviderEvent.Completed(assistantMessage.optString("finish_reason").ifBlank { null }))
-            return ProviderResponse(assistantMessage)
-        } catch (throwable: Throwable) {
-            runCatching { runController.throwIfCancelled() }
-                .getOrElse { interruption -> throw interruption }
-            throw throwable
+            ProviderResponse(assistantMessage)
         }
     }
 
     internal fun buildRequestJson(
         config: AgentModelClient.ModelConfig,
         messages: JSONArray,
-        tools: JSONArray
+        tools: JSONArray,
+        purpose: ProviderRequestPurpose = ProviderRequestPurpose.CHAT,
     ): JSONObject {
         val sourceType = ProviderSourceRegistry.resolve(
             providerId = config.providerId,
@@ -85,6 +114,27 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
             baseUrl = config.baseUrl,
             providerType = config.providerType,
         )
+        if (purpose == ProviderRequestPurpose.COMPACTION) {
+            return JSONObject().also { request ->
+                mergeExtraBody(request, config.extraBodyJson)
+                RequestBodyMerge.mergeCustomBody(request, config.customBody)
+                COMPACTION_FORBIDDEN_FIELDS.forEach(request::remove)
+                request.put("model", config.model)
+                request.put("stream", true)
+                request.put("messages", OpenAiRequestMessages.forChatCompletions(messages))
+                if (tools.length() > 0) {
+                    request.put("tools", tools)
+                    request.put("tool_choice", "none")
+                } else {
+                    request.remove("tools")
+                    request.remove("tool_choice")
+                }
+                if (sourceType != ProviderSourceTypes.OPENROUTER) {
+                    request.put("stream_options", JSONObject().put("include_usage", true))
+                }
+                ProviderReasoning.applyOpenAiCompatibleRequest(request, config)
+            }
+        }
         return JSONObject()
             .put("model", config.model)
             .put("stream", true)
@@ -97,24 +147,17 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
                 }
                 mergeExtraBody(request, config.extraBodyJson)
                 RequestBodyMerge.mergeCustomBody(request, config.customBody)
-                GptServiceTier.apply(request, config)
-                request.remove("eta_media_reasoning")
-                request.remove(ImageRequestParameters.CONFIG_KEY) // Local image settings never enter text protocols.
                 ProviderReasoning.applyOpenAiCompatibleRequest(request, config)
-                config.summaryOutputLimit?.let {
-                    request.put("max_tokens", it)
-                    request.remove("max_completion_tokens")
-                    if (tools.length() == 0) { request.remove("tools"); request.remove("tool_choice") }
-                }
             }
     }
 
     private fun readStreamingAssistantMessage(
-        request: Request,
+        stream: java.io.InputStream?,
         runController: AgentRunController,
-        onEvent: (ProviderEvent) -> Unit,
-        requireTerminal: Boolean,
+        existingToolCallIds: Set<String>,
+        onEvent: (ProviderEvent) -> Unit
     ): JSONObject {
+        if (stream == null) error("模型接口未返回响应流")
         val content = StringBuilder()
         val reasoningContent = StringBuilder()
         val toolCalls = linkedMapOf<Int, StreamingToolCall>()
@@ -154,170 +197,88 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
             onEvent(ProviderEvent.BlockDelta(kind, block.contentIndex, delta))
         }
 
-        fun consumeFrame(payload: String) {
-                sawStreamData = true
-                val chunk = JSONObject(payload)
-                // Some gateways put billable usage on the same SSE frame as an error.
-                // Capture it before propagating the error so a completed/failed request
-                // cannot disappear from the local ledger.
-                parseUsage(chunk)?.let { parsedUsage ->
-                    usage = parsedUsage
-                    onEvent(ProviderEvent.Usage(parsedUsage))
+        readProviderSse(stream, runController) { _, data ->
+            sawStreamData = true
+            val payload = data.trim()
+            if (payload == "[DONE]") {
+                sawDone = true
+                return@readProviderSse false
+            }
+            val chunk = JSONObject(payload)
+            throwStreamingErrorIfPresent(chunk)
+            parseUsage(chunk)?.let { parsedUsage ->
+                usage = parsedUsage
+                onEvent(ProviderEvent.Usage(parsedUsage))
+            }
+            val choices = chunk.optJSONArray("choices")
+            if (choices == null || choices.length() == 0) return@readProviderSse true
+            val choice = choices.optJSONObject(0) ?: return@readProviderSse true
+            val reason = choice.optString("finish_reason")
+            if (reason.isNotBlank() && reason != "null") {
+                finishReason = reason
+            }
+            if (reason == "error") {
+                error("模型接口 SSE 以 error 结束")
+            }
+            val delta = choice.optJSONObject("delta") ?: JSONObject()
+            val reasoningDelta = visibleReasoningDelta(delta)
+            if (reasoningDelta.isNotEmpty()) {
+                reasoningContent.append(reasoningDelta)
+                appendVisibleDelta(AssistantBlockKind.THINKING, reasoningDelta)
+            }
+            if (delta.has("content") && !delta.isNull("content")) {
+                val text = delta.optString("content")
+                if (text.isNotEmpty()) {
+                    content.append(text)
+                    appendVisibleDelta(AssistantBlockKind.TEXT, text)
                 }
-                throwStreamingErrorIfPresent(chunk)
-                val choices = chunk.optJSONArray("choices")
-                if (choices == null || choices.length() == 0) return
-                val choice = choices.optJSONObject(0) ?: return
-                val reason = choice.optString("finish_reason")
-                if (reason.isNotBlank() && reason != "null") {
-                    finishReason = reason
-                }
-                if (reason == "error") {
-                    error("模型接口 SSE 以 error 结束")
-                }
-                val delta = choice.optJSONObject("delta")
-                val snapshot = choice.optJSONObject("message")
-                if (delta == null && snapshot == null) return
-                fun appendReasoning(text: String, isSnapshot: Boolean = false) {
-                    if (text.isEmpty()) return
-                    // A real delta is never a cumulative snapshot. Deduplicating repeated deltas
-                    // hides degenerate generation from the request's repetition guard.
-                    if (!isSnapshot) {
-                        reasoningContent.append(text)
-                        appendVisibleDelta(AssistantBlockKind.THINKING, text)
-                        return
-                    }
-                    val already = reasoningContent.toString()
-                    when {
-                        already.isEmpty() -> {
-                            reasoningContent.append(text)
-                            appendVisibleDelta(AssistantBlockKind.THINKING, text)
-                        }
-                        text == already || already.startsWith(text) -> Unit
-                        text.startsWith(already) -> {
-                            val suffix = text.substring(already.length)
-                            if (suffix.isNotEmpty()) {
-                                reasoningContent.append(suffix)
-                                appendVisibleDelta(AssistantBlockKind.THINKING, suffix)
-                            }
-                        }
-                        else -> {
-                            reasoningContent.append(text)
-                            appendVisibleDelta(AssistantBlockKind.THINKING, text)
-                        }
-                    }
-                }
-                if (delta != null) {
-                    appendReasoning(delta.optReasoningContent())
-                    if (delta.has("content") && !delta.isNull("content")) {
-                        val text = delta.optString("content")
-                        if (text.isNotEmpty()) {
-                            content.append(text)
-                            appendVisibleDelta(AssistantBlockKind.TEXT, text)
-                        }
-                    }
-                }
-                if (snapshot != null) {
-                    appendReasoning(snapshot.optReasoningContent(), isSnapshot = true)
-                    if (content.isEmpty() && snapshot.has("content") && !snapshot.isNull("content")) {
-                        val text = snapshot.optString("content")
-                        if (text.isNotEmpty()) {
-                            content.append(text)
-                            appendVisibleDelta(AssistantBlockKind.TEXT, text)
-                        }
-                    }
-                }
-                val incomingToolCalls = delta?.optJSONArray("tool_calls")?.takeIf { it.length() > 0 }
-                    ?: snapshot?.optJSONArray("tool_calls")?.takeIf { delta == null || toolCalls.isEmpty() }
-                    ?: return
-                if (incomingToolCalls.length() > 0) finishActiveVisibleBlock()
-                for (i in 0 until incomingToolCalls.length()) {
-                    val item = incomingToolCalls.optJSONObject(i) ?: continue
-                    val index = item.optInt("index", i)
-                    val call = toolCalls.getOrPut(index) {
-                        StreamingToolCall(
-                            index = index,
-                            contentIndex = nextContentIndex++,
-                        ).also { created ->
-                            onEvent(
-                                ProviderEvent.BlockStart(
-                                    kind = AssistantBlockKind.TOOL_CALL,
-                                    index = created.contentIndex,
-                                )
-                            )
-                        }
-                    }
-                    if (item.has("id") && !item.isNull("id")) call.id = item.optString("id")
-                    if (item.has("type") && !item.isNull("type")) call.type = item.optString("type").ifBlank { "function" }
-                    val function = item.optJSONObject("function")
-                    val nameDelta = function?.takeIf { it.has("name") && !it.isNull("name") }?.optString("name").orEmpty()
-                    val argsDelta = function?.takeIf { it.has("arguments") && !it.isNull("arguments") }?.optString("arguments").orEmpty()
-                    if (nameDelta.isNotEmpty()) call.name.append(nameDelta)
-                    if (argsDelta.isNotEmpty()) call.arguments.append(argsDelta)
-                    if (argsDelta.isNotEmpty()) {
+            }
+            val deltaToolCalls = delta.optJSONArray("tool_calls") ?: JSONArray()
+            if (deltaToolCalls.length() > 0) finishActiveVisibleBlock()
+            for (i in 0 until deltaToolCalls.length()) {
+                val item = deltaToolCalls.optJSONObject(i) ?: continue
+                val index = item.optInt("index", i)
+                val call = toolCalls.getOrPut(index) {
+                    StreamingToolCall(
+                        index = index,
+                        contentIndex = nextContentIndex++,
+                    ).also { created ->
                         onEvent(
-                            ProviderEvent.BlockDelta(
+                            ProviderEvent.BlockStart(
                                 kind = AssistantBlockKind.TOOL_CALL,
-                                index = call.contentIndex,
-                                delta = argsDelta,
+                                index = created.contentIndex,
                             )
                         )
                     }
                 }
-        }
-
-        AgentSseClient.collect(
-            request = request,
-            runController = runController,
-            onOpen = { code -> onEvent(ProviderEvent.ResponseHeaders(code)) },
-            onEvent = sseEvent@{ _, _, data ->
-                val payload = data.trim()
-                if (payload.isBlank()) return@sseEvent
-                if (payload == "[DONE]") {
-                    sawStreamData = true
-                    sawDone = true
-                    finish()
-                } else consumeFrame(payload)
-            },
-            onJson = { payload ->
-                val json = AgentResponseFormat.parseJsonObject(payload)
-                if (json.has("error") && !json.isNull("error") && json.optJSONObject("error") == null) {
-                    throw AgentModelFailure.stream(JSONObject(), "模型接口 JSON 返回错误")
+                if (item.has("id") && !item.isNull("id")) {
+                    item.optString("id").takeIf(String::isNotBlank)?.let { call.id = it }
                 }
-                if (json.optJSONObject("error") == null && json.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message") == null) {
-                    throw AgentModelFailure.unexpectedResponse(200, "application/json", "")
+                if (item.has("type") && !item.isNull("type")) call.type = item.optString("type").ifBlank { "function" }
+                val function = item.optJSONObject("function")
+                val nameDelta = function?.takeIf { it.has("name") && !it.isNull("name") }?.optString("name").orEmpty()
+                val argsDelta = function?.takeIf { it.has("arguments") && !it.isNull("arguments") }?.optString("arguments").orEmpty()
+                if (nameDelta.isNotEmpty()) call.name.append(nameDelta)
+                if (argsDelta.isNotEmpty()) call.arguments.append(argsDelta)
+                if (argsDelta.isNotEmpty()) {
+                    onEvent(
+                        ProviderEvent.BlockDelta(
+                            kind = AssistantBlockKind.TOOL_CALL,
+                            index = call.contentIndex,
+                            delta = argsDelta,
+                        )
+                    )
                 }
-                consumeFrame(payload)
-                // A complete JSON message is terminal evidence, not an unfinished SSE tool delta.
-                sawDone = true
-            },
-            shouldIgnoreFailure = {
-                (!requireTerminal || sawDone || !finishReason.isNullOrBlank()) &&
-                    recoveredFinishReason(finishReason, content, reasoningContent, toolCalls) != null
-            },
-        )
-
-        // A name (or even parseable JSON) is not proof that the model finished its arguments.
-        if (finishReason.isNullOrBlank() && (runController.hasPendingSteering || runController.hasPausedInterrupt)) {
-            finishActiveVisibleBlock()
-            return interruptedAssistantMessage(content.toString(), reasoningContent.toString())
-        }
-
-        if (requireTerminal && !sawDone && finishReason.isNullOrBlank()) {
-            throw AgentModelFailure.incompleteStream("模型响应尚未完成，连接已中断；保留正文并按重连策略继续请求。")
+            }
+            if (finishReason != null) finishActiveVisibleBlock()
+            true
         }
 
         if (!sawStreamData) throw AgentModelFailure.incompleteStream("模型接口未返回 SSE data chunk")
-        if (finishReason.isNullOrBlank() && toolCalls.isNotEmpty() && !sawDone) {
-            throw AgentModelFailure.incompleteStream("工具调用缺少完整结束标记，未执行")
-        }
-        val recoveredReason = recoveredFinishReason(finishReason, content, reasoningContent, toolCalls)
-        if (recoveredReason == null) {
-            throw AgentModelFailure.incompleteStream("模型接口 SSE 流未正常结束")
-        }
-        finishReason = recoveredReason
+        if (!sawDone && finishReason == null) throw AgentModelFailure.incompleteStream("模型接口 SSE 流未正常结束")
 
         finishActiveVisibleBlock()
+        resolveToolCallIds(toolCalls.values, existingToolCallIds)
         toolCalls.values.sortedBy { it.contentIndex }.forEach { call ->
             onEvent(
                 ProviderEvent.BlockEnd(
@@ -343,8 +304,8 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
                     message.put(
                         "tool_calls",
                         JSONArray().also { array ->
-                            toolCalls.values.sortedBy { it.index }.forEachIndexed { position, call ->
-                                array.put(call.toJson(position))
+                            toolCalls.values.sortedBy { it.index }.forEach { call ->
+                                array.put(call.toJson())
                             }
                         }
                     )
@@ -352,22 +313,25 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
             }
     }
 
-    private fun recoveredFinishReason(
-        finishReason: String?,
-        content: StringBuilder,
-        reasoningContent: StringBuilder,
-        toolCalls: Map<Int, StreamingToolCall>,
-    ): String? {
-        if (!finishReason.isNullOrBlank()) return finishReason
-        if (toolCalls.isNotEmpty()) {
-            val complete = toolCalls.values.all { call ->
-                call.name.toString().isNotBlank() &&
-                    runCatching { JSONObject(call.arguments.toString()) }.isSuccess
-            }
-            return if (complete) "tool_calls" else null
+    private fun resolveToolCallIds(calls: Collection<StreamingToolCall>, existingIds: Set<String>) {
+        if (calls.isEmpty()) return
+        val reservedIds = existingIds.toMutableSet().apply {
+            calls.mapNotNullTo(this) { it.id }
         }
-        if (content.isNotBlank() || reasoningContent.isNotBlank()) return "stop"
-        return null
+        val assignedIds = existingIds.toMutableSet()
+        val prefix = "call_eta_${UUID.randomUUID().toString().replace("-", "")}_"
+        var nextId = 0
+        // 先保留所有服务端 ID，再统一补齐；结束事件和历史必须使用同一个已定稿 ID。
+        calls.sortedBy { it.index }.forEach { call ->
+            if (call.id?.let(assignedIds::add) != true) {
+                var generated: String
+                do {
+                    generated = "$prefix${nextId++}"
+                } while (!reservedIds.add(generated))
+                call.id = generated
+                assignedIds += generated
+            }
+        }
     }
 
     private data class StreamingToolCall(
@@ -378,10 +342,10 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
         val name: StringBuilder = StringBuilder(),
         val arguments: StringBuilder = StringBuilder()
     ) {
-        fun toJson(position: Int): JSONObject {
+        fun toJson(): JSONObject {
             val functionName = name.toString().trim()
             return JSONObject()
-                .put("id", id ?: "tool_call_$position")
+                .put("id", requireNotNull(id))
                 .put("type", type.ifBlank { "function" })
                 .put(
                     "function",
@@ -397,6 +361,25 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
         val contentIndex: Int,
         val content: StringBuilder = StringBuilder(),
     )
+
+    private fun visibleReasoningDelta(delta: JSONObject): String {
+        // 同一分片的纯文本与结构化字段可重复携带相同思考，只消费一种表示。
+        for (key in listOf("reasoning_content", "reasoning")) {
+            (delta.opt(key) as? String)?.takeIf { it.isNotEmpty() }?.let { return it }
+        }
+        val details = delta.optJSONArray("reasoning_details") ?: return ""
+        return buildString {
+            for (index in 0 until details.length()) {
+                val detail = details.optJSONObject(index) ?: continue
+                val key = when (detail.optString("type")) {
+                    "reasoning.text" -> "text"
+                    "reasoning.summary" -> "summary"
+                    else -> continue
+                }
+                (detail.opt(key) as? String)?.let(::append)
+            }
+        }
+    }
 
     private fun mergeExtraBody(request: JSONObject, extraBodyJson: String) {
         if (extraBodyJson.isBlank()) return
@@ -427,29 +410,34 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
         )
     }
 
-    private fun parseUsage(chunk: JSONObject): AgentTokenUsage? =
-        parseUsageObject(chunk.optJSONObject("usage"))
-            ?: parseUsageObject(chunk.optJSONObject("response")?.optJSONObject("usage"))
-
-    private fun parseUsageObject(usage: JSONObject?): AgentTokenUsage? {
-        usage ?: return null
+    private fun parseUsage(chunk: JSONObject): AgentTokenUsage? {
+        val usage = chunk.optJSONObject("usage") ?: return null
+        val cacheMiss = usage.firstInt("prompt_cache_miss_tokens")
+        val explicitCached = usage.firstNestedInt(
+            "prompt_tokens_details",
+            childKey = "cached_tokens"
+        ) ?: usage.firstInt("cache_read_input_tokens", "prompt_cache_hit_tokens", "cached_tokens")
+        val rawInput = usage.firstInt("prompt_tokens", "input_tokens")
+            ?: if (explicitCached != null && cacheMiss != null) explicitCached + cacheMiss else null
+        val resolvedCached = explicitCached
+            ?: if (rawInput != null && cacheMiss != null) (rawInput - cacheMiss).coerceAtLeast(0) else null
+        val cacheWrite = usage.firstNestedInt(
+            "prompt_tokens_details",
+            childKey = "cache_write_tokens",
+        ) ?: usage.firstInt("cache_creation_input_tokens", "cache_write_tokens")
         return AgentTokenUsage(
             contextTokens = usage.firstInt("total_tokens"),
-            inputTokens = usage.firstInt("prompt_tokens", "input_tokens"),
+            inputTokens = rawInput,
             outputTokens = usage.firstInt("completion_tokens", "output_tokens"),
             reasoningTokens = usage.firstNestedInt(
                 "completion_tokens_details",
                 "output_tokens_details",
                 childKey = "reasoning_tokens"
             ),
-            cachedTokens = usage.firstNestedInt(
-                "prompt_tokens_details",
-                "input_tokens_details",
-                childKey = "cached_tokens"
-            ) ?: usage.firstInt("cache_read_input_tokens"),
-            // OpenAI-compatible gateways report cache writes separately from reads.
-            // prompt_tokens already includes both, so this stays a subset.
-            cacheCreationTokens = usage.cacheCreationTokens(),
+            // 兼容端点各用各的字段：OpenAI 嵌套在 prompt_tokens_details，DeepSeek 为 prompt_cache_hit_tokens / prompt_cache_miss_tokens，
+            // 部分端点直接放在顶层 cached_tokens。
+            cachedTokens = resolvedCached,
+            cacheWriteTokens = cacheWrite,
         ).takeUnless { it.isEmpty }
     }
 
@@ -464,25 +452,6 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
         }
         return null
     }
-
-    private fun JSONObject.cacheCreationTokens(): Int? =
-        firstNestedInt(
-            "prompt_tokens_details",
-            "input_tokens_details",
-            childKey = "cache_creation_tokens",
-        ) ?: firstNestedInt(
-            "prompt_tokens_details",
-            "input_tokens_details",
-            childKey = "cache_creation_input_tokens",
-        ) ?: firstNestedInt(
-            "prompt_tokens_details",
-            "input_tokens_details",
-            childKey = "cache_write_tokens",
-        ) ?: firstInt(
-            "cache_creation_input_tokens",
-            "cache_creation_tokens",
-            "cache_write_input_tokens",
-        )
 
     private fun JSONObject.firstNestedInt(
         vararg parentKeys: String,
@@ -502,7 +471,7 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
             outputTokens?.let { json.put("output_tokens", it) }
             reasoningTokens?.let { json.put("reasoning_tokens", it) }
             cachedTokens?.let { json.put("cached_tokens", it) }
-            cacheCreationTokens?.let { json.put("cache_creation_tokens", it) }
+            cacheWriteTokens?.let { json.put("cache_write_tokens", it) }
         }
 
     private fun String.compactError(): String =

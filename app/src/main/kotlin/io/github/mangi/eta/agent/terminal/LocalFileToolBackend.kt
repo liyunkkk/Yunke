@@ -19,7 +19,6 @@ internal class LocalFileToolBackend(
     override val environment: String = "android",
     override val identity: String = "user",
     private val isCancelled: () -> Boolean = { false },
-    private val validatePath: (String) -> Unit = {},
 ) : FileToolBackend {
     private val workspace = workspace.canonicalFile
     private val home = home.canonicalFile
@@ -34,7 +33,6 @@ internal class LocalFileToolBackend(
             File(path).isAbsolute -> File(path)
             else -> File(workspace, path)
         }.canonicalFile
-        validatePath(candidate.path)
         return candidate.path
     }
 

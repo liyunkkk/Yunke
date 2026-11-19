@@ -11,16 +11,6 @@ class SettingsTest {
     }
 
     @Test
-    fun fileLoggingIsEnabledByDefault() {
-        assertEquals(true, Settings().fileLoggingEnabled)
-    }
-
-    @Test
-    fun errorReconnectStaysOffByDefault() {
-        assertEquals(ErrorReconnectPolicy.NONE, Settings().errorReconnectPolicy)
-    }
-
-    @Test
     fun appearanceUsesBackwardCompatibleDefaults() {
         assertEquals(AppearanceSettings(), Settings().appearance)
     }

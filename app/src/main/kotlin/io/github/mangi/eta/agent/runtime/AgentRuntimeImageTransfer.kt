@@ -7,9 +7,6 @@ import android.os.SystemClock
 import android.util.Base64
 import android.util.Base64InputStream
 import io.github.mangi.eta.agent.media.AgentImageCodec
-import io.github.mangi.eta.agent.media.AgentVideoCodec
-import io.github.mangi.eta.agent.media.MAX_AGENT_VIDEO_BYTES
-import io.github.mangi.eta.agent.media.isVideoMedia
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.core.AndroidAgentLogger
 import java.io.ByteArrayInputStream
@@ -30,22 +27,11 @@ import java.util.concurrent.atomic.AtomicBoolean
 internal object AgentRuntimeImageTransfer {
     private const val MAX_IMAGE_COUNT = 8
     private const val MAX_IMAGE_BYTES = 12 * 1024 * 1024
-    private const val MAX_VIDEO_BYTES = MAX_AGENT_VIDEO_BYTES
-    private const val MAX_TOTAL_MEDIA_BYTES = 48 * 1024 * 1024
+    private const val MAX_TOTAL_IMAGE_BYTES = 32 * 1024 * 1024
     private const val MAX_REMOTE_URL_CHARS = 16 * 1024
     private const val MAX_ENCODED_IMAGE_CHARS = MAX_IMAGE_BYTES * 2
     private const val CACHE_DIRECTORY = "agent-runtime-transfer"
     private const val STALE_FILE_AGE_MILLIS = 6 * 60 * 60 * 1_000L
-
-    private fun AgentModelClient.ModelImage.itemLimit(): Int =
-        if (isVideoMedia()) MAX_VIDEO_BYTES else MAX_IMAGE_BYTES
-
-    private fun sizeExceededMessage(maxBytes: Int, video: Boolean): String =
-        if (video) {
-            "单个视频不能超过 ${maxBytes / 1024 / 1024} MiB"
-        } else {
-            "单张图片不能超过 ${maxBytes / 1024 / 1024} MiB"
-        }
 
     class ImageTransferException(
         message: String,
@@ -92,13 +78,11 @@ internal object AgentRuntimeImageTransfer {
                     return@forEach
                 }
 
-                val itemLimit = image.itemLimit()
-                val video = image.isVideoMedia()
                 val directDescriptor = openDirectDescriptor(context, image.reference)
                 val directSize = directDescriptor?.statSize ?: -1L
-                if (directSize > itemLimit) {
+                if (directSize > MAX_IMAGE_BYTES) {
                     directDescriptor?.close()
-                    throw ImageTransferException(sizeExceededMessage(itemLimit, video))
+                    throw ImageTransferException("单张图片不能超过 ${MAX_IMAGE_BYTES / 1024 / 1024} MiB")
                 }
                 val descriptor: ParcelFileDescriptor
                 val imageBytes: Long
@@ -112,7 +96,7 @@ internal object AgentRuntimeImageTransfer {
                         "image-${UUID.randomUUID()}.bin",
                     )
                     files += transferFile
-                    copyReferenceToFile(context, image.reference, transferFile, itemLimit)
+                    copyReferenceToFile(context, image.reference, transferFile)
                     imageBytes = transferFile.length()
                     descriptor = ParcelFileDescriptor.open(
                         transferFile,
@@ -123,14 +107,14 @@ internal object AgentRuntimeImageTransfer {
                     descriptor.close()
                     throw ImageTransferException("图片内容为空")
                 }
-                if (imageBytes > itemLimit) {
+                if (imageBytes > MAX_IMAGE_BYTES) {
                     descriptor.close()
-                    throw ImageTransferException(sizeExceededMessage(itemLimit, video))
+                    throw ImageTransferException("单张图片不能超过 ${MAX_IMAGE_BYTES / 1024 / 1024} MiB")
                 }
                 totalBytes += imageBytes
-                if (totalBytes > MAX_TOTAL_MEDIA_BYTES) {
+                if (totalBytes > MAX_TOTAL_IMAGE_BYTES) {
                     descriptor.close()
-                    throw ImageTransferException("图片总大小不能超过 ${MAX_TOTAL_MEDIA_BYTES / 1024 / 1024} MiB")
+                    throw ImageTransferException("图片总大小不能超过 ${MAX_TOTAL_IMAGE_BYTES / 1024 / 1024} MiB")
                 }
                 wireImages += image.toWireImage(
                     fileDescriptor = descriptor,
@@ -157,43 +141,33 @@ internal object AgentRuntimeImageTransfer {
         val images = request.images.mapIndexed { index, image ->
             image.fileDescriptor?.let { descriptor ->
                 val startedAt = SystemClock.elapsedRealtime()
-                val video = AgentVideoCodec.isVideoMime(image.mimeType)
-                val itemLimit = if (video) MAX_VIDEO_BYTES else MAX_IMAGE_BYTES
                 val statSize = descriptor.statSize
                 if (statSize <= 0L) {
                     throw ImageTransferException("图片文件描述符无有效大小")
                 }
-                if (statSize > itemLimit) {
-                    throw ImageTransferException(sizeExceededMessage(itemLimit, video))
+                if (statSize > MAX_IMAGE_BYTES) {
+                    throw ImageTransferException("单张图片不能超过 ${MAX_IMAGE_BYTES / 1024 / 1024} MiB")
                 }
                 val bytes = ParcelFileDescriptor.AutoCloseInputStream(descriptor).use { input ->
-                    input.readBytesLimited(itemLimit)
+                    input.readBytesLimited(MAX_IMAGE_BYTES)
                 }
                 if (bytes.size.toLong() != statSize) {
                     throw ImageTransferException("图片传输不完整")
                 }
                 totalBytes += bytes.size
-                if (totalBytes > MAX_TOTAL_MEDIA_BYTES) {
-                    throw ImageTransferException("图片总大小不能超过 ${MAX_TOTAL_MEDIA_BYTES / 1024 / 1024} MiB")
+                if (totalBytes > MAX_TOTAL_IMAGE_BYTES) {
+                    throw ImageTransferException("图片总大小不能超过 ${MAX_TOTAL_IMAGE_BYTES / 1024 / 1024} MiB")
                 }
-                val materialized = if (video) {
-                    AgentVideoCodec.fromVideoBytes(
-                        bytes = bytes,
-                        mimeType = image.mimeType,
-                        source = image.source,
-                    )
+                val materialized = if (image.preserveOriginal) {
+                    AgentImageCodec.fromScreenBytes(bytes, image.source, image.mimeType)
                 } else {
-                    AgentImageCodec.fromAttachmentBytes(
-                        bytes = bytes,
-                        source = image.source,
-                        mimeHint = image.mimeType,
-                    )
+                    AgentImageCodec.fromAttachmentBytes(bytes, image.source, image.mimeType)
                 }
-                return@mapIndexed materialized.also { encoded ->
+                return@mapIndexed materialized.also {
                     AndroidAgentLogger.debug {
                         "Agent image action=materialize index=$index " +
-                            "input_bytes=${bytes.size} output_bytes=${encoded.bytes} " +
-                            "output=${encoded.width}x${encoded.height} " +
+                            "input_bytes=${bytes.size} output_bytes=${materialized.bytes} " +
+                            "output=${materialized.width}x${materialized.height} " +
                             "elapsed_ms=${SystemClock.elapsedRealtime() - startedAt}"
                     }
                 }
@@ -211,6 +185,7 @@ internal object AgentRuntimeImageTransfer {
                     width = image.width,
                     height = image.height,
                     source = image.source,
+                    preserveOriginal = image.preserveOriginal,
                 )
             }
             if (reference.length > MAX_ENCODED_IMAGE_CHARS) {
@@ -220,9 +195,10 @@ internal object AgentRuntimeImageTransfer {
                 context = null,
                 value = reference,
                 source = image.source,
+                preserveOriginal = image.preserveOriginal,
             ) ?: throw ImageTransferException("无法读取旧协议中的图片")
         }
-        request.request.copy(images = images)
+        request.materializeText().copy(images = images)
     }
 
     private fun AgentModelClient.ModelImage.toWireImage(
@@ -237,17 +213,16 @@ internal object AgentRuntimeImageTransfer {
         width = width,
         height = height,
         source = source,
+        preserveOriginal = preserveOriginal,
     )
 
     private fun copyReferenceToFile(
         context: Context,
         reference: String,
         outputFile: File,
-        maxBytes: Int,
     ) {
         val input = when {
-            reference.startsWith("data:image/", ignoreCase = true) ||
-                reference.startsWith("data:video/", ignoreCase = true) ->
+            reference.startsWith("data:image/", ignoreCase = true) ->
                 reference.openDataUrlStream()
 
             Uri.parse(reference).scheme in setOf("content", "file") ->
@@ -262,7 +237,7 @@ internal object AgentRuntimeImageTransfer {
         }
         input.use { source ->
             FileOutputStream(outputFile).use { target ->
-                source.copyToLimited(target, maxBytes)
+                source.copyToLimited(target, MAX_IMAGE_BYTES)
             }
         }
     }

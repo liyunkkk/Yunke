@@ -1,8 +1,0 @@
-<resources>
-    <string name="realtime_choose_voice">Choose realtime voice</string>
-    <string name="realtime_refresh_voices">Refresh official voice list</string>
-    <string name="realtime_refreshing">Refreshing…</string>
-    <string name="realtime_catalog_builtin">Built-in realtime voices; independent of read-aloud</string>
-    <string name="realtime_catalog_updated">Refreshed from the official public list; supported built-in voices only</string>
-    <string name="realtime_catalog_failed">Refresh failed; previous list retained</string>
-</resources>

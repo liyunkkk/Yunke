@@ -1,31 +1,19 @@
-import java.util.Properties
-
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.ksp)
-    id("eta.compose-semantics-cache")
 }
 
-val keystoreProperties = Properties().apply {
-    val file = rootProject.file("keystore.properties")
-    if (file.isFile) file.inputStream().use(::load)
-}
-
-fun signingValue(envName: String, propertyName: String): String? =
-    System.getenv(envName)?.takeIf { it.isNotBlank() }
-        ?: keystoreProperties.getProperty(propertyName)?.takeIf { it.isNotBlank() }
-
-val releaseStoreFile = signingValue("ETA_RELEASE_STORE_FILE", "storeFile")
-val releaseStorePassword = signingValue("ETA_RELEASE_STORE_PASSWORD", "storePassword")
-val releaseKeyAlias = signingValue("ETA_RELEASE_KEY_ALIAS", "keyAlias")
-val releaseKeyPassword = signingValue("ETA_RELEASE_KEY_PASSWORD", "keyPassword")
+val releaseStoreFile = System.getenv("ETA_RELEASE_STORE_FILE")
+val releaseStorePassword = System.getenv("ETA_RELEASE_STORE_PASSWORD")
+val releaseKeyAlias = System.getenv("ETA_RELEASE_KEY_ALIAS")
+val releaseKeyPassword = System.getenv("ETA_RELEASE_KEY_PASSWORD")
 val hasReleaseSigning = listOf(
     releaseStoreFile,
     releaseStorePassword,
     releaseKeyAlias,
-    releaseKeyPassword,
+    releaseKeyPassword
 ).all { !it.isNullOrBlank() }
 
 java {
@@ -34,50 +22,57 @@ java {
     }
 }
 
+// CI 对非发版构建传入提交号，按 SemVer 构建元数据追加为 +<sha>，不影响版本先后；本地与发版构建不传
+val buildMetadata = providers.gradleProperty("eta.buildMetadata").orNull?.takeIf { it.isNotBlank() }
+require(buildMetadata == null || buildMetadata.matches(Regex("[0-9A-Za-z.-]+"))) {
+    "eta.buildMetadata 只能包含字母、数字、点和连字符"
+}
+val buildMetadataSuffix = buildMetadata?.let { "+$it" }.orEmpty()
+
 android {
     namespace = "io.github.mangi.eta"
-    compileSdk = 37
+    compileSdk {
+        version = release(37) {
+            minorApiLevel = 2
+        }
+    }
     ndkVersion = libs.versions.ndk.get()
 
     defaultConfig {
-        applicationId = "io.github.mangi.eta"
-        minSdk = 34
-        targetSdk = 36
+        applicationId = "io.github.yunke.eta"
+        minSdk = 33
+        targetSdk = 37
         // versionCode 规则：yyyyMMdd + 两位当日序号（01 起），发版时随 versionName 一起手动递增。
-        versionCode = 2026101601
-        versionName = "5.4.2"
+        versionCode = 2026111302
+        versionName = "3.4.4"
+
         ndk {
-            abiFilters += listOf("arm64-v8a")
+            // 同时过滤本地与依赖 AAR 的原生库，确保 APK 仅包含 ARM64。
+            abiFilters += "arm64-v8a"
         }
-        val diagnosticSha = System.getenv("GITHUB_SHA")?.takeIf { it.matches(Regex("[0-9a-fA-F]{40}")) } ?: "unknown"
-        buildConfigField("String", "GIT_SHA", "\"$diagnosticSha\"")
     }
 
     signingConfigs {
         if (hasReleaseSigning) {
             create("release") {
                 storeFile = file(requireNotNull(releaseStoreFile))
-                storePassword = requireNotNull(releaseStorePassword)
-                keyAlias = requireNotNull(releaseKeyAlias)
-                keyPassword = requireNotNull(releaseKeyPassword)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
             }
         }
     }
 
     buildTypes {
         debug {
+            // 版本名带构建类型标记，设置页与 APK 文件名据此区分 Debug 包
+            versionNameSuffix = "-debug" + buildMetadataSuffix
             isMinifyEnabled = false
             isPseudoLocalesEnabled = true
-            if (hasReleaseSigning) {
-                signingConfig = signingConfigs.getByName("release")
-            }
         }
         release {
-            signingConfig = when {
-                System.getenv("ETA_DISABLE_RELEASE_SIGNING") == "true" -> signingConfigs.getByName("debug")
-                hasReleaseSigning -> signingConfigs.getByName("release")
-                else -> signingConfigs.getByName("debug")
-            }
+            versionNameSuffix = buildMetadataSuffix
+            signingConfig = signingConfigs.findByName("release")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
@@ -88,6 +83,7 @@ android {
     }
 
     compileOptions {
+        isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_25
         targetCompatibility = JavaVersion.VERSION_25
     }
@@ -102,6 +98,9 @@ android {
     }
 
     packaging {
+        dex {
+            useLegacyPackaging = true
+        }
         jniLibs {
             useLegacyPackaging = true
             keepDebugSymbols += setOf("**/libproot_exec.so", "**/libproot_loader.so", "**/libeta_pty.so")
@@ -119,52 +118,66 @@ android {
     lint {
         abortOnError = true
         checkReleaseBuilds = false
+        // versionCode 采用日期编码，已发布值只能递增；上限 2100000000 足够覆盖到 2099 年。
+        disable += "HighAppVersionCode"
     }
 
     testOptions {
         unitTests.isIncludeAndroidResources = true
-    }
-}
-
-// CI must identify the last started test even if the worker never finishes a report.
-if (providers.environmentVariable("GITHUB_ACTIONS").orNull == "true") {
-    tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
-        testLogging {
-            events("started", "passed", "skipped", "failed")
-            exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
-            showStandardStreams = false
+        // Robolectric 在高版本 JDK 下需要访问内部 API，参数只作用于测试 JVM。
+        unitTests.all {
+            it.jvmArgs(
+                "--add-opens=java.base/java.lang=ALL-UNNAMED",
+                "--add-opens=java.base/java.util=ALL-UNNAMED",
+                "--add-opens=java.base/java.io=ALL-UNNAMED",
+                "--add-opens=java.base/java.net=ALL-UNNAMED",
+                "--add-opens=java.base/java.security=ALL-UNNAMED",
+                "--add-opens=java.base/java.text=ALL-UNNAMED",
+                "--add-opens=java.base/jdk.internal.access=ALL-UNNAMED",
+                "--add-opens=java.desktop/java.awt.font=ALL-UNNAMED",
+                "--add-opens=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED",
+                "--enable-native-access=ALL-UNNAMED",
+            )
         }
     }
 }
 
-// Keep compiler function slices available in the signed release diagnostic capture.
-composeCompiler {
-    includeTraceMarkers = true
+androidComponents {
+    onVariants { variant ->
+        // 文件名只取 versionName：构建类型标记与 CI 构建元数据都由 versionNameSuffix 带出
+        variant.outputs.forEach { output ->
+            output.outputFileName.set(output.versionName.map { "Eta-v$it.apk" })
+        }
+    }
 }
 
 dependencies {
-    implementation("org.jsoup:jsoup:1.24.1")
+    coreLibraryDesugaring(libs.desugar.jdk.libs.nio)
+    implementation(libs.jsoup)
     implementation(libs.commons.compress)
     implementation(libs.xz)
     compileOnly(libs.libxposed.api)
     // UI 侧 RemotePreferences 写入桥：通过 XposedService 将配置提交到 LSPosed 数据库；
     // Hook 侧用 XposedInterface.getRemotePreferences 读取当前进程持有的配置缓存。
     implementation(libs.libxposed.service)
+    implementation(libs.dexkit)
+    implementation(libs.coui)
+    implementation(libs.coui.icons)
     implementation(libs.miuix.ui)
     implementation(libs.miuix.blur)
+    implementation(libs.miuix.glass)
+    implementation(libs.miuix.glass.icons)
+    implementation(libs.miuix.material)
     implementation(libs.miuix.nav)
     implementation(libs.miuix.preference)
     implementation(libs.material.icons.extended)
-    implementation(libs.mlkit.text.recognition)
-    implementation(libs.mlkit.text.recognition.chinese)
     implementation(libs.androidx.navigationevent)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.activity.compose)
-    implementation(libs.markdown.renderer)
-    implementation(libs.markdown.renderer.m3)
-    // markdown-renderer-m3 将 material3 作为 compileOnly，需显式引入以满足运行时依赖
-    implementation(libs.material3)
+    // 只使用 GFM 解析器；聊天渲染层由 ui/markdown 自建，按块冻结并接入逐字显现。
+    implementation(libs.intellij.markdown)
+    implementation(libs.ratex.android)
     implementation(libs.hidden.api.bypass)
 
     // DataStore：Provider / Model 结构化 JSON 与当前选中 ID 等键值
@@ -176,6 +189,7 @@ dependencies {
 
     // OkHttp：替代 HttpURLConnection，支持 SSE
     implementation(libs.okhttp)
+    implementation(libs.nimbus.jose.jwt)
     implementation(libs.okhttp.sse)
 
     // Kotlinx Serialization：Provider 设置与运行时配置 JSON
@@ -188,19 +202,4 @@ dependencies {
     testImplementation(libs.json)
     testImplementation(libs.room.testing)
     testImplementation(libs.robolectric)
-    // Match the Compose UI supplied by miuix 0.9.4-rc01; selection needs real gesture coverage.
-    testImplementation("androidx.compose.ui:ui-test-junit4:1.12.0-rc01")
-    debugImplementation("androidx.compose.ui:ui-test-manifest:1.12.0-rc01")
 }
-
-// Pin and verify the small JNI runtime; speech model is opt-in at runtime, never bundled.
-val speechJniDir = layout.buildDirectory.dir("generated/speech/jniLibs")
-val prepareSpeechRuntime by tasks.registering(Exec::class) {
-    inputs.file(rootProject.file("scripts/prepare-speech-runtime.py"))
-    outputs.dir(speechJniDir)
-    commandLine("python3", rootProject.file("scripts/prepare-speech-runtime.py").absolutePath,
-        speechJniDir.get().asFile.absolutePath)
-}
-android.sourceSets.getByName("main").jniLibs.srcDir(speechJniDir.get().asFile)
-tasks.named("preBuild").configure { dependsOn(prepareSpeechRuntime) }
-

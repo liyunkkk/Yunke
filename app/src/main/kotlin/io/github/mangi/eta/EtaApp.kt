@@ -1,21 +1,22 @@
 package io.github.mangi.eta
 
+import io.github.mangi.eta.agent.voice.SpeechOssUpload
 import android.app.Application
+import android.content.ComponentCallbacks2
 import android.os.Handler
 import android.os.Looper
 import io.github.mangi.eta.agent.skill.SkillRuntime
+import io.github.mangi.eta.agent.browser.BrowserSessionRegistry
 import io.github.mangi.eta.agent.device.RootAccess
 import io.github.mangi.eta.agent.terminal.TerminalRuntime
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.core.AndroidAgentLogger
-import io.github.mangi.eta.core.AppFileLogger
 import io.github.mangi.eta.core.safeLogType
 import io.github.mangi.eta.data.datastore.SettingsDataStore
 import io.github.mangi.eta.data.repository.AgentMemoryRepository
 import io.github.mangi.eta.data.repository.AppearanceSettingsRepository
 import io.github.mangi.eta.data.repository.McpServerRepository
 import io.github.mangi.eta.data.repository.LinuxEnvironmentSettingsRepository
-import io.github.mangi.eta.data.repository.AssistantRepository
 import io.github.mangi.eta.data.repository.ProviderRepository
 import io.github.mangi.eta.ui.app.PredictiveBackController
 import io.github.libxposed.service.XposedService
@@ -38,27 +39,6 @@ import kotlinx.coroutines.runBlocking
 class EtaApp : Application(), XposedServiceHelper.OnServiceListener {
 
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val subAgentConfigurationLifecycle by lazy {
-        val store = io.github.mangi.eta.agent.delegation.ConversationSubAgentPreferences()
-        SubAgentConfigurationResetLifecycle(
-            beginMaintenance = { io.github.mangi.eta.agent.runtime.AgentExecutionService.beginBackupMaintenance() },
-            recoverInterruptedRestoreBeforeWork = {
-                io.github.mangi.eta.data.repository.EtaBackupRepository.recoverInterruptedImport(
-                    this@EtaApp, maintenanceAlreadyHeld = true,
-                )
-            },
-            recoverConfigurationDurability = { store.recoverDurability() },
-            resetLegacyConfigurationOnce = { store.resetLegacyConfigurationOnce() },
-            isConfigurationResetComplete = { store.isConfigurationResetComplete() },
-            endMaintenance = { io.github.mangi.eta.agent.runtime.AgentExecutionService.endBackupMaintenance() },
-        )
-    }
-
-    /** Explicit retry after a failed startup gate; never resets a child process or a live app on demand. */
-    internal suspend fun initializeSubAgentConfigurationBeforeWork(): Boolean =
-        subAgentConfigurationLifecycle.initializeBeforeWork(
-            AppProcessPolicy.shouldInitializeFullRuntime(Application.getProcessName(), packageName),
-        )
 
     interface ServiceStateListener {
         fun onServiceStateChanged(service: XposedService?)
@@ -67,50 +47,29 @@ class EtaApp : Application(), XposedServiceHelper.OnServiceListener {
     override fun onCreate() {
         super.onCreate()
         Prefs.initLocal(this)
-        io.github.mangi.eta.ui.haptics.AppForeground.install(this)
         if (!AppProcessPolicy.shouldInitializeFullRuntime(Application.getProcessName(), packageName)) {
             return
         }
         TerminalRuntime.initialize(this)
         RootAccess.initialize(this)
+        applicationScope.launch { TerminalRuntime.backgroundJobs(this@EtaApp).resume() }
         SettingsDataStore.init(this)
-        runBlocking(Dispatchers.IO) {
-            io.github.mangi.eta.ui.components.StreamDiagnosticControl.initialize(this@EtaApp)
-        }
-        AppFileLogger.install(this)
-        io.github.mangi.eta.ui.components.ComposeSystemTrace.install()
-        AgentMemoryRepository.init(this)
-        ProviderRepository.init(this)
-        AssistantRepository.init(this)
-        McpServerRepository.init(this)
-        runBlocking(Dispatchers.IO) {
-            runCatching {
-                initializeSubAgentConfigurationBeforeWork()
-            }.onFailure { throwable ->
-                AndroidAgentLogger.error(
-                    "Startup backup recovery/sub-agent reset failed: type=${throwable.safeLogType()}"
-                )
-                // Never initialize work admission after incomplete recovery or an unconfirmed reset.
-                throw throwable
-            }
-        }
-        // Complete legacy accounting migration before any UI/runtime can issue a new request.
-        runBlocking(Dispatchers.IO) {
-            io.github.mangi.eta.data.repository.UsageStatsRepository.initializeConversationUsage(this@EtaApp)
-        }
-        applicationScope.launch {
-            runCatching { SettingsDataStore.incrementLaunchCount() }
-            runCatching {
-                SettingsDataStore.fileLoggingEnabledFlow().collect { enabled ->
-                    AppFileLogger.setEnabled(enabled)
-                }
-            }
-        }
         val predictiveBackEnabled = runBlocking(Dispatchers.IO) {
             AppearanceSettingsRepository.settings().predictiveBackEnabled
         }
         PredictiveBackController.apply(applicationInfo, predictiveBackEnabled)
+        AgentMemoryRepository.init(this)
+        ProviderRepository.init(this)
+        McpServerRepository.init(this)
         XposedServiceHelper.registerListener(this)
+        applicationScope.launch {
+            try {
+                SpeechOssUpload(this@EtaApp).retryPending(this@EtaApp)
+            } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                AndroidAgentLogger.warn("Eta speech cleanup unavailable: type=${error.javaClass.simpleName}")
+            }
+        }
         applicationScope.launch {
             LinuxEnvironmentSettingsRepository.initialize(this@EtaApp)
             runCatching {
@@ -121,6 +80,20 @@ class EtaApp : Application(), XposedServiceHelper.OnServiceListener {
                 )
             }
         }
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW ||
+            level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL ||
+            level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND) {
+            BrowserSessionRegistry.releaseIdlePages()
+        }
+    }
+
+    override fun onLowMemory() {
+        super.onLowMemory()
+        BrowserSessionRegistry.releaseIdlePages()
     }
 
     override fun onServiceBind(service: XposedService) {

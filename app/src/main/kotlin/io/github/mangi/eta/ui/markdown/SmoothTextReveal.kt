@@ -1,6 +1,7 @@
 package io.github.mangi.eta.ui.markdown
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableStateOf
@@ -51,31 +52,6 @@ internal class SmoothTextRevealCoordinator {
     // 不会让整个列表随之重组。
     private val startedState = mutableStateOf<Set<RevealBlockKey>>(emptySet())
     private var animationsPaused = false
-    private var animationsHeld = false
-    private var restoredSourceLength = 0
-    private var onRevealAdvanced: ((Float) -> Unit)? = null
-
-    fun setOnRevealAdvanced(listener: ((Float) -> Unit)?) { onRevealAdvanced = listener }
-    val isAnimationHeld: Boolean get() = animationsHeld
-    fun restoreHistoryThrough(sourceLength: Int) {
-        restoredSourceLength = sourceLength.coerceAtLeast(0)
-        pauseAnimationsAndCatchUp()
-    }
-    fun resumeAnimationsWithoutCatchingUp() {
-        animationsHeld = false
-        animationsPaused = false
-        updateDrainedState()
-        wakeups.trySend(Unit)
-    }
-    fun holdAnimations() {
-        animationsPaused = false
-        animationsHeld = true
-        wakeups.trySend(Unit)
-    }
-    /** All reveal-bearing leaves must have been measured before a terminal drain counts. */
-    fun hasLayoutsFor(keys: Set<RevealBlockKey>): Boolean =
-        keys.all { records[it]?.hasReceivedLayout == true }
-
 
     val drained: StateFlow<Boolean> = drainedState
     /** 已经开始显现的块，用于让列表 marker 与正文保持同一生命周期。 */
@@ -89,7 +65,6 @@ internal class SmoothTextRevealCoordinator {
      * 并让后续排版结果同样立即完成，避免回到页面后补播后台积压的显现动画。
      */
     fun pauseAnimationsAndCatchUp() {
-        animationsHeld = false
         animationsPaused = true
         records.values.forEach(::completeRecord)
         updateDrainedState()
@@ -97,7 +72,6 @@ internal class SmoothTextRevealCoordinator {
     }
 
     fun resumeAnimationsAfterCatchUp() {
-        animationsHeld = false
         records.values.forEach(::completeRecord)
         updateDrainedState()
         animationsPaused = false
@@ -129,11 +103,12 @@ internal class SmoothTextRevealCoordinator {
         node: SmoothTextRevealNode,
         text: String?,
         layoutResult: TextLayoutResult?,
+        atomicSpans: List<RevealAtomicSpan> = emptyList(),
     ) {
         val record = records.getOrPut(key) { RevealRecord(key) }
         record.node = node
         if (text != null && layoutResult != null) {
-            updateRecord(record, text, layoutResult)
+            updateRecord(record, text, layoutResult, atomicSpans)
         }
         wakeups.trySend(Unit)
     }
@@ -143,7 +118,6 @@ internal class SmoothTextRevealCoordinator {
         record.node = null
         // 已离开组合的块不再消费帧时钟；保留完成进度，重挂载时只显现后续新增文本。
         completeRecord(record)
-        record.layoutResult = null
         updateDrainedState()
         wakeups.trySend(Unit)
     }
@@ -153,10 +127,11 @@ internal class SmoothTextRevealCoordinator {
         node: SmoothTextRevealNode?,
         text: String,
         layoutResult: TextLayoutResult,
+        atomicSpans: List<RevealAtomicSpan> = emptyList(),
     ) {
         val record = records.getOrPut(key) { RevealRecord(key) }
         if (node != null) record.node = node
-        updateRecord(record, text, layoutResult)
+        updateRecord(record, text, layoutResult, atomicSpans)
         wakeups.trySend(Unit)
     }
 
@@ -168,7 +143,7 @@ internal class SmoothTextRevealCoordinator {
 
     suspend fun runFrameClock() {
         while (currentCoroutineContext().isActive) {
-            val active = if (animationsHeld) null else firstPendingRecord()
+            val active = firstPendingRecord()
             if (active == null) {
                 updateDrainedState()
                 wakeups.receive()
@@ -178,9 +153,8 @@ internal class SmoothTextRevealCoordinator {
             drainedState.value = false
             var previousFrameNanos = withFrameNanos { it }
             while (currentCoroutineContext().isActive) {
-                if (animationsHeld || firstPendingRecord() == null) break
+                if (firstPendingRecord() == null) break
                 val frameNanos = withFrameNanos { it }
-                if (animationsHeld) break
                 val elapsedSeconds = ((frameNanos - previousFrameNanos) / NANOS_PER_SECOND)
                     .coerceIn(0f, MAX_FRAME_DELTA_SECONDS)
                 previousFrameNanos = frameNanos
@@ -188,33 +162,26 @@ internal class SmoothTextRevealCoordinator {
                 val totalBacklog = records.values.sumOf { candidate ->
                     max(0.0, (candidate.targetCount - candidate.progress).toDouble())
                 }.toFloat()
-                // Keep the existing adaptive speed (including its 240-grapheme/s
-                // ceiling), but carry one frame's budget across leaves as upstream
-                // does. A short block must not discard the rest of this frame.
-                var remainingAdvance = io.github.mangi.eta.ui.components.advanceSmoothReveal(
-                    current = 0f, target = totalBacklog,
-                    elapsedSeconds = elapsedSeconds, totalBacklog = totalBacklog,
+                var remainingAdvance = advanceSmoothReveal(
+                    current = 0f,
+                    target = totalBacklog,
+                    elapsedSeconds = elapsedSeconds,
+                    totalBacklog = totalBacklog,
                 )
-                var frameAdvance = 0f
                 val newlyStarted = mutableSetOf<RevealBlockKey>()
+                // 块结束后剩余的推进量继续用于下一块，避免短段落把追赶速度限制为每帧一块。
                 for (record in records.values) {
                     if (remainingAdvance <= 0f) break
                     if (record.node == null || record.layoutResult == null) continue
                     val pending = record.targetCount - record.progress
                     if (pending <= 0f) continue
-                    val previous = record.progress
-                    record.progress = (previous + remainingAdvance.coerceAtMost(pending))
-                        .coerceAtMost(record.targetCount)
-                    val advance = record.progress - previous
-                    remainingAdvance = (remainingAdvance - advance).coerceAtLeast(0f)
-                    frameAdvance += advance
-                    if (advance > 0f && record.key !in startedState.value) newlyStarted += record.key
+                    val advance = remainingAdvance.coerceAtMost(pending)
+                    record.progress = (record.progress + advance).coerceAtMost(record.targetCount)
+                    remainingAdvance -= advance
+                    if (record.key !in startedState.value) newlyStarted += record.key
                     record.node?.onRevealDataChanged()
                 }
                 if (newlyStarted.isNotEmpty()) startedState.value = startedState.value + newlyStarted
-                // One feedback callback per advancing frame, never per block or
-                // for restore/detach/hold. This does not add catch-up vibration.
-                if (frameAdvance > 0f) onRevealAdvanced?.invoke(frameAdvance)
                 updateDrainedState()
             }
         }
@@ -224,27 +191,42 @@ internal class SmoothTextRevealCoordinator {
         record: RevealRecord,
         text: String,
         layoutResult: TextLayoutResult,
+        atomicSpans: List<RevealAtomicSpan>,
     ) {
-        if (record.text == text && record.layoutResult === layoutResult) return
-        val restoredFirstLayout = !record.hasReceivedLayout && record.key.sourceOffset < restoredSourceLength
-        if (text != record.text) {
-            // 流式文本只追加不修改，但行内语法闭合（**粗体**、`code`、链接折叠等）会让
-            // 渲染文本丢掉标记字符而变短或错位。此时进度只能保持单调前进：一旦回退，
-            // 已显现的文字会消失并重新打字，表现为输出反复闪烁。
-            record.boundaries = updateGraphemeBoundaries(
-                previousText = record.text,
-                previousBoundaries = record.boundaries,
-                text = text,
-            )
+        val spansChanged = atomicSpans != record.atomicSpans
+        if (text != record.text || spansChanged) {
+            // 流式文本只追加不修改，但行内语法或公式闭合会让渲染文本变短或把多字符区间折叠为
+            // 单个原子步。按已显现字符偏移保序映射，既不回退重打已显示文字，也不跳过公式后的新字。
+            val oldFullIndex = floor(record.progress).toInt().coerceIn(0, record.boundaries.lastIndex)
+            val oldCharOffset = record.boundaries[oldFullIndex]
+            val oldFraction = (record.progress - oldFullIndex).coerceIn(0f, 1f)
+
+            record.boundaries = if (atomicSpans.isEmpty() && record.atomicSpans.isEmpty()) {
+                updateGraphemeBoundaries(
+                    previousText = record.text,
+                    previousBoundaries = record.boundaries,
+                    text = text,
+                )
+            } else {
+                graphemeBoundariesWithAtomicSpans(text, atomicSpans)
+            }
             record.text = text
+            record.atomicSpans = atomicSpans
             record.targetCount = record.boundaries.lastIndex.toFloat()
-            record.progress = record.progress.coerceAtMost(record.targetCount)
+            record.progress = if (spansChanged) {
+                mapProgressAcrossAtomicChange(
+                    newBoundaries = record.boundaries,
+                    oldCharOffset = oldCharOffset,
+                    oldFraction = oldFraction,
+                )
+            } else {
+                record.progress.coerceAtMost(record.targetCount)
+            }
         }
         if (record.layoutResult !== layoutResult) {
             record.layoutResult = layoutResult
         }
-        record.hasReceivedLayout = true
-        if (animationsPaused || record.node == null || restoredFirstLayout) completeRecord(record)
+        if (animationsPaused || record.node == null) completeRecord(record)
         updateDrainedState()
         record.node?.onRevealDataChanged()
     }
@@ -266,6 +248,9 @@ internal class SmoothTextRevealCoordinator {
     }
 }
 
+@Immutable
+internal data class RevealAtomicSpan(val start: Int, val end: Int)
+
 @JvmInline
 internal value class RevealBlockKey(val sourceOffset: Int) : Comparable<RevealBlockKey> {
     override fun compareTo(other: RevealBlockKey): Int = sourceOffset.compareTo(other.sourceOffset)
@@ -279,16 +264,22 @@ internal class SmoothTextRevealState(
     private var node: SmoothTextRevealNode? = null
     private var text: String? = null
     private var layoutResult: TextLayoutResult? = null
+    private var atomicSpans: List<RevealAtomicSpan> = emptyList()
 
-    fun onTextLayout(text: String, layoutResult: TextLayoutResult) {
+    fun onTextLayout(
+        text: String,
+        layoutResult: TextLayoutResult,
+        atomicSpans: List<RevealAtomicSpan> = emptyList(),
+    ) {
         this.text = text
         this.layoutResult = layoutResult
-        coordinator.updateLayout(key, node, text, layoutResult)
+        this.atomicSpans = atomicSpans
+        coordinator.updateLayout(key, node, text, layoutResult, atomicSpans)
     }
 
     internal fun attach(node: SmoothTextRevealNode) {
         this.node = node
-        coordinator.attach(key, node, text, layoutResult)
+        coordinator.attach(key, node, text, layoutResult, atomicSpans)
     }
 
     internal fun detach(node: SmoothTextRevealNode) {
@@ -351,7 +342,7 @@ internal class SmoothTextRevealNode(
         state = next
         clearPathCache()
         cachedVisibleHeight = -1
-        if (isAttached) { state.attach(this); onRevealDataChanged() }
+        if (isAttached) state.attach(this)
     }
 
     fun onRevealDataChanged() {
@@ -368,8 +359,7 @@ internal class SmoothTextRevealNode(
         constraints: Constraints,
     ): MeasureResult {
         val placeable = measurable.measure(constraints)
-        val visibleHeight = if (state.drawSnapshot() == null) placeable.height
-            else state.visibleHeightPx().coerceAtMost(placeable.height)
+        val visibleHeight = state.visibleHeightPx().coerceAtMost(placeable.height)
         cachedVisibleHeight = visibleHeight
         val measuredHeight = visibleHeight.coerceIn(constraints.minHeight, constraints.maxHeight)
         return layout(placeable.width, measuredHeight) {
@@ -378,7 +368,7 @@ internal class SmoothTextRevealNode(
     }
 
     override fun ContentDrawScope.draw() {
-        val snapshot = state.drawSnapshot() ?: run { drawContent(); return }
+        val snapshot = state.drawSnapshot() ?: return
         val contentScope = this
         val targetCount = snapshot.boundaries.lastIndex
         if (targetCount <= 0 || snapshot.progress >= targetCount) {
@@ -412,18 +402,31 @@ internal class SmoothTextRevealNode(
     }
 
     private fun ensurePaths(snapshot: RevealDrawSnapshot, fullCount: Int) {
-        val layout = snapshot.layoutResult
-        if (cachedLayoutResult === layout && cachedFullCount == fullCount) return
+        val sameLayout = cachedLayoutResult === snapshot.layoutResult
+        if (sameLayout && cachedFullCount == fullCount) return
 
-        // Selection paths are not additive across wrapped lines or Bidi runs:
-        // a former end line can become an intermediate line with different bounds.
-        // Keep fractional-frame hits, but rebuild every changed integer prefix.
-        val textLength = layout.layoutInput.text.length
-        val fullEnd = snapshot.boundaries[fullCount].coerceIn(0, textLength)
-        cachedFullPath = if (fullEnd > 0) layout.getPathForRange(0, fullEnd) else null
-        cachedNextPath = nextGraphemePath(snapshot, fullCount)
-        cachedLayoutResult = layout
+        if (sameLayout && fullCount == cachedFullCount + 1) {
+            val completedPath = cachedNextPath
+            if (completedPath != null) {
+                val accumulatedPath = cachedFullPath ?: Path()
+                accumulatedPath.addPath(completedPath)
+                cachedFullPath = accumulatedPath
+            }
+            cachedFullCount = fullCount
+            cachedNextPath = nextGraphemePath(snapshot, fullCount)
+            return
+        }
+
+        cachedLayoutResult = snapshot.layoutResult
         cachedFullCount = fullCount
+        val textLength = snapshot.layoutResult.layoutInput.text.length
+        val fullEnd = snapshot.boundaries[fullCount].coerceIn(0, textLength)
+        cachedFullPath = if (fullEnd > 0) {
+            snapshot.layoutResult.getPathForRange(0, fullEnd)
+        } else {
+            null
+        }
+        cachedNextPath = nextGraphemePath(snapshot, fullCount)
     }
 
     private fun nextGraphemePath(
@@ -466,9 +469,9 @@ internal class RevealRecord(
 ) {
     val drawSnapshot = RevealDrawSnapshot(this)
     var node: SmoothTextRevealNode? = null
-    var hasReceivedLayout = false
     var text: String = ""
     var layoutResult: TextLayoutResult? = null
+    var atomicSpans: List<RevealAtomicSpan> = emptyList()
     var boundaries: IntArray = intArrayOf(0)
     var progress: Float = 0f
     var targetCount: Float = 0f
@@ -505,6 +508,52 @@ internal fun graphemeBoundaries(text: String): IntArray {
     }
     if (result.lastOrNull() != text.length) result += text.length
     return result.toIntArray()
+}
+
+internal fun graphemeBoundariesWithAtomicSpans(
+    text: String,
+    atomicSpans: List<RevealAtomicSpan>,
+): IntArray {
+    if (atomicSpans.isEmpty() || text.isEmpty()) return graphemeBoundaries(text)
+    val validSpans = atomicSpans
+        .mapNotNull { span ->
+            val s = span.start.coerceIn(0, text.length)
+            val e = span.end.coerceIn(0, text.length)
+            if (s < e) RevealAtomicSpan(s, e) else null
+        }
+        .sortedBy { it.start }
+    if (validSpans.isEmpty()) return graphemeBoundaries(text)
+
+    val raw = graphemeBoundaries(text)
+    val points = sortedSetOf<Int>()
+    for (boundary in raw) {
+        val insideSpan = validSpans.any { span -> boundary > span.start && boundary < span.end }
+        if (!insideSpan) points += boundary
+    }
+    for (span in validSpans) {
+        points += span.start
+        points += span.end
+    }
+    return points.toIntArray()
+}
+
+internal fun mapProgressAcrossAtomicChange(
+    newBoundaries: IntArray,
+    oldCharOffset: Int,
+    oldFraction: Float,
+): Float {
+    val targetCount = newBoundaries.lastIndex.toFloat()
+    if (targetCount <= 0f || oldCharOffset <= 0) {
+        return oldFraction.coerceIn(0f, targetCount.coerceAtLeast(0f))
+    }
+    val mappedIndex = newBoundaries.indexOfFirst { it >= oldCharOffset }
+    if (mappedIndex < 0) return targetCount
+    return if (newBoundaries[mappedIndex] == oldCharOffset) {
+        (mappedIndex + oldFraction).coerceAtMost(targetCount)
+    } else {
+        // 旧进度正处于刚闭合折叠为原子的公式区间内部：直接对齐到公式结束处，继续逐字显现后续新字。
+        mappedIndex.toFloat().coerceAtMost(targetCount)
+    }
 }
 
 /**

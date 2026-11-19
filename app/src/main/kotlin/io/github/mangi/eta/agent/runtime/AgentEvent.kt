@@ -1,9 +1,5 @@
 package io.github.mangi.eta.agent.runtime
 
-import io.github.mangi.eta.agent.model.AgentModelClient
-import io.github.mangi.eta.agent.question.AgentQuestionAnswer
-import io.github.mangi.eta.agent.question.AgentQuestionRequest
-import io.github.mangi.eta.agent.question.AgentQuestionStatus
 import io.github.mangi.eta.core.toSafeLogToken
 
 internal sealed interface AgentEvent {
@@ -13,6 +9,49 @@ internal sealed interface AgentEvent {
         TEXT,
         THINKING,
         TOOL_CALL,
+    }
+
+    data class GuiControlChanged(val status: GuiControlStatus) : AgentEvent {
+        override fun toLogLine(): String = "gui_control_changed status=${status.wireValue}"
+    }
+
+    data class ContextCompaction(
+        val operationId: String,
+        val phase: String,
+        val tokensBefore: Int? = null,
+        val tokensAfter: Int? = null,
+        val reasonCode: String = "",
+        val usage: AgentTokenUsage? = null,
+        val archiveId: String = "",
+    ) : AgentEvent {
+        val displayMessage: String get() = when (phase) {
+            PHASE_STARTED -> RUNNING_DETAIL
+            PHASE_COMPLETED -> {
+                val archiveTag = archiveId.takeIf { it.isNotBlank() }?.let { "（$it）" }.orEmpty()
+                "上下文已压缩$archiveTag，用量将在下一次模型响应后更新。"
+            }
+            else -> "上下文压缩失败，原始上下文已保留。"
+        }
+        override fun toLogLine(): String = buildString {
+            append("context_compaction phase=").append(phase.toSafeLogToken())
+            append(", before=").append(tokensBefore)
+            append(", after=").append(tokensAfter)
+            append(", code=").append(reasonCode.toSafeLogToken())
+            if (archiveId.isNotBlank()) append(", archive_id=").append(archiveId.toSafeLogToken())
+            usage?.let { u ->
+                append(", in=").append(u.inputTokens)
+                append(", cache=").append(u.cachedTokens)
+                append(", cache_write=").append(u.cacheWriteTokens)
+                append(", out=").append(u.outputTokens)
+            }
+        }
+
+        companion object {
+            const val PHASE_STARTED = "started"
+            const val PHASE_COMPLETED = "completed"
+            /** 进行中的展示文案同时是 UI 判定运行态的依据，改动必须与 UI 侧同步。 */
+            const val RUNNING_DETAIL = "正在压缩上下文…"
+        }
     }
 
     data class RunStarted(
@@ -27,8 +66,7 @@ internal sealed interface AgentEvent {
 
     data class RoundStarted(
         val round: Int,
-        val messageCount: Int,
-        val historySnapshotId: String = "",
+        val messageCount: Int
     ) : AgentEvent {
         override fun toLogLine(): String =
             "round_started round=$round, messages=$messageCount"
@@ -40,34 +78,12 @@ internal sealed interface AgentEvent {
         val maxAttempts: Int,
         val delayMs: Int,
         val reasonCode: String,
-        val reasonDetail: String = "",
     ) : AgentEvent {
         val displayMessage: String
-            get() = when (reasonCode) {
-                "DELEGATION_ARGUMENT_REPAIR" ->
-                    "正在补全委派任务参数（$attempt/$maxAttempts）；尚未创建子任务，已完成的工具不会重放。"
-                "EMPTY_RESPONSE" ->
-                    "模型本轮返回空正文，${delayMs / 1000} 秒后重试（$attempt/$maxAttempts）；此前工具结果已保留。" +
-                        reasonDetail.takeIf { it.isNotBlank() }?.let { "\n原因：$it" }.orEmpty()
-                else -> "模型请求暂时中断，${delayMs / 1000} 秒后重试（$attempt/$maxAttempts）；此前工具结果已保留。" +
-                    reasonDetail.takeIf { it.isNotBlank() }?.let { "\n原因：$it" }.orEmpty()
-            }
+            get() = "模型请求暂时中断，${delayMs / 1000} 秒后重试（$attempt/$maxAttempts）；此前工具结果已保留。"
 
         override fun toLogLine(): String =
             "model_retry_scheduled round=$round, attempt=$attempt, delay_ms=$delayMs, code=${reasonCode.toSafeLogToken()}"
-    }
-
-    /** One request-scoped disconnect; independent of bounded tool-envelope correction. */
-    data class ErrorReconnectChanged(
-        val round: Int,
-        val reconnectId: String,
-        val status: String,
-        val elapsedMs: Long,
-        val reasonCode: String = "",
-        val reasonDetail: String = "",
-    ) : AgentEvent {
-        override fun toLogLine(): String =
-            "error_reconnect_changed round=$round, id=${reconnectId.toSafeLogToken()}, status=${status.toSafeLogToken()}, elapsed_ms=$elapsedMs, code=${reasonCode.toSafeLogToken()}"
     }
 
     data class ProviderRequestStarted(
@@ -91,6 +107,7 @@ internal sealed interface AgentEvent {
         val index: Int,
         val blockId: String? = null,
         val name: String? = null,
+        val startedAtEpochMs: Long? = null,
     ) : AgentEvent {
         override fun toLogLine(): String =
             "assistant_block_start round=$round, kind=$kind, index=$index, " +
@@ -116,10 +133,20 @@ internal sealed interface AgentEvent {
         val name: String? = null,
         val contentChars: Int,
         val replacementContent: String? = null,
+        val elapsedMs: Long? = null,
     ) : AgentEvent {
         override fun toLogLine(): String =
             "assistant_block_end round=$round, kind=$kind, index=$index, " +
                 "name=${name.toSafeLogToken()}, chars=$contentChars"
+    }
+
+    data class SearchSuggestions(
+        val round: Int,
+        val index: Int,
+        val html: String,
+    ) : AgentEvent {
+        override fun toLogLine(): String =
+            "search_suggestions round=$round, index=$index, chars=${html.length}"
     }
 
     data class AssistantReceived(
@@ -134,29 +161,19 @@ internal sealed interface AgentEvent {
                 "tools=${toolNames.take(MAX_LOGGED_TOOL_NAMES).map { it.toSafeLogToken() }}"
     }
 
-    data class ChildContextUpdated(val stats: io.github.mangi.eta.agent.delegation.SubAgentContextStats) : AgentEvent {
-        override fun toLogLine() = "child_context worker=${stats.worker}, status=${stats.status}, tokens=${stats.contextTokens}"
-    }
-
     data class UsageReceived(
         val round: Int,
-        val usage: AgentTokenUsage,
-        val projected: Boolean = false,
-        // Local request-shape snapshots for silent next-request budgeting, not billing.
-        val requestHistoryTokens: Int? = null,
-        val requestOverheadTokens: Int? = null,
+        val usage: AgentTokenUsage
     ) : AgentEvent {
         override fun toLogLine(): String =
-            "usage_received round=$round, projected=$projected, ctx=${usage.contextTokens}, in=${usage.inputTokens}, out=${usage.outputTokens}, reasoning=${usage.reasoningTokens}, cache=${usage.cachedTokens}" +
-                ", steps=${usage.stepCount}, llm_ms=${usage.llmMs}, tool_ms=${usage.toolMs}, " +
-                "ttft_ms=${usage.ttftMs}/${usage.ttftSteps}, decode_ms=${usage.decodeMs}/${usage.decodeTokens}"
+            "usage_received round=$round, kind=${(usage.requestKind ?: AgentTokenUsage.REQUEST_KIND_CHAT).toSafeLogToken()}, " +
+                "ctx=${usage.contextTokens}, in=${usage.inputTokens}, out=${usage.outputTokens}, " +
+                "reasoning=${usage.reasoningTokens}, cache=${usage.cachedTokens}, cache_write=${usage.cacheWriteTokens}"
     }
 
     data class UserSupplementReceived(
         val index: Int,
-        val text: String,
-        val requestId: String = "",
-        val imagesJson: String = "[]",
+        val text: String
     ) : AgentEvent {
         override fun toLogLine(): String =
             "user_supplement_received index=$index, chars=${text.length}"
@@ -183,10 +200,23 @@ internal sealed interface AgentEvent {
         val imageBytes: Int,
         /** 可选：旧版本 Runtime 不发送，消费端缺省时回退到摘要文本判断。 */
         val success: Boolean? = null,
+        val command: String? = null,
     ) : AgentEvent {
         override fun toLogLine(): String =
             "tool_finished round=$round, name=${name.toSafeLogToken()}, " +
                 "${resultSummary.toSafeResultLogFields()}, images=$imageCount, image_bytes=$imageBytes"
+    }
+
+    data class SubagentProgress(
+        val round: Int,
+        val toolCallId: String,
+        val subagentId: String,
+        val subagentType: String,
+        val snapshotJson: String,
+    ) : AgentEvent {
+        override fun toLogLine(): String =
+            "subagent_progress round=$round, id=${subagentId.toSafeLogToken()}, " +
+                "type=${subagentType.toSafeLogToken()}, chars=${snapshotJson.length}"
     }
 
     data class HostedToolStarted(
@@ -219,37 +249,9 @@ internal sealed interface AgentEvent {
                 "images=$imageCount, image_bytes=$imageBytes"
     }
 
-    data class AutoCompactWaiting(val round: Int) : AgentEvent {
-        override fun toLogLine(): String = "auto_compact_waiting round=$round"
-    }
-
-    data class ContextCompactionStarted(
-        val round: Int,
-        val modelName: String = "",
-    ) : AgentEvent {
-        override fun toLogLine(): String = "context_compaction_started round=$round"
-    }
-
-    data class ContextCompacted(
-        val round: Int,
-        val applied: Boolean,
-        val originalCount: Int,
-        val compactedCount: Int,
-        val history: List<AgentModelClient.ConversationMessage> = emptyList(),
-        val compressorLabel: String = "",
-        val blocked: Boolean = false,
-        val reason: String = "",
-        /** Pruning changes oversized tool bodies, not the accounting/compaction boundary. */
-        val pruningOnly: Boolean = compressorLabel == "工具输出预算修剪（原文可回读）",
-    ) : AgentEvent {
-        override fun toLogLine(): String =
-            "context_compacted round=$round, applied=$applied, $originalCount->$compactedCount"
-    }
-
     data class RunFinished(
         val round: Int,
-        val contentChars: Int,
-        val generatedAtMillis: Long? = null,
+        val contentChars: Int
     ) : AgentEvent {
         override fun toLogLine(): String =
             "run_finished round=$round, content_chars=$contentChars"
@@ -260,25 +262,6 @@ internal sealed interface AgentEvent {
     ) : AgentEvent {
         override fun toLogLine(): String =
             "run_failed reason_chars=${reason.length}"
-    }
-
-    data class QuestionRequested(
-        val request: AgentQuestionRequest,
-    ) : AgentEvent {
-        override fun toLogLine(): String =
-            "question_requested question_id=${request.questionId.toSafeLogToken()} " +
-                "run_id=${request.runId.toSafeLogToken()}"
-    }
-
-    data class QuestionResolved(
-        val questionId: String,
-        val runId: String,
-        val status: AgentQuestionStatus,
-        val answer: AgentQuestionAnswer? = null,
-    ) : AgentEvent {
-        override fun toLogLine(): String =
-            "question_resolved question_id=${questionId.toSafeLogToken()} " +
-                "run_id=${runId.toSafeLogToken()} status=$status answered=${answer != null}"
     }
 }
 

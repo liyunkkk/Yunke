@@ -12,106 +12,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AgentRunControllerTest {
-    @Test fun questionNotificationSurvivesSteeringAndPrecedesBlockingCleanup() {
-        val controller = AgentRunController()
-        val wake = CountDownLatch(1)
-        val entered = CountDownLatch(1)
-        val release = CountDownLatch(1)
-        controller.register { entered.countDown(); release.await() }
-        controller.register(wakeBeforeCleanup = true) { wake.countDown() }
-        controller.steer("guidance is not an answer or cancellation")
-        assertEquals(1L, wake.count)
-        val stopping = thread(isDaemon = true) { controller.cancel() }
-        try {
-            assertTrue(wake.await(1, TimeUnit.SECONDS))
-            assertTrue(entered.await(1, TimeUnit.SECONDS))
-        } finally { release.countDown(); stopping.join(2_000) }
-    }
-
-    @Test fun cancellationInterruptsTransportBeforePotentiallyBlockingToolCleanup() {
-        val controller = AgentRunController()
-        val transportStopped = CountDownLatch(1)
-        val cleanupEntered = CountDownLatch(1)
-        val releaseCleanup = CountDownLatch(1)
-        val cleanupSawTransport = AtomicReference<Boolean>()
-        // This is the runtime's registration order: the tool owner precedes the SSE binding.
-        controller.register {
-            cleanupSawTransport.set(transportStopped.count == 0L)
-            cleanupEntered.countDown()
-            releaseCleanup.await()
-        }
-        controller.register(interruptible = true) { transportStopped.countDown() }
-        val stopping = thread(isDaemon = true) { controller.cancel() }
-        try {
-            assertTrue(cleanupEntered.await(2, TimeUnit.SECONDS))
-            assertTrue(controller.isCancelled)
-            assertEquals(true, cleanupSawTransport.get())
-            assertTrue(transportStopped.await(1, TimeUnit.SECONDS))
-        } finally {
-            releaseCleanup.countDown()
-            stopping.join(2_000)
-            controller.cancel()
-        }
-    }
-
-    @Test fun budgetPauseWaitsOnlyAtWorkerCheckpoints() {
-        val controller = AgentRunController()
-        val interrupted = AtomicInteger()
-        controller.register(interruptible = true) { interrupted.incrementAndGet() }
-        controller.pauseAtCheckpoint()
-        assertFalse(controller.isPaused)
-        assertFalse(controller.hasPausedInterrupt)
-        controller.withTransportCallback {
-            controller.throwIfCancelled()
-            controller.withTransportCallback { controller.throwIfCancelled() }
-        }
-        assertEquals(0, interrupted.get())
-        val finished = CountDownLatch(1)
-        val failure = AtomicReference<Throwable?>()
-        val worker = thread(isDaemon = true) {
-            try { controller.throwIfCancelled() } catch (t: Throwable) { failure.set(t) }
-            finally { finished.countDown() }
-        }
-        try {
-            assertFalse(finished.await(100, TimeUnit.MILLISECONDS))
-            controller.resume()
-            assertTrue(finished.await(2, TimeUnit.SECONDS))
-            assertNull(failure.get())
-        } finally { controller.cancel(); worker.join(2_000) }
-    }
-
-    @Test fun callbackScopeIsRestoredOnFailureAndCancellationStillWorks() {
-        val controller = AgentRunController()
-        controller.pauseAtCheckpoint()
-        runCatching { controller.withTransportCallback<Unit> { error("test callback failure") } }
-        val finished = CountDownLatch(1)
-        val failure = AtomicReference<Throwable?>()
-        val worker = thread(isDaemon = true) {
-            try { controller.throwIfCancelled() } catch (t: Throwable) { failure.set(t) }
-            finally { finished.countDown() }
-        }
-        try {
-            assertFalse(finished.await(100, TimeUnit.MILLISECONDS))
-            controller.cancel()
-            assertTrue(finished.await(2, TimeUnit.SECONDS))
-            assertTrue(failure.get() is AgentRunCancelledException)
-            assertTrue(runCatching {
-                controller.withTransportCallback { controller.throwIfCancelled() }
-            }.exceptionOrNull() is AgentRunCancelledException)
-        } finally { controller.cancel(); worker.join(2_000) }
-    }
-
-    @Test fun stoppedQueuedSupplementsAreRetainedOnceWithoutResuming() {
-        val controller = AgentRunController()
-        controller.steer("accepted but not consumed")
-        controller.cancel()
-        controller.cancel()
-        assertFalse(controller.hasPendingSteering)
-        assertEquals(listOf("accepted but not consumed"), controller.takeStoppedSteering().map { it.text })
-        assertTrue(controller.takeStoppedSteering().isEmpty())
-        assertFalse(controller.steer("late"))
-    }
-
     @Test
     fun cancellationWakesLongRetryWait() {
         val controller = AgentRunController()
@@ -140,38 +40,6 @@ class AgentRunControllerTest {
     }
 
     @Test
-    fun steeringAndPauseWakeRetryWaitWithoutConsumingThemOrCancellingToolOwners() {
-        for (pause in listOf(false, true)) {
-            val controller = AgentRunController()
-            val started = CountDownLatch(1)
-            val finished = CountDownLatch(1)
-            val failure = AtomicReference<Throwable?>()
-            val toolCancellations = AtomicInteger(0)
-            val owner = controller.register { toolCancellations.incrementAndGet() }
-            val worker = thread {
-                started.countDown()
-                try { controller.awaitRetryDelay(60_000L) }
-                catch (error: Throwable) { failure.set(error) }
-                finally { finished.countDown() }
-            }
-            try {
-                assertTrue(started.await(1, TimeUnit.SECONDS))
-                if (pause) controller.pause() else assertTrue(controller.steer("new steering"))
-                assertTrue(finished.await(1, TimeUnit.SECONDS))
-                assertNull(failure.get())
-                assertEquals(0, toolCancellations.get())
-                if (pause) assertTrue(controller.isPaused)
-                else assertEquals("new steering", controller.pollSteeringMessage())
-            } finally {
-                owner.close()
-                controller.resume()
-                controller.cancel()
-                worker.join(1_000)
-            }
-        }
-    }
-
-    @Test
     fun steeringIsQueuedOneAtATimeWithoutCancellingResources() {
         val controller = AgentRunController()
         val cancellations = AtomicInteger(0)
@@ -185,46 +53,6 @@ class AgentRunControllerTest {
         assertEquals("first", controller.pollSteeringMessage())
         assertEquals("second", controller.pollSteeringMessage())
         assertNull(controller.pollSteeringMessage())
-    }
-
-    @Test
-    fun steeringCancelsOnlyInterruptibleResources() {
-        val controller = AgentRunController()
-        val durable = AtomicInteger(0)
-        val stream = AtomicInteger(0)
-        controller.register { durable.incrementAndGet() }
-        controller.register(interruptible = true) { stream.incrementAndGet() }
-
-        assertTrue(controller.steer("改短一点"))
-
-        assertEquals(0, durable.get())
-        assertEquals(1, stream.get())
-        assertEquals("改短一点", controller.pollSteeringMessage())
-    }
-
-    @Test
-    fun pauseCancelsInterruptibleResources() {
-        val controller = AgentRunController()
-        val stream = AtomicInteger(0)
-        controller.register(interruptible = true) { stream.incrementAndGet() }
-        controller.pause()
-
-        assertEquals(1, stream.get())
-        assertTrue(controller.hasPausedInterrupt)
-        assertTrue(controller.consumePausedInterrupt())
-        assertFalse(controller.hasPausedInterrupt)
-    }
-
-    @Test
-    fun pausedSteeringDoesNotCancelInterruptibleResourcesAgain() {
-        val controller = AgentRunController()
-        val stream = AtomicInteger(0)
-        controller.register(interruptible = true) { stream.incrementAndGet() }
-        controller.pause()
-
-        assertTrue(controller.steer("等我看完再说"))
-        assertEquals(1, stream.get())
-        assertEquals("等我看完再说", controller.pollSteeringMessage())
     }
 
     @Test
@@ -302,7 +130,7 @@ class AgentRunControllerTest {
     }
 
     @Test
-    fun steeringResumesAPausedRun() {
+    fun steeringDoesNotResumeAPausedRun() {
         val controller = AgentRunController()
         val entered = CountDownLatch(1)
         val finished = CountDownLatch(1)
@@ -316,54 +144,10 @@ class AgentRunControllerTest {
         try {
             assertTrue(entered.await(1, TimeUnit.SECONDS))
             assertTrue(controller.steer("补充条件"))
-            assertTrue(finished.await(1, TimeUnit.SECONDS))
+            assertFalse(finished.await(100, TimeUnit.MILLISECONDS))
             assertEquals("补充条件", controller.pollSteeringMessage())
-        } finally {
-            controller.cancel()
-            worker.join(1_000)
-        }
-    }
-
-    @Test
-    fun requestCompactResumesAPausedRunAtSafeBoundary() {
-        val controller = AgentRunController()
-        val entered = CountDownLatch(1)
-        val finished = CountDownLatch(1)
-        controller.pause()
-        val worker = thread(name = "controller-paused-compact-test", isDaemon = true) {
-            entered.countDown()
-            runCatching(controller::throwIfCancelled)
-            finished.countDown()
-        }
-
-        try {
-            assertTrue(entered.await(1, TimeUnit.SECONDS))
-            assertTrue(controller.requestCompact(keepRecentMessages = 2))
+            controller.resume()
             assertTrue(finished.await(1, TimeUnit.SECONDS))
-            assertTrue(controller.hasPendingCompact)
-        } finally {
-            controller.cancel()
-            worker.join(1_000)
-        }
-    }
-
-    @Test
-    fun defaultCompactRequestResumesAPausedRun() {
-        val controller = AgentRunController()
-        val entered = CountDownLatch(1)
-        val finished = CountDownLatch(1)
-        controller.pause()
-        val worker = thread(name = "controller-budget-compact-test", isDaemon = true) {
-            entered.countDown()
-            runCatching(controller::throwIfCancelled)
-            finished.countDown()
-        }
-
-        try {
-            assertTrue(entered.await(1, TimeUnit.SECONDS))
-            assertTrue(controller.requestCompact())
-            assertTrue(finished.await(1, TimeUnit.SECONDS))
-            assertTrue(controller.hasPendingCompact)
         } finally {
             controller.cancel()
             worker.join(1_000)
@@ -394,97 +178,4 @@ class AgentRunControllerTest {
         }
         assertFalse(worker.isAlive)
     }
-
-    @Test
-    fun requestCompactQueuesWithoutCancellingAnyResources() {
-        val controller = AgentRunController()
-        val durable = AtomicInteger(0)
-        val stream = AtomicInteger(0)
-        controller.register { durable.incrementAndGet() }
-        controller.register(interruptible = true) { stream.incrementAndGet() }
-
-        assertTrue(controller.requestCompact(keepRecentMessages = 2))
-
-        assertEquals(0, durable.get())
-        assertEquals(0, stream.get())
-        val request = controller.takePendingCompact()
-        assertEquals(2, request?.keepRecentMessages)
-        assertFalse(controller.hasPendingCompact)
-    }
-
-    @Test fun cancelledOrSealedRunCannotAcceptMaintenanceAndCancelClearsQueue() {
-        val controller = AgentRunController()
-        assertTrue(controller.requestCompact())
-        controller.cancel()
-        assertFalse(controller.hasPendingCompact)
-        assertFalse(controller.requestCompact())
-        val sealed = AgentRunController()
-        assertNull(sealed.pollSteeringOrSeal())
-        assertFalse(sealed.requestCompact())
-    }
-
-    @Test
-    fun requestCompactDoesNotSealSteering() {
-        val controller = AgentRunController()
-        assertTrue(controller.requestCompact())
-        assertNull(controller.pollSteeringOrSeal())
-        assertTrue(controller.steer("还能追加"))
-        assertEquals("还能追加", controller.pollSteeringMessage())
-    }
-    @Test fun pauseObserversSeeRegistrationSnapshotAndRepeatedTransitionsWithoutCancellingOwners() {
-        val control = AgentRunController()
-        val states = mutableListOf<Boolean>()
-        var toolStops = 0
-        control.register { toolStops++ }
-        control.pause()
-        val binding = control.observePause { states += it }
-        assertEquals(listOf(true), states)
-        control.resume()
-        control.pause()
-        control.resume()
-        assertEquals(listOf(true, false, true, false), states)
-        assertEquals(0, toolStops)
-        binding.close()
-        control.pause()
-        assertEquals(4, states.size)
-        control.cancel()
-        assertEquals(1, toolStops)
-    }
-
-    @Test fun transportRegisteredAfterPauseIsInterruptedWithoutCancellingTheRun() {
-        val control = AgentRunController()
-        control.pause()
-        var interrupted = 0
-        val binding = control.register(interruptible = true) { interrupted++ }
-        assertEquals(1, interrupted)
-        assertTrue(control.hasPausedInterrupt)
-        assertFalse(control.isCancelled)
-        binding.close()
-        control.resume()
-        assertTrue(control.consumePausedInterrupt())
-    }
-
-    @Test fun retryWaitWakesOnPauseWithoutMarkingAProviderDraftInterrupted() {
-        val control = AgentRunController()
-        val finished = java.util.concurrent.CountDownLatch(1)
-        val thread = Thread {
-            try { control.awaitRetryDelay(60_000) } finally { finished.countDown() }
-        }
-        thread.start()
-        try {
-            val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(2)
-            while (thread.state != Thread.State.TIMED_WAITING && System.nanoTime() < deadline) Thread.yield()
-            assertEquals(Thread.State.TIMED_WAITING, thread.state)
-            control.pause()
-            assertTrue(finished.await(2, java.util.concurrent.TimeUnit.SECONDS))
-            assertFalse(control.hasPausedInterrupt)
-            assertFalse(control.isCancelled)
-            control.resume()
-            assertFalse(control.consumePausedInterrupt())
-        } finally {
-            control.cancel()
-            thread.join(2_000)
-        }
-    }
-
 }

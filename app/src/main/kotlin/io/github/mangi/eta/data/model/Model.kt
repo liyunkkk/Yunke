@@ -16,14 +16,11 @@ data class Model(
     val inputModalities: List<String> = listOf(TEXT_MODALITY),
     val outputModalities: List<String> = listOf(TEXT_MODALITY),
     val attachment: Boolean? = null,
-    /** User override, independent of provider metadata. */
-    val visionOverride: Boolean? = null,
     val toolCall: Boolean? = null,
     val reasoning: Boolean? = null,
     val reasoningCapabilities: ModelReasoningCapabilities? = null,
     val reasoningOverride: Boolean? = null,
     val reasoningCapabilitiesOverride: ModelReasoningCapabilities? = null,
-    val preferredReasoningEffort: ReasoningEffort? = null,
     val structuredOutput: Boolean? = null,
     val supportsTemperature: Boolean? = null,
     val customHeaders: List<CustomHeader> = emptyList(),
@@ -32,7 +29,7 @@ data class Model(
     val createdAt: Long = System.currentTimeMillis()
 ) {
     val effectiveContextWindow: Int?
-        get() = contextWindowOverride ?: contextWindow
+        get() = contextWindowOverride
 
     val effectiveReasoning: Boolean?
         get() = reasoningOverride ?: reasoning
@@ -45,19 +42,7 @@ data class Model(
         }
 
     val supportsVision: Boolean
-        get() = visionOverride ?: attachment ?: VisionChatModels.matches(this)
-
-    val supportsVideo: Boolean
-        get() = inputModalities.any { it.equals(VIDEO_MODALITY, ignoreCase = true) }
-
-    val supportsImageGeneration: Boolean
-        get() = ImageGenerationModels.matches(this)
-
-    val supportsVideoGeneration: Boolean
-        get() = VideoGenerationModels.matches(this)
-
-    val supportsSpeechSynthesis: Boolean
-        get() = SpeechSynthesisModels.matches(this)
+        get() = attachment == true || inputModalities.any { it.equals(IMAGE_MODALITY, ignoreCase = true) }
 
     val supportsTools: Boolean
         get() = toolCall == true
@@ -68,8 +53,6 @@ data class Model(
     companion object {
         const val TEXT_MODALITY = "text"
         const val IMAGE_MODALITY = "image"
-        const val VIDEO_MODALITY = "video"
-        const val AUDIO_MODALITY = "audio"
     }
 }
 

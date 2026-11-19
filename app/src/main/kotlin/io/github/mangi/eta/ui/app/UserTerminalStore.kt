@@ -3,6 +3,7 @@ package io.github.mangi.eta.ui.app
 import android.content.Context
 import androidx.compose.runtime.Immutable
 import io.github.mangi.eta.R
+import io.github.mangi.eta.agent.terminal.commandStatus
 import io.github.mangi.eta.agent.terminal.DetachedTaskStatus
 import io.github.mangi.eta.agent.terminal.DetachedTaskSupervisor
 import io.github.mangi.eta.agent.terminal.LinuxEnvironmentPaths
@@ -45,6 +46,8 @@ internal data class DaemonTaskUi(
     val identity: String,
     val running: Boolean,
     val startedAt: Long,
+    val description: String = "",
+    val status: String = "",
 )
 
 @Immutable
@@ -247,6 +250,7 @@ internal class UserTerminalStore(
     fun send(rawCommand: String) {
         val command = rawCommand.trim()
         if (command.isEmpty()) return
+        if (command.length > 16_000) return
         val state = _uiState.value
         if (state.running) return
         val environment = state.environment
@@ -570,6 +574,8 @@ internal class UserTerminalStore(
         identity = status.task.identity,
         running = status.running,
         startedAt = status.task.startedAt,
+        description = status.task.description,
+        status = if (status.task.commandTask) status.task.commandStatus else "",
     )
 
     private class SessionOutput {

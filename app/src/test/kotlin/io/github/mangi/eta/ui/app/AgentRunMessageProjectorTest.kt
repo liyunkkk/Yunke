@@ -1,8 +1,8 @@
 package io.github.mangi.eta.ui.app
 
 import io.github.mangi.eta.agent.runtime.AgentEvent
+import io.github.mangi.eta.agent.runtime.AgentTokenUsage
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
-import io.github.mangi.eta.ui.model.AgentIncrementalList
 import io.github.mangi.eta.ui.model.AgentMessageUi
 import io.github.mangi.eta.ui.model.SystemNoticeCode
 import io.github.mangi.eta.ui.model.SystemNoticeMessageUi
@@ -12,154 +12,83 @@ import io.github.mangi.eta.ui.model.ToolActivityStatusUi
 import io.github.mangi.eta.ui.model.UserMessageUi
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AgentRunMessageProjectorTest {
-    @Test fun continuousTailDeltasPublishImmutableSnapshotsWithCertifiedChanges() {
-        val projector = AgentRunMessageProjector()
-        var current: List<AgentChatMessageUi> = projector.appendTextDelta("live", 1, 0, "start", emptyList())
-        val saved = current
-        val hash = saved.hashCode()
-        repeat(100) {
-            val previous = current
-            current = projector.appendTextDelta("live", 1, 0, ".", current)
-            assertEquals(0, (current as AgentIncrementalList<*>).singleReplacementFrom(previous))
+    @Test
+    fun searchSuggestionsBindToExactTextBlockAndDoNotPersistIntoAnotherRun() {
+        val projector = AgentRunMessageProjector { 1_000L }
+        var messages = projector.appendTextDelta("run", 1, 0, "第一段", emptyList())
+        messages = projector.appendTextDelta("run", 1, 3, "带来源的回答", messages)
+        val event = AgentEvent.SearchSuggestions(1, 3, "<div>搜索建议</div>")
+        val attached = projector.applyEvent("run", event, messages)
+        assertTrue((attached[0] as AgentMessageUi).searchSuggestionsHtml.isEmpty())
+        assertEquals(listOf(event.html), (attached[1] as AgentMessageUi).searchSuggestionsHtml)
+        assertSame(attached, projector.applyEvent("run", event, attached))
+        assertSame(attached, projector.applyEvent("other", event, attached))
+        assertSame(attached, projector.applyEvent("run", event.copy(index = 7), attached))
+        val finalized = projector.finalizeRun("run", attached)
+        assertEquals(listOf(event.html), (finalized[1] as AgentMessageUi).searchSuggestionsHtml)
+        assertTrue(projector.resetForReplay("run", finalized).isEmpty())
+    }
+
+    @Test
+    fun searchSuggestionsEnforcePerRoundBudgetAcrossMultipleAnswerBlocks() {
+        val projector = AgentRunMessageProjector { 1_000L }
+        var messages = projector.appendTextDelta("run", 1, 0, "第一段", emptyList())
+        messages = projector.appendTextDelta("run", 1, 1, "第二段", messages)
+        repeat(5) { index ->
+            messages = projector.applyEvent("run", AgentEvent.SearchSuggestions(1, index % 2, "建议-$index"), messages)
         }
-        assertEquals("start", (saved.last() as AgentMessageUi).content)
-        assertEquals(hash, saved.hashCode())
-        assertEquals("start" + ".".repeat(100), (current.last() as AgentMessageUi).content)
-        projector.seal("live")
-        assertTrue(projector.appendTextDelta("live", 1, 0, "late", current) === current)
+        assertEquals(5, messages.filterIsInstance<AgentMessageUi>().sumOf { it.searchSuggestionsHtml.size })
+        assertSame(messages, projector.applyEvent("run", AgentEvent.SearchSuggestions(1, 0, "第六个"), messages))
     }
 
     @Test
-    fun longHistoryContinuousTailDeltasKeepOrderAndTerminalFlags() {
+    fun eventsWithoutVisibleChangeReturnSameListSoCallerSkipsTimestamp() {
         val projector = AgentRunMessageProjector { 1_000L }
-        val history: List<io.github.mangi.eta.ui.model.AgentChatMessageUi> = (0 until 4_096).map {
-            UserMessageUi("history-$it", "old-$it")
-        }
-        val textId = "assistant-stream-1-0"
-        var textMessages = history + AgentMessageUi(textId, "start", isStreaming = true, renderMarkdown = false)
-        repeat(64) { index ->
-            textMessages = projector.appendTextDelta("stream", 1, 0, ".", textMessages)
-            assertEquals(history, textMessages.dropLast(1))
-            assertEquals("start" + ".".repeat(index + 1), (textMessages.last() as AgentMessageUi).content)
-        }
-        assertEquals(textId, textMessages.last().id)
-        assertTrue((textMessages.last() as AgentMessageUi).isStreaming)
-        assertFalse((textMessages.last() as AgentMessageUi).renderMarkdown)
-
-        val thinkingId = "thinking-stream-thinking-1-0"
-        var thinkingMessages = history + ThinkingMessageUi(
-            thinkingId, "start", isStreaming = true, collapsed = false,
-        )
-        repeat(64) {
-            thinkingMessages = projector.appendReasoningDelta("thinking-stream", 1, 0, ".", thinkingMessages)
-        }
-        assertEquals(history, thinkingMessages.dropLast(1))
-        assertEquals("start" + ".".repeat(64), (thinkingMessages.last() as ThinkingMessageUi).content)
-        assertTrue((thinkingMessages.last() as ThinkingMessageUi).isStreaming)
+        val messages = projector.appendTextDelta("run", 1, 0, "回答", emptyList())
+        listOf(
+            AgentEvent.RoundStarted(1, 2),
+            AgentEvent.ProviderRequestStarted(1),
+            AgentEvent.AssistantReceived(1, 2, "", emptyList()),
+            AgentEvent.UsageReceived(1, AgentTokenUsage(null, null, null, null, null)),
+            AgentEvent.UsageReceived(9, AgentTokenUsage(null, 10, 2, null, null)),
+            AgentEvent.UserSupplementReceived(0, "补充"),
+        ).forEach { event -> assertSame(event.toString(), messages, projector.applyEvent("run", event, messages)) }
     }
 
     @Test
-    fun nonTailTargetStillClosesEarlierStreamingSiblingBeforeAppending() {
-        val projector = AgentRunMessageProjector()
-        val earlier = AgentMessageUi(
-            "assistant-switch-1-0", "old", isStreaming = true, renderMarkdown = false,
-        )
-        val tail = UserMessageUi("user-switch", "follow-up")
-        val messages = projector.appendTextDelta("switch", 1, 1, "new", listOf(earlier, tail))
-        assertEquals("old", (messages[0] as AgentMessageUi).content)
-        assertFalse((messages[0] as AgentMessageUi).isStreaming)
-        assertTrue((messages[0] as AgentMessageUi).renderMarkdown)
-        assertEquals(tail, messages[1])
-        assertEquals("new", (messages[2] as AgentMessageUi).content)
-        assertTrue((messages[2] as AgentMessageUi).isStreaming)
-    }
-
-    @Test
-    fun switchingFromTailThinkingToTextUsesFallbackAndClosesThinking() {
+    fun usageAttachesToRoundWithoutRestartingStreaming() {
         val projector = AgentRunMessageProjector { 1_000L }
-        var messages: List<io.github.mangi.eta.ui.model.AgentChatMessageUi> = emptyList()
-        messages = projector.appendReasoningDelta("switch-tail", 1, 0, "thought", messages)
-        messages = projector.appendTextDelta("switch-tail", 1, 0, "answer", messages)
-        val thinking = messages.filterIsInstance<ThinkingMessageUi>().single()
-        val answer = messages.filterIsInstance<AgentMessageUi>().single()
-        assertFalse(thinking.isStreaming)
-        assertTrue(thinking.collapsed)
-        assertEquals("answer", answer.content)
-        assertTrue(answer.isStreaming)
+        val streaming = projector.appendTextDelta("run", 1, 0, "回答", emptyList())
+        val finished = projector.finalizeTextBlock("run", 1, 0, null, streaming)
+        val withUsage = projector.applyEvent("run", AgentEvent.UsageReceived(1, AgentTokenUsage(100, 80, 20, null, null)), finished)
+        val message = withUsage.filterIsInstance<AgentMessageUi>().single()
+        assertEquals(100, message.usage?.contextTokens)
+        assertFalse(message.isStreaming)
     }
 
     @Test
-    fun replacingWarmTextSnapshotStillFinishesStreamingSibling() {
+    fun applyResultFillsSingleBlockKeepsMultiBlockAndReplacesWithNotice() {
         val projector = AgentRunMessageProjector { 1_000L }
-        val warm = projector.appendTextDelta("r", 1, 1, "A", emptyList())
-        val replaced = listOf(
-            AgentMessageUi("assistant-r-1-0", "old ", isStreaming = true, renderMarkdown = false),
-            warm.last(),
-        )
-        // A deferred/no-op delta must not certify an externally supplied snapshot.
-        val deferred = projector.appendReasoningDelta("r", 1, 2, "private", replaced)
-        val next = projector.appendTextDelta("r", 1, 1, "B", deferred)
-        val old = next.first() as AgentMessageUi
-        assertEquals("old", old.content)
-        assertFalse(old.isStreaming)
-        assertTrue(old.renderMarkdown)
-        assertEquals("AB", (next.last() as AgentMessageUi).content)
-    }
+        val single = projector.appendTextDelta("run", 1, 0, "流式半截", emptyList())
+        assertEquals("完整回答", AgentRunMessageProjector.applyResult("run", single, "完整回答", null)
+            .filterIsInstance<AgentMessageUi>().single().content)
 
-    @Test
-    fun replacingWarmThinkingSnapshotStillFinishesStreamingSibling() {
-        val projector = AgentRunMessageProjector { 1_000L }
-        val warm = projector.appendReasoningDelta("r", 1, 1, "A", emptyList())
-        val replaced = listOf(
-            ThinkingMessageUi("r-thinking-1-0", "old", isStreaming = true, collapsed = false),
-            warm.last(),
-        )
-        val next = projector.appendReasoningDelta("r", 1, 1, "B", replaced)
-        assertFalse((next.first() as ThinkingMessageUi).isStreaming)
-        assertTrue((next.first() as ThinkingMessageUi).collapsed)
-        assertEquals("AB", (next.last() as ThinkingMessageUi).content)
-    }
+        val multi = projector.appendTextDelta("run", 1, 1, "第二段", projector.finalizeTextBlock("run", 1, 0, null, single))
+        assertEquals(listOf("流式半截", "第二段"), AgentRunMessageProjector.applyResult("run", multi, "合并全文", null)
+            .filterIsInstance<AgentMessageUi>().map { it.content })
 
-    @Test
-    fun existingNonTailTextTargetIsUpdatedWithoutMovingRows() {
-        val projector = AgentRunMessageProjector { 1_000L }
-        val warm = projector.appendTextDelta("r", 1, 0, "A", emptyList())
-        val tail = UserMessageUi("user-tail", "follow-up")
-        val next = projector.appendTextDelta("r", 1, 0, "B", warm + tail)
-        assertEquals(2, next.size)
-        assertEquals("AB", (next.first() as AgentMessageUi).content)
-        assertEquals(tail, next.last())
-    }
+        val failed = AgentRunMessageProjector.applyResult("run", single, "", SystemNoticeCode.RuntimeFailed, "错误")
+        val notice = failed.single() as SystemNoticeMessageUi
+        assertEquals(single.single().id, notice.id)
+        assertEquals("错误", notice.detail)
 
-    @Test
-    fun supplementSeparatesResumedTextAndReplacementFromPausedBubble() {
-        val projector = AgentRunMessageProjector()
-        var messages: List<io.github.mangi.eta.ui.model.AgentChatMessageUi> = emptyList()
-        messages = projector.appendTextDelta("run", 1, 0, "暂停前", messages)
-        messages = messages + io.github.mangi.eta.ui.model.UserMessageUi(id = "user-run-supplement-1", content = "补充")
-        messages = projector.appendTextDelta("run", 1, 1, "新输出", messages)
-        messages = projector.finalizeTextBlock("run", 1, 1, "新输出定稿", messages)
-        assertEquals(listOf("暂停前", "补充", "新输出定稿"), messages.map {
-            when (it) {
-                is io.github.mangi.eta.ui.model.AgentMessageUi -> it.content
-                is io.github.mangi.eta.ui.model.UserMessageUi -> it.content
-                else -> error("Unexpected message")
-            }
-        })
-    }
-
-    @Test fun pausedBlockRetainsWhitespaceUntilTerminalFinalization() {
-        val projector = AgentRunMessageProjector { 1_000L }
-        var messages = projector.appendTextDelta("resume", 1, 0, "first \n", emptyList())
-        messages = projector.finalizeTextBlock("resume", 1, 0, null, messages)
-        assertEquals("first \n", (messages.single() as AgentMessageUi).content)
-        messages = projector.appendTextDelta("resume", 1, 0, "second", messages)
-        assertEquals("first \nsecond", (messages.single() as AgentMessageUi).content)
-        assertTrue((messages.single() as AgentMessageUi).isStreaming)
+        val empty = AgentRunMessageProjector.applyResult("other", emptyList(), "回答", null)
+        assertEquals("assistant-other-1", empty.single().id)
     }
 
     @Test
@@ -637,97 +566,280 @@ class AgentRunMessageProjectorTest {
     }
 
     @Test
-    fun ignoresReasoningAndTextAfterFinalizeRun() {
+    fun compactionResultMergesIntoExistingMarkerInsteadOfAppending() {
         val projector = AgentRunMessageProjector(nowElapsedRealtime = { 1_000L })
-        val runId = "run-sealed"
-        var messages: List<AgentChatMessageUi> = listOf(
-            UserMessageUi(id = "user-$runId", content = "写个故事"),
+        val runId = "run-compact"
+        val started = SystemNoticeMessageUi(
+            id = "assistant-$runId-compaction-op-1",
+            code = SystemNoticeCode.ContextCompaction,
+            detail = AgentEvent.ContextCompaction.RUNNING_DETAIL,
+            running = true,
         )
-        messages = projector.appendReasoningDelta(runId, round = 1, index = 0, delta = "构思情节", messages)
-        messages = projector.appendTextDelta(runId, round = 1, index = 1, delta = "从前有座山。", messages)
+        val completed = started.copy(
+            detail = "上下文已压缩：约 45,312 → 25,768 tokens",
+            contextTokens = 25_768,
+            running = false,
+        )
+        val base = listOf(UserMessageUi(id = "user-$runId", content = "整理上下文"))
+
+        // 成功的结果保留事件标记里的 token 信息，不再追加第二条结果通知。
+        val success = AgentRunMessageProjector.mergeCompactionResultNotice(
+            runId, base + completed, ok = true, detail = "上下文压缩完成",
+        )
+        assertEquals(base + completed, success)
+
+        // 失败结果把同一条标记改写为失败原因。
+        val failed = AgentRunMessageProjector.mergeCompactionResultNotice(
+            runId, base + completed, ok = false, detail = "上下文压缩失败",
+        )
+        assertEquals("上下文压缩失败", failed.filterIsInstance<SystemNoticeMessageUi>().single().detail)
+
+        // 事件标记缺失时（如断连恢复路径）才补一条结果标记。
+        val appended = AgentRunMessageProjector.mergeCompactionResultNotice(
+            runId, base, ok = true, detail = "上下文压缩完成",
+        )
+        assertEquals(
+            "assistant-$runId-compaction-result",
+            appended.filterIsInstance<SystemNoticeMessageUi>().single().id,
+        )
+
+        // 仍在进行中的标记被结果收尾，不停留在运行态。
+        val finalized = AgentRunMessageProjector.mergeCompactionResultNotice(
+            runId, base + started, ok = true, detail = "上下文压缩完成",
+        )
+        val finishedNotice = finalized.filterIsInstance<SystemNoticeMessageUi>().single()
+        assertEquals("上下文压缩完成", finishedNotice.detail)
+        assertFalse(finishedNotice.running)
+
+        // finishContextCompaction 只收尾仍在运行的标记，已完成标记保持 token 信息。
+        val interrupted = projector.finishContextCompaction(runId, base + started, "上下文压缩已中断")
+        val interruptedNotice = interrupted.filterIsInstance<SystemNoticeMessageUi>().single()
+        assertEquals("上下文压缩已中断", interruptedNotice.detail)
+        assertFalse(interruptedNotice.running)
+        assertEquals(base + completed, projector.finishContextCompaction(runId, base + completed, "上下文压缩已中断"))
+    }
+
+    @Test
+    fun finalizingRunDoesNotOverwriteCompletedThinkingElapsedSecondsAcrossRounds() {
+        var now = 1_000L
+        val projector = AgentRunMessageProjector(nowElapsedRealtime = { now })
+        val runId = "run-multi-round"
+        var messages: List<AgentChatMessageUi> = listOf(UserMessageUi(id = "user-$runId", content = "排查问题"))
+
+        messages = projector.applyEvent(
+            runId,
+            AgentEvent.AssistantBlockStart(1, AgentEvent.AssistantBlockKind.THINKING, 0),
+            messages,
+        )
+        messages = projector.appendReasoningDelta(runId, round = 1, index = 0, delta = "第一轮思考", messages)
+        now = 4_000L
+        messages = projector.startTool(
+            runId,
+            AgentEvent.ToolStarted(round = 1, toolCallId = "call_1", name = "observe_screen", argsPreview = "{}"),
+            projector.finalizeThinkingRound(runId, round = 1, messages),
+        )
+        messages = projector.finishTool(
+            runId,
+            AgentEvent.ToolFinished(
+                round = 1,
+                toolCallId = "call_1",
+                name = "observe_screen",
+                resultSummary = "ok=true",
+                imageCount = 0,
+                imageBytes = 0,
+                success = true,
+            ),
+            messages,
+        )
+
+        now = 64_000L
+        messages = projector.applyEvent(
+            runId,
+            AgentEvent.AssistantBlockStart(2, AgentEvent.AssistantBlockKind.THINKING, 0),
+            messages,
+        )
+        messages = projector.appendReasoningDelta(runId, round = 2, index = 0, delta = "第二轮思考", messages)
+        now = 66_000L
+        messages = projector.appendTextDelta(runId, round = 2, index = 1, delta = "排查完成", messages)
         messages = projector.finalizeRun(runId, messages)
 
-        val finalized = messages
-        messages = projector.appendReasoningDelta(runId, round = 1, index = 0, delta = "还要再想一下", messages)
-        messages = projector.appendTextDelta(runId, round = 1, index = 1, delta = "续写", messages)
-        messages = projector.startAssistantBlock(
-            runId,
+        val thinkings = messages.filterIsInstance<ThinkingMessageUi>()
+        assertEquals(2, thinkings.size)
+        assertEquals(3, thinkings[0].elapsedSeconds)
+        assertEquals(2, thinkings[1].elapsedSeconds)
+    }
+
+    @Test
+    fun interleavedThinkingInSameRoundKeepsEarlierBlockElapsedSeconds() {
+        var now = 1_000L
+        val projector = AgentRunMessageProjector(nowElapsedRealtime = { now })
+        val runId = "run-same-round"
+        var messages: List<AgentChatMessageUi> = listOf(UserMessageUi(id = "user-$runId", content = "查资料"))
+
+        messages = projector.appendReasoningDelta(runId, round = 1, index = 0, delta = "先判断", messages)
+        now = 3_000L
+        messages = projector.appendTextDelta(runId, round = 1, index = 1, delta = "我查一下。", messages)
+        now = 13_000L
+        messages = projector.appendReasoningDelta(runId, round = 1, index = 2, delta = "再总结", messages)
+        now = 16_000L
+        messages = projector.finalizeThinkingRound(runId, round = 1, messages)
+
+        val thinkings = messages.filterIsInstance<ThinkingMessageUi>()
+        assertEquals(2, thinkings.size)
+        assertEquals(2, thinkings[0].elapsedSeconds)
+        assertEquals(3, thinkings[1].elapsedSeconds)
+    }
+
+    @Test
+    fun replayRestoresCompletedThinkingDurationAndResumesInProgressClock() {
+        var now = 100_000L
+        val projector = AgentRunMessageProjector(nowElapsedRealtime = { now })
+        val runId = "run-replay-clock"
+        val replayEpochMs = 92_000L
+        var messages: List<AgentChatMessageUi> = listOf(UserMessageUi(id = "user-$runId", content = "继续任务"))
+
+        val replayEvents = listOf(
+            AgentEvent.AssistantBlockStart(
+                round = 1,
+                kind = AgentEvent.AssistantBlockKind.THINKING,
+                index = 0,
+                startedAtEpochMs = 10_000L,
+            ),
+            AgentEvent.AssistantBlockDelta(
+                round = 1,
+                kind = AgentEvent.AssistantBlockKind.THINKING,
+                index = 0,
+                deltaChars = 4,
+                delta = "第一轮",
+            ),
+            AgentEvent.AssistantBlockEnd(
+                round = 1,
+                kind = AgentEvent.AssistantBlockKind.THINKING,
+                index = 0,
+                contentChars = 4,
+                elapsedMs = 4_500L,
+            ),
             AgentEvent.AssistantBlockStart(
                 round = 2,
                 kind = AgentEvent.AssistantBlockKind.THINKING,
                 index = 0,
+                startedAtEpochMs = 80_000L,
             ),
-            messages,
-        )
-        messages = projector.ensureCompletedThinking(
-            runId = runId,
-            round = 2,
-            content = "结束后的思考",
-            messages = messages,
-        )
-
-        assertEquals(finalized, messages)
-        val thinking = messages.filterIsInstance<ThinkingMessageUi>().single()
-        assertFalse(thinking.isStreaming)
-        assertTrue(thinking.collapsed)
-        assertEquals("构思情节", thinking.content)
-        val assistant = messages.filterIsInstance<AgentMessageUi>().single()
-        assertEquals("从前有座山。", assistant.content)
-        assertFalse(assistant.isStreaming)
-    }
-
-    @Test
-    fun replayAfterFinalizeAllowsReasoningAgain() {
-        val projector = AgentRunMessageProjector(nowElapsedRealtime = { 1_000L })
-        val runId = "run-replay-seal"
-        var messages: List<AgentChatMessageUi> = projector.appendReasoningDelta(
-            runId,
-            round = 1,
-            index = 0,
-            delta = "先想",
-            messages = emptyList(),
-        )
-        messages = projector.finalizeRun(runId, messages)
-        messages = projector.resetForReplay(runId, messages)
-        messages = projector.appendReasoningDelta(runId, round = 1, index = 0, delta = "回放思考", messages)
-        val thinking = messages.filterIsInstance<ThinkingMessageUi>().single()
-        assertEquals("回放思考", thinking.content)
-        assertTrue(thinking.isStreaming)
-        assertFalse(thinking.collapsed)
-    }
-
-    @Test
-    fun ignoresDuplicateReasoningAfterAnswer() {
-        val projector = AgentRunMessageProjector(nowElapsedRealtime = { 1_000L })
-        val runId = "run-dup-think"
-        var messages: List<AgentChatMessageUi> = projector.appendReasoningDelta(
-            runId, round = 1, index = 0, delta = "先想清楚结构", messages = emptyList(),
-        )
-        messages = projector.finalizeThinkingRound(runId, 1, messages)
-        messages = projector.appendTextDelta(runId, round = 1, index = 1, delta = "修表匠的钟", messages)
-        val afterAnswer = messages
-        messages = projector.startAssistantBlock(
-            runId,
-            AgentEvent.AssistantBlockStart(
-                round = 1,
+            AgentEvent.AssistantBlockDelta(
+                round = 2,
                 kind = AgentEvent.AssistantBlockKind.THINKING,
-                index = 2,
+                index = 0,
+                deltaChars = 4,
+                delta = "第二轮",
+            ),
+        )
+
+        messages = projector.resetForReplay(runId, messages)
+        replayEvents.forEach { event ->
+            messages = projector.applyEvent(runId, event, messages, replayEpochMs = replayEpochMs)
+        }
+
+        val replayed = messages.filterIsInstance<ThinkingMessageUi>()
+        assertEquals(2, replayed.size)
+        assertFalse(replayed[0].isStreaming)
+        assertEquals(4, replayed[0].elapsedSeconds)
+        assertTrue(replayed[1].isStreaming)
+        assertEquals(12, replayed[1].elapsedSeconds)
+
+        now = 103_000L
+        messages = projector.finalizeThinking(runId, messages)
+        val settled = messages.filterIsInstance<ThinkingMessageUi>()
+        assertEquals(4, settled[0].elapsedSeconds)
+        assertEquals(15, settled[1].elapsedSeconds)
+    }
+
+    @Test
+    fun subagentProgressIgnoresCorruptDuplicateAndPostTerminalSnapshots() {
+        val projector = AgentRunMessageProjector(nowElapsedRealtime = { 1_000L })
+        val runId = "run-subagent"
+        val initial = io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot(
+            subagentId = "sub_1",
+            subagentType = "explore",
+            description = "查日志",
+            status = io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot.STATUS_RUNNING,
+            currentAction = "正在启动…",
+        ).encodeForWire()
+        val runningStep = io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot(
+            subagentId = "sub_1",
+            subagentType = "explore",
+            description = "查日志",
+            status = io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot.STATUS_RUNNING,
+            currentAction = "正在读取日志",
+            totalToolSteps = 3,
+        ).encodeForWire()
+        val completed = io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot(
+            subagentId = "sub_1",
+            subagentType = "explore",
+            description = "查日志",
+            status = io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot.STATUS_COMPLETED,
+            currentAction = "完成 · 3 次工具调用",
+            totalToolSteps = 3,
+            output = "已定位根因",
+        ).encodeForWire()
+
+        var messages: List<AgentChatMessageUi> = projector.startTool(
+            runId,
+            AgentEvent.ToolStarted(
+                round = 1,
+                toolCallId = "call_sub",
+                name = "subagent",
+                argsPreview = "explore · 查日志",
+                command = initial,
+            ),
+            listOf(UserMessageUi(id = "user-$runId", content = "帮我查日志")),
+        )
+
+        // 正常进度更新。
+        val progressEvent = AgentEvent.SubagentProgress(1, "call_sub", "sub_1", "explore", runningStep)
+        messages = projector.applyEvent(runId, progressEvent, messages)
+        assertEquals(runningStep, (messages.last() as ToolActivityMessageUi).command)
+
+        // 重复进度返回同一引用。
+        assertSame(messages, projector.applyEvent(runId, progressEvent, messages))
+
+        // 损坏快照被忽略，保留此前正常快照。
+        val corruptEvent = progressEvent.copy(snapshotJson = "{\"subagentId\":\"sub_1\",\"broken...")
+        assertSame(messages, projector.applyEvent(runId, corruptEvent, messages))
+        assertEquals(runningStep, (messages.last() as ToolActivityMessageUi).command)
+
+        // 损坏终态 command 不覆盖此前合法快照。
+        val finishedWithCorrupt = projector.finishTool(
+            runId,
+            AgentEvent.ToolFinished(
+                round = 1,
+                toolCallId = "call_sub",
+                name = "subagent",
+                resultSummary = "完成",
+                imageCount = 0,
+                imageBytes = 0,
+                success = true,
+                command = "{\"truncated",
             ),
             messages,
         )
-        messages = projector.appendReasoningDelta(
-            runId, round = 1, index = 2, delta = "先想清楚结构", messages,
-        )
-        assertEquals(afterAnswer, messages)
-        assertEquals(1, messages.filterIsInstance<ThinkingMessageUi>().size)
-    }
+        assertEquals(runningStep, (finishedWithCorrupt.last() as ToolActivityMessageUi).command)
 
-    @Test fun completedFallbackDoesNotReplaceVisibleStreamingAnswer() {
-        assertEquals("已显示的回答", mergeCompletedAssistantContent("已显示的回答", "完全不同的终态", 1))
-        assertEquals("已显示的回答。", mergeCompletedAssistantContent("已显示的回答", "已显示的回答。", 1))
-        assertEquals("已显示的回答", mergeCompletedAssistantContent("已显示的回答\n", "已显示的回答", 1))
-        assertEquals("短", mergeCompletedAssistantContent("短", "", 1))
-        assertEquals("终态", mergeCompletedAssistantContent("", "终态", 1))
-        assertEquals("第一段", mergeCompletedAssistantContent("第一段", "另一段", 2))
+        // 合法终态更新后，迟到的中间进度不再回写覆盖。
+        val finishedValid = projector.finishTool(
+            runId,
+            AgentEvent.ToolFinished(
+                round = 1,
+                toolCallId = "call_sub",
+                name = "subagent",
+                resultSummary = "完成 · 3 次工具调用",
+                imageCount = 0,
+                imageBytes = 0,
+                success = true,
+                command = completed,
+            ),
+            messages,
+        )
+        assertEquals(completed, (finishedValid.last() as ToolActivityMessageUi).command)
+        assertSame(finishedValid, projector.applyEvent(runId, progressEvent, finishedValid))
     }
 }

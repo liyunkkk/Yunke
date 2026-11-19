@@ -1,20 +1,23 @@
 package io.github.mangi.eta.agent.runtime
 
 import android.content.Context
-import io.github.mangi.eta.agent.question.AgentQuestionCodec
-import io.github.mangi.eta.agent.question.AgentQuestionCoordinator
-import io.github.mangi.eta.config.Prefs
-import io.github.mangi.eta.config.InteractiveModePreference
-import io.github.mangi.eta.agent.delegation.*
-import io.github.mangi.eta.agent.browser.ChildBrowserSession
-import io.github.mangi.eta.agent.model.AgentToolCatalog
 import io.github.mangi.eta.agent.accessibility.AgentAccessibilityKeeper
+import io.github.mangi.eta.agent.browser.BrowserSessionRegistry
+import io.github.mangi.eta.agent.model.AgentConversationCodec
+import io.github.mangi.eta.agent.model.AgentConversationToolCatalog
+import io.github.mangi.eta.agent.tool.ConversationHistoryTool
+import io.github.mangi.eta.data.db.EtaDatabase
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.model.AgentModelExecutionException
 import io.github.mangi.eta.agent.model.AgentModelFailure
 import io.github.mangi.eta.agent.model.AgentHttpClient
 import io.github.mangi.eta.agent.memory.AgentMemoryContext
 import io.github.mangi.eta.agent.memory.AgentMemoryContextBuilder
+import io.github.mangi.eta.agent.memory.ConversationMemoryPins
+import io.github.mangi.eta.agent.roleplay.CharacterMemoryTools
+import io.github.mangi.eta.agent.roleplay.RoleplayRunContext
+import io.github.mangi.eta.agent.subagent.AgentSubagentToolCatalog
+import io.github.mangi.eta.agent.subagent.SubagentExecutor
 import io.github.mangi.eta.agent.mcp.McpRunSnapshot
 import io.github.mangi.eta.agent.mcp.McpToolExecutor
 import io.github.mangi.eta.agent.mcp.RoutingToolExecutor
@@ -29,26 +32,32 @@ import io.github.mangi.eta.agent.tool.AgentToolCapabilities
 import io.github.mangi.eta.agent.tool.PendingSkillConflictCapabilityParser
 import io.github.mangi.eta.agent.tool.ToolExecutionDecision
 import io.github.mangi.eta.agent.voice.EtaAssistantOverlayService
+import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.core.safeLogType
 import io.github.mangi.eta.data.repository.AgentMemoryRepository
-import io.github.mangi.eta.data.repository.AssistantRepository
-import io.github.mangi.eta.data.repository.LinuxEnvironmentSettingsRepository
-import io.github.mangi.eta.data.repository.SubAgentRunRepository
-import io.github.mangi.eta.agent.terminal.LinuxDistribution
+import io.github.mangi.eta.data.repository.RuntimeConfigRepository
 import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
-import java.util.UUID
-import java.util.concurrent.atomic.AtomicReference
+import org.json.JSONObject
 
-/** Blocking execution of one parent. A child group is a separate owner, not a controller binding. */
+/**
+ * 单次 Runtime run 的阻塞执行器。
+ *
+ * 它只拥有模型、工具和终态提交，不持有 Service、Messenger、Compose 或 WindowManager 状态。
+ * 所有外部副作用都通过窄回调交回宿主。
+ */
 internal class AgentRuntimeRunExecutor(
     context: Context,
     private val currentPermissions: () -> AgentRuntimePolicy.Permissions,
     private val snapshotRequest: (AgentRuntimeWire.RunRequest) -> AgentRuntimeWire.RunRequest,
+    private val guiControl: GuiControlCoordinator,
     private val onAcceptedEvent: (AgentEvent, EntrySurfaceGuard?) -> Unit,
-    private val onSelfAppOverlayChanged: () -> Unit,
-    private val persistArtifacts: (AgentRuntimeWire.RunRequest, AgentRuntimeWire.RunResult, List<AgentEvent>) -> Unit,
+    private val persistArtifacts: (
+        AgentRuntimeWire.RunRequest,
+        AgentRuntimeWire.RunResult,
+        List<AgentEvent>,
+    ) -> Unit,
 ) {
     data class Outcome(
         val result: AgentRuntimeWire.RunResult,
@@ -57,480 +66,486 @@ internal class AgentRuntimeRunExecutor(
         val response: AgentModelClient.ModelResponse.Text? = null,
         val shouldUpdateHost: Boolean,
     )
+
     private val appContext = context.applicationContext
 
-    fun execute(session: AgentRuntimeSession, request: AgentRuntimeWire.RunRequest): Outcome {
+    fun execute(
+        session: AgentRuntimeSession,
+        request: AgentRuntimeWire.RunRequest,
+    ): Outcome {
         val runController = session.controller
-        io.github.mangi.eta.agent.device.RootAccess.awaitOrRetryIfPreviouslyGranted(appContext)
-        runController.throwIfCancelled()
-        val archivedEvents = mutableListOf<AgentEvent>()
+        val archivedEvents = AgentRunArchiveStore.createEventBuffer(request.handoff)
         var entrySurfaceGuard: EntrySurfaceGuard? = null
-        var localTools: AgentLocalTools? = null
-        var deliveryFailure: String? = null
-        var cleanupFailure: String? = null
-        var modelCompleted = false
-        var virtualDeliveryCompleted = false
+        var toolExecutor: AutoCloseable? = null
         var toolsBinding: AgentRunController.ResourceBinding? = null
-        var toolsOwner: AgentChildToolOwnership? = null
-        var groupGeneration: String? = null
-        var replacementGeneration: String? = null
-        val registeredChildGenerations = mutableListOf<String>()
-        val childContextSink = AtomicReference<((SubAgentContextStats) -> Unit)?>(null)
-        // “每次询问”选前台后补给服务的 ToolStarted 来源。
-        val foregroundReplay = AgentForegroundReplay()
-        val childSessionId = request.effectiveModelSessionId
-        val allowBrowser = request.config.browserTools
-        val allowTerminal = request.config.terminalTools
-        val allowDirect = request.config.deviceDirectTools
-        val allowSensitiveRead = request.config.deviceSensitiveReadTools
-        val allowSensitiveAction = request.config.deviceSensitiveActionTools
-        // Parent-only prompt policy, frozen for this run rather than re-read between rounds.
-        val interactiveModeEnabled = InteractiveModePreference.read()
+        var guiRun: GuiControlCoordinator.RunControl? = null
+        var browserBinding: AutoCloseable? = null
         var response: AgentModelClient.ModelResponse.Text? = null
         var cancelled = false
         var checkpointRecorder: AgentRunCheckpointRecorder? = null
-        var unownedSkillRoot: java.io.File? = null
         val timing = AgentRunTiming(AndroidAgentLogger)
-        childContextSink.set { stats ->
-            if (!session.isTerminal) acceptEvent(session, AgentEvent.ChildContextUpdated(stats),
-                archivedEvents, entrySurfaceGuard, checkpointRecorder)
-        }
-        session.childCompactor = { taskId, keep, model ->
-            AgentChildTaskGroups.requestCompact(childSessionId, taskId, keep, model)
-        }
-        var result = try {
-            runController.throwIfCancelled()
+
+        // 失败清理需要在 try 外拿到会话 id。
+        var memoryConversationId: String? = null
+        val result = try {
+            val contextWindow = request.config.knownContextWindow
             checkpointRecorder = AgentRunCheckpointRecorder.create(appContext, request)
-            entrySurfaceGuard = EntrySurfaceGuard.from(request.handoff, AndroidAgentLogger) {
-                EtaAssistantOverlayService.dismissForForegroundOperation(appContext)
-            }
+            entrySurfaceGuard = EntrySurfaceGuard.from(
+                handoff = request.handoff,
+                logger = AndroidAgentLogger,
+                etaVoiceSurfaceDismissal = {
+                    EtaAssistantOverlayService.dismissForForegroundOperation(appContext)
+                },
+            )
             val skillIndexService = SkillRuntime.createIndexService(appContext)
             val skillLoader = SkillRuntime.createLoader(appContext)
             val skillResourceReader = SkillRuntime.createResourceReader(appContext)
             val skillPackageInstaller = SkillRuntime.createPackageInstaller(appContext)
-            val githubSkillSource = PublicGitHubSkillSource(appContext.cacheDir, AgentHttpClient.client)
-            val assistant = requireNotNull(AssistantRepository.currentProfile(request.assistantId)) { "任务所属助手不存在，请重新发起任务" }
-            val enabledSkillIds = assistant.enabledSkillIds.toSet()
-            val (runSkillsRoot, runSkillEntries) = SkillRuntime.createRunSkills(appContext, assistant.id,
-                skillIndexService.listSkillsForManagement(forceRefresh = true)
-                    .filter { it.installed && it.id in enabledSkillIds }
-                    .filter { SkillCompatibilityChecker.evaluate(it).available })
-            unownedSkillRoot = runSkillsRoot
-            val skillContext = SkillContext(installedSkills = runSkillEntries)
-            val memoryEnabled = assistant.memoryEnabled
-            val memoryContext = if (memoryEnabled) runCatching {
-                AgentMemoryContextBuilder.build(AgentMemoryRepository.snapshot(assistant.id), request.config.contextWindow)
-            }.getOrElse { throwable ->
-                AndroidAgentLogger.warnThrottled("agent_memory_context_failed") { "Agent memory context unavailable: type=${throwable.safeLogType()}" }
-                AgentMemoryContextBuilder.empty(request.config.contextWindow)
-            } else AgentMemoryContext.DISABLED
+            val githubSkillSource = PublicGitHubSkillSource(
+                cacheRoot = appContext.cacheDir,
+                baseClient = AgentHttpClient.client,
+            )
+            val skillContext = SkillContext(
+                installedSkills = skillIndexService.listInstalledSkills()
+                    .filter { SkillCompatibilityChecker.evaluate(it).available },
+            )
+            val memoryEnabled = runBlocking { AgentMemoryRepository.isEnabled() }
+            val uiPayload = request.handoff
+                ?.takeIf { it.source == AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE }
+                ?.let { AgentUiHandoffPayload.from(it.payload) }
+            val conversationId = uiPayload?.conversationId
+                ?.takeIf { it.isNotBlank() }
+            memoryConversationId = conversationId
+            val roleplayContext = conversationId?.let { id ->
+                runBlocking { RoleplayRunContext.resolve(appContext, id, contextWindow, memoryEnabled) }
+            }
+            if (request.operation == AgentRuntimeWire.OP_REWRITE_REPLY) {
+                require(roleplayContext != null) { "只有角色会话可以改写角色回复" }
+                val target = request.rewriteTargetMessageId?.takeIf { it.isNotBlank() && it.length <= 256 }
+                    ?: throw IllegalArgumentException("缺少有效的角色回复目标")
+                require(runBlocking {
+                    EtaDatabase.get(appContext).conversationDao().hasAssistantMessage(conversationId, target)
+                }) { "角色回复目标不存在或不属于当前会话" }
+            }
+            val characterMemoryTools = roleplayContext?.let { roleplay ->
+                CharacterMemoryTools(appContext, roleplay.characterId) {
+                    runBlocking { AgentMemoryRepository.isEnabled() }
+                }
+            }
+            val memoryContext = if (memoryEnabled) {
+                runCatching {
+                    ConversationMemoryPins.contextFor(
+                        conversationId = conversationId,
+                        snapshot = AgentMemoryRepository.snapshot(),
+                        contextWindow = request.config.contextWindow,
+                    )
+                }.getOrElse { throwable ->
+                    AndroidAgentLogger.warnThrottled("agent_memory_context_failed") {
+                        "Agent memory context unavailable: type=${throwable.safeLogType()}"
+                    }
+                    AgentMemoryContextBuilder.empty(request.config.contextWindow)
+                }
+            } else {
+                AgentMemoryContext.DISABLED
+            }
+            if (request.config.terminalTools || request.config.deviceDirectTools) {
+                // 启动探测由 App 拥有；模型首轮等待其结果，并在历史曾授权但临时未就绪时自动复检。
+                runController.throwIfCancelled()
+                io.github.mangi.eta.agent.device.RootAccess.awaitOrRetryIfPreviouslyGranted(appContext)
+            }
             val pendingSkillConflict = PendingSkillConflictCapabilityParser.parse(request.history)
             val mcpSnapshot = runBlocking {
                 runCatching { McpRunSnapshot.load() }.getOrElse { throwable ->
-                    AndroidAgentLogger.warnThrottled("agent_mcp_snapshot_failed") { "MCP tool snapshot unavailable: type=${throwable.safeLogType()}" }
+                    AndroidAgentLogger.warnThrottled("agent_mcp_snapshot_failed") {
+                        "MCP tool snapshot unavailable: type=${throwable.safeLogType()}"
+                    }
                     McpRunSnapshot.EMPTY
                 }
             }
-            val runSurface = session.taskSurfaceMode
-            // 副屏工具只在明确选择后台后暴露；ASK 首轮由执行位置弹窗决定后续轮次。
-            val runVirtualDisplay = {
-                session.taskSurfaceMode == io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.BACKGROUND
-            }
             val mcpTools = JSONArray().also(mcpSnapshot::appendModelTools)
+            val browserKey = AgentConversationIdentity.fromHandoff(request.handoff, request.runId)
+            browserBinding = BrowserSessionRegistry.acquireRun(browserKey, request.runId)
+            guiRun = guiControl.openRun(request.runId, runController) { status ->
+                acceptEvent(
+                    session, AgentEvent.GuiControlChanged(status), archivedEvents,
+                    entrySurfaceGuard, checkpointRecorder,
+                )
+            }
             val executor = AgentLocalTools(
-                context = appContext, logger = AndroidAgentLogger, browserRunId = request.runId,
-                conversationId = request.effectiveModelSessionId,
-                browserConversationId = request.handoff?.takeIf {
-                    it.source == AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE
-                }?.let { AgentUiHandoffPayload.from(it.payload).conversationId }.orEmpty(),
-                frozenSurface = runSurface,
-                chooseSurface = { toolName, toolsClosed ->
-                    // 先写会话再等弹窗退场；返回值取自会话，工具侧与会话保持一致。
-                    AgentTaskSurfaceChoice.choose(
-                        session = session,
-                        await = {
-                            io.github.mangi.eta.agent.device.AgentTaskPrompt.await(
-                                runId = request.runId,
-                                cancelled = { toolsClosed() || runController.isCancelled },
-                                show = { prompt -> io.github.mangi.eta.ui.AgentTaskSurfaceDialogActivity.launch(appContext, prompt.id) },
-                            )
-                        },
-                        awaitHostHidden = { io.github.mangi.eta.agent.device.AgentTaskPrompt.awaitHostHidden() },
-                        // 选前台前 ToolStarted 已发出但服务没处理：只补给服务做悬浮窗与前台记录，不进对话记录和回放。
-                        onForegroundResolved = {
-                            onAcceptedEvent(foregroundReplay.startedEvent(toolName), entrySurfaceGuard)
-                        },
-                    )
+                context = appContext,
+                logger = AndroidAgentLogger,
+                browserRunId = request.runId,
+                browserSession = BrowserSessionRegistry.get(browserKey),
+                guiControl = guiRun,
+                browserToolsEnabled = {
+                    request.config.browserTools && currentPermissions().browserTools
                 },
-                browserToolsEnabled = { allowBrowser && currentPermissions().browserTools },
-                terminalToolsEnabled = { allowTerminal && currentPermissions().terminalTools },
-                deviceDirectToolsEnabled = { allowDirect && currentPermissions().deviceDirectTools },
-                deviceSensitiveReadToolsEnabled = { allowSensitiveRead && currentPermissions().deviceSensitiveReadTools },
-                deviceSensitiveActionToolsEnabled = { allowSensitiveAction && currentPermissions().deviceSensitiveActionTools },
-                memoryToolsEnabled = { AssistantRepository.currentProfile(assistant.id)?.memoryEnabled == true },
-                screenshotExcludedPackages = { entrySurfaceGuard?.consumeScreenshotExcludedPackages().orEmpty() },
-                onSelfAppSurfaceChanged = { toolName, active ->
-                    if (session.setSelfAppOverlayActive(active)) {
-                        onSelfAppOverlayChanged()
-                        if (active) {
-                            onAcceptedEvent(foregroundReplay.startedEvent(toolName), entrySurfaceGuard)
-                        }
-                    }
+                terminalToolsEnabled = {
+                    request.config.terminalTools && currentPermissions().terminalTools
+                },
+                deviceDirectToolsEnabled = {
+                    request.config.deviceDirectTools && currentPermissions().deviceDirectTools
+                },
+                deviceSensitiveReadToolsEnabled = {
+                    request.config.deviceSensitiveReadTools &&
+                        currentPermissions().deviceSensitiveReadTools
+                },
+                deviceSensitiveActionToolsEnabled = {
+                    request.config.deviceSensitiveActionTools &&
+                        currentPermissions().deviceSensitiveActionTools
+                },
+                memoryToolsEnabled = {
+                    runBlocking { AgentMemoryRepository.isEnabled() }
+                },
+                memoryWritable = roleplayContext == null,
+                screenshotExcludedPackages = {
+                    entrySurfaceGuard?.consumeScreenshotExcludedPackages().orEmpty()
                 },
                 beforeToolExecution = { toolName ->
-                    val requiresAccessibility = AgentToolRequirements.requiresAccessibility(toolName)
-                    if (!requiresAccessibility && !AgentOverlayVisibilityPolicy.requiresEntrySurfaceDismissal(toolName)) {
+                    val requiresAccessibility =
+                        AgentToolRequirements.requiresAccessibility(toolName)
+                    if (
+                        !requiresAccessibility &&
+                        !AgentOverlayVisibilityPolicy.requiresEntrySurfaceDismissal(toolName)
+                    ) {
                         ToolExecutionDecision.Allow
                     } else {
-                        val accessibility = if (requiresAccessibility) AgentAccessibilityKeeper.ensureEnabledForGuiOperation(appContext) else null
+                        val accessibility = if (requiresAccessibility) {
+                            AgentAccessibilityKeeper.ensureEnabledForGuiOperation(appContext)
+                        } else {
+                            null
+                        }
                         when {
-                            accessibility != null && !accessibility.available -> ToolExecutionDecision.Reject(accessibility.code, accessibility.message)
-                            entrySurfaceGuard?.dismissOnce() == false -> ToolExecutionDecision.Reject("ENTRY_SURFACE_NOT_READY", "入口窗口关闭未完成；本次工具未执行，请勿在当前任务中重复调用")
+                            accessibility != null && !accessibility.available ->
+                                ToolExecutionDecision.Reject(
+                                    code = accessibility.code,
+                                    message = accessibility.message,
+                                )
+                            entrySurfaceGuard?.dismissOnce() == false ->
+                                ToolExecutionDecision.Reject(
+                                    code = "ENTRY_SURFACE_NOT_READY",
+                                    message = "入口窗口关闭未完成；本次工具未执行，请勿在当前任务中重复调用",
+                                )
                             else -> ToolExecutionDecision.Allow
                         }
                     }
                 },
-                skillIndexService = skillIndexService, skillLoader = skillLoader,
-                skillResourceReader = skillResourceReader, githubSkillSource = githubSkillSource,
+                skillIndexService = skillIndexService,
+                skillLoader = skillLoader,
+                skillResourceReader = skillResourceReader,
+                githubSkillSource = githubSkillSource,
                 skillPackageInstaller = skillPackageInstaller,
                 runAvailableSkillIds = skillContext.installedSkills.mapTo(mutableSetOf()) { it.id },
-                runSkillEntries = skillContext.installedSkills, memoryAssistantId = assistant.id,
-                runSkillsRoot = runSkillsRoot, pendingSkillConflict = pendingSkillConflict,
+                pendingSkillConflict = pendingSkillConflict,
+                virtualDisplayEnabled = { currentPermissions().virtualDisplay },
             )
-            localTools = executor
-            unownedSkillRoot = null
-            val routingExecutor = RoutingToolExecutor(local = executor, mcp = McpToolExecutor(mcpSnapshot))
-            val ownership = AgentChildToolOwnership { routingExecutor.close() }
-            toolsOwner = ownership
-            toolsBinding = runController.register { ownership.release() }
+            val routingExecutor = RoutingToolExecutor(
+                local = executor,
+                mcp = McpToolExecutor(mcpSnapshot),
+            )
+            toolExecutor = routingExecutor
+            toolsBinding = runController.register(routingExecutor::close)
             timing.preparationFinished(skillContext.installedSkills.size)
-
-            // Retain all exact-selection candidates, including explicit unavailable reasons.
-            // This never re-resolves a retained child's healthy configuration for continue.
-            val ownerKey = SubAgentConfigKey.Conversation(request.effectiveModelSessionId)
-            val childConfig = ConversationSubAgentPreferences().snapshot(ownerKey)
-            val childCandidates = runBlocking { ChildWorkerConfigResolver.resolve(childSessionId, childConfig, parentConfig = request.config) }
-            val childDispatchPlan = ChildTaskOrdinaryDispatchSelection.plan(childCandidates)
-            val workspaceEnvironment = LinuxEnvironmentSettingsRepository.current(appContext).wireName
-            val childWorkspace = if (allowTerminal && currentPermissions().terminalTools) SubAgentWorkspace(
-                appContext, executor, ownerId = childSessionId, initialEnvironment = workspaceEnvironment,
-                environment = { when (LinuxEnvironmentSettingsRepository.current(appContext)) {
-                    LinuxDistribution.ALPINE -> "alpine"
-                    LinuxDistribution.DEBIAN -> "debian"
-                } },
-                legacyIds = { project -> AgentChildTaskGroups.ownedWorkspaceIds(childSessionId, project, workspaceEnvironment) },
-            ) else null
-            fun createChildGroup(candidates: List<ChildTaskConfigPolicy.Candidate<ChildWorkerConfigResolver.Configuration>>): String? {
-                val configuredChildren = AgentChildWorkerAvailability.configuredChildren(candidates)
-                val childModels = configuredChildren.map { it.second }
-                if (childModels.isEmpty()) return null
-                val frozenParallelLimits = childModels.map { childConfig.parallelLimit(SubAgentParallelModel(it.providerId, it.model)) }
-                // Retain BEFORE construction, which allocates scheduler and pool leases. Transfer only after registration.
-                val childLease = checkNotNull(ownership.retain()) { "父任务已终止，无法创建子任务" }
-                var childOwnershipTransferred = false
-                var children: SubAgentCoordinator? = null
-                try {
-                    val workspace = childWorkspace
-                    // Each invocation/continuation owns its own ephemeral browser; never forward it
-                    // to the parent's AgentLocalTools (which is bound to the parent's browser page).
-                    fun runTextChild(config: AgentModelClient.ModelConfig, prompt: String,
-                        controller: AgentRunController, project: String, id: String?, writable: Boolean,
-                        progress: (AgentEvent) -> Unit = {}): String {
-                        val browser = if (io.github.mangi.eta.agent.browser.ChildBrowserPolicy.sessionAllowed(
-                                allowBrowser && currentPermissions().browserTools, controller.childBrowserAccess.wire))
-                            ChildBrowserSession(appContext, controller) { allowBrowser && currentPermissions().browserTools }
-                        else null
-                        try {
-                            if (id != null) {
-                                val backend = requireNotNull(workspace)
-                                return SubAgentRunner.run(config, prompt, SubAgentWorkspace.childTools(writable),
-                                    backend.childExecutor(project, id, writable, controller), controller,
-                                    workspaceMode = true, writable = writable, sessionId = childSessionId,
-                                    onProgress = progress, browserExecutor = browser?.executor)
-                            }
-                            val readTools = SubAgentTools.filter(AgentToolCatalog.build(
-                                terminalTools = allowTerminal && currentPermissions().terminalTools,
-                                browserTools = false, // Installed separately with a task-owned executor.
-                                deviceDirectTools = allowDirect && currentPermissions().deviceDirectTools,
-                                deviceSensitiveReadTools = allowSensitiveRead && currentPermissions().deviceSensitiveReadTools,
-                                memoryTools = memoryEnabled,
-                                disabledTools = Prefs.disabledTools(),
-                                capabilities = AgentToolCapabilities.capture(appContext).copy(virtualDisplay = runVirtualDisplay())))
-                            return SubAgentRunner.run(config, prompt, readTools, executor, controller,
-                                sessionId = childSessionId, onProgress = progress, browserExecutor = browser?.executor)
-                        } finally {
-                            browser?.release()
-                        }
+            // 手动压缩复用主会话工具目录以保持 Provider 前缀缓存，必须暴露与 OP_CHAT 一致的 conversation_history。
+            val historyTool = if (supportsHistoryTool(request.operation)) {
+                val id = conversationId
+                if (id != null) {
+                    ConversationHistoryTool {
+                        val checkpoint = runBlocking { EtaDatabase.get(appContext).conversationDao().contextCheckpoint(id) }
+                        val journal = AgentConversationCodec.decodeTranscript(checkpoint?.journalJson)
+                            .ifEmpty { AgentConversationCodec.decodeTranscript(checkpoint?.historyJson) }
+                        journal + session.transcript
                     }
-                    var generationForCallback: String? = null
-                    val poolScope = "${request.effectiveModelSessionId}:${request.runId}:${UUID.randomUUID()}"
-                    children = SubAgentCoordinator(childModels,
-                        roles = configuredChildren.map { it.first.role },
-                        workerIds = configuredChildren.map { it.first.id },
-                        workerNames = configuredChildren.map { it.first.name },
-                        workerModelIds = configuredChildren.map { it.first.modelId },
-                        workerTiers = configuredChildren.map { it.first.tier },
-                        sampleSource = { scope -> SubAgentRunRepository.recent(appContext, scope) },
-                        onSample = { scope, sample -> SubAgentRunRepository.record(appContext, scope, sample) },
-                        modelParallelLimits = frozenParallelLimits,
-                        poolScope = poolScope,
-                        allowTimeoutContinuation = true,
-                        diagnostics = SubAgentDiagnostics(request.runId),
-                        workspace = workspace,
-                        onTaskChanged = { generationForCallback?.let(AgentChildTaskGroups::onTaskChanged) },
-                        prepareManualCompactor = { config -> io.github.mangi.eta.agent.model.AgentCompressionEndpoint.apply(
-                            AgentRuntimePolicy.forCompression(config),
-                            Prefs.localAgentPreferences()?.getString(Prefs.Keys.AGENT_MANUAL_COMPRESS_ENDPOINT_MODE, null)) },
-                        executeImageChild = { config, prompt, controller, imageOptions -> SubAgentMediaRunner.run(
-                            appContext, childSessionId, config, prompt, controller, video = false, imageOptions = imageOptions) },
-                        executeVideoChild = { config, prompt, controller -> SubAgentMediaRunner.run(
-                            appContext, childSessionId, config, prompt, controller, video = true) },
-                        onContext = { stats -> childContextSink.get()?.invoke(stats) },
-                        executeObservedChild = { config, prompt, controller, project, id, writable, progress ->
-                            runTextChild(config, prompt, controller, project, id, writable, progress)
+                } else {
+                    val baseHistory = request.history + listOfNotNull(
+                        request.prompt.takeIf { it.isNotBlank() || request.images.isNotEmpty() }?.let { prompt ->
+                            AgentModelClient.buildUserHistoryMessage(prompt, request.images)
+                                .copy(messageId = "user-${request.runId}")
                         },
-                        executeWorkspaceChild = { config, prompt, controller, project, id, writable ->
-                            runTextChild(config, prompt, controller, project, id, writable)
-                        },
-                    ) { config, prompt, controller ->
-                        runTextChild(config, prompt, controller, "", null, false)
-                    }
-                    val registered = AgentChildTaskGroups.register(appContext, request.effectiveModelSessionId, request.runId, children,
-                        releaseTools = childLease::close, workspaceEnvironment = workspaceEnvironment,
-                        workers = AgentChildWorkerAvailability.workers(candidates))
-                    if (registered == null) error("无法启动子代理前台执行服务，请返回 Eta 后重试")
-                    childOwnershipTransferred = true
-                    generationForCallback = registered
-                    registeredChildGenerations.add(registered)
-                    AgentChildRunControl.registered(session, childSessionId, registered)
-                    runController.throwIfCancelled()
-                    return registered
-                } finally {
-                    if (!childOwnershipTransferred) {
-                        try { children?.close() }
-                        finally { childLease.close() }
-                    }
+                    )
+                    ConversationHistoryTool { baseHistory + session.transcript }
                 }
+            } else null
+            val subagentAllowed = {
+                request.config.subagentTools && currentPermissions().subagentTools
             }
-            // New tasks use this run's current settings and coordinator. Existing task IDs still
-            // route to their original groups; replacement keeps its separate authorization checks.
-            groupGeneration = createChildGroup(childDispatchPlan.ordinary)
-            replacementGeneration = if (childDispatchPlan.ordinary === childDispatchPlan.replacement) groupGeneration
-                else createChildGroup(childDispatchPlan.replacement)
-            val toolChildren = AgentChildWorkerAvailability.configuredChildren(
-                if (groupGeneration != null) childDispatchPlan.ordinary else childDispatchPlan.replacement)
-            if (groupGeneration != null || replacementGeneration != null) {
-                SubAgentTools.appendTo(mcpTools, toolChildren.mapIndexed { i, (slot, model) ->
-                    SubAgentPreferences.workerDescription(slot, i + 1, model,
-                        childConfig.parallelLimit(SubAgentParallelModel(model.providerId, model.model)))
-                }, workspaceEnabled = childWorkspace != null)
-            } else {
-                ExistingChildTaskTools.appendTo(mcpTools)
-            }
-            val questionCoordinator = AgentQuestionCoordinator(runController) { event ->
-                acceptEvent(session, event, archivedEvents, entrySurfaceGuard, checkpointRecorder)
-            }
-            session.questionCoordinator = questionCoordinator
-            val delegatedExecutor = AgentModelClient.ToolExecutor { call ->
-                runController.throwIfCancelled()
-                if (!Prefs.isToolEnabled(call.name)) {
-                    AgentModelClient.ToolResult(org.json.JSONObject().put("ok", false)
-                        .put("code", "TOOL_DISABLED").put("message", "此工具已关闭，本次未执行").toString())
-                } else if (call.name == "ask_user") {
-                    val question = AgentQuestionCodec.parseArguments(call.argumentsJson,
-                        conversationId = request.effectiveModelSessionId,
-                        runId = request.runId, toolCallId = call.id,
-                        questionId = "question-${UUID.randomUUID()}", createdAtMillis = System.currentTimeMillis())
-                    val answer = try { questionCoordinator.awaitAnswer(question) }
-                    catch (failure: Exception) {
-                        runController.throwIfCancelled()
-                        throw io.github.mangi.eta.agent.question.AgentQuestionInterruptedException(failure)
+            val subagentExecutor = SubagentExecutor(
+                conversationKey = browserKey,
+                parentController = runController,
+                configProvider = {
+                    val rawSubagentConfig = runBlocking {
+                        RuntimeConfigRepository.subagentRuntimeConfig(request.config)
                     }
-                    if (answer == null) {
-                        runController.throwIfCancelled()
-                        throw io.github.mangi.eta.agent.question.AgentQuestionInterruptedException()
-                    }
-                    AgentModelClient.ToolResult(AgentQuestionCodec.resultJson(question, answer).toString())
-                } else if (call.name == "manage_agent_workspace") {
-                    val backend = childWorkspace
-                    val payload = try { AgentWorkspaceAccessPolicy.execute(
-                        argumentsJson = call.argumentsJson,
-                        requestAllowsTerminal = allowTerminal,
-                        runtimeAllowsTerminal = currentPermissions().terminalTools,
-                        backendAvailable = backend != null,
-                        ownsWorkspace = { project, id ->
-                            requireNotNull(backend).ownsWorkspace(project, id)
-                        },
-                        backendOperation = { workspaceRequest ->
-                            requireNotNull(backend).operation(
-                                workspaceRequest.project, workspaceRequest.action, workspaceRequest.workspaceId,
-                                org.json.JSONObject().put("offset", workspaceRequest.offset).put("limit", workspaceRequest.limit),
-                            )
-                        },
-                    ) } catch (_: io.github.mangi.eta.agent.delegation.WorkspaceOwnershipException) {
-                        runController.throwIfCancelled()
-                        org.json.JSONObject().put("ok", false).put("code", "WORKSPACE_OWNERSHIP_STORE_UNAVAILABLE")
-                            .put("shell_executed", false).put("message", "工作区归属账本不可用，未执行 shell。")
-                    }
-                    AgentModelClient.ToolResult(payload.toString(), sensitive = true)
-                } else if (call.name in SubAgentTools.names) {
-                    // Even with no new coordinator, explicit continue adopts into THIS run.
-                    AgentChildTaskGroups.execute(childSessionId, groupGeneration, call, currentRunId = request.runId,
-                        replacementGeneration = replacementGeneration)
-                } else routingExecutor.execute(call)
-            }
-            val compactPolicy = runBlocking { AgentCompressionPolicy.resolve(request.config) }
-            val promptWithChildHandoff = AgentChildTaskHandoff.appendToPrompt(
-                AgentChildWorkerAvailability.appendToPrompt(request.prompt, childDispatchPlan), childSessionId)
-            runController.throwIfCancelled()
-            val completedResponse = AgentModelClient.complete(
-                config = request.config, sessionId = request.effectiveModelSessionId,
-                capabilitiesProvider = { AgentToolCapabilities.captureForRound(appContext).copy(virtualDisplay = runVirtualDisplay()) },
-                prompt = promptWithChildHandoff, toolExecutor = delegatedExecutor, images = request.images,
-                history = request.history, skipHistoryTrimming = true,
-                compactionArchive = io.github.mangi.eta.agent.model.AgentCompactionArchive(appContext.filesDir, request.effectiveModelSessionId),
-                turnId = request.effectiveTurnId, runController = runController,
-                calibratedInputTokens = request.calibratedInputTokens,
-                allowUnmeasuredContextSend = request.allowUnmeasuredContextSend,
-                skillContext = skillContext, memoryContext = memoryContext,
-                skillContextProvider = {
-                    check(AssistantRepository.currentProfile(assistant.id) != null) { "任务所属助手已删除" }
-                    SkillContext(installedSkills = executor.currentSkillEntries())
+                    AgentRuntimePolicy.constrain(rawSubagentConfig, currentPermissions())
                 },
-                memoryContextProvider = {
-                    val current = requireNotNull(AssistantRepository.currentProfile(assistant.id)) { "任务所属助手已删除" }
-                    if (!current.memoryEnabled) AgentMemoryContext.DISABLED
-                    else runCatching { AgentMemoryContextBuilder.build(AgentMemoryRepository.snapshot(current.id), request.config.contextWindow) }
-                        .getOrElse { AgentMemoryContextBuilder.empty(request.config.contextWindow) }
-                },
-                additionalTools = mcpTools,
-                linuxEnvironmentLabelProvider = { when (LinuxEnvironmentSettingsRepository.current(appContext)) {
-                    LinuxDistribution.ALPINE -> "Alpine"
-                    LinuxDistribution.DEBIAN -> "Debian"
-                } },
-                terminalSessionEnvironmentProvider = executor::terminalSessionEnvironment,
-                terminalSessionIdentityProvider = executor::terminalSessionIdentity,
-                compactPolicy = compactPolicy,
-                onHistorySnapshot = session::publishHistorySnapshot,
-                interactiveModeEnabled = interactiveModeEnabled,
-                onEvent = { event ->
-                    timing.accept(event)
-                    foregroundReplay.accept(event)
-                    acceptEvent(session, event, archivedEvents, entrySurfaceGuard, checkpointRecorder)
+                capabilitiesProvider = { AgentToolCapabilities.capture(appContext) },
+                baseToolExecutor = routingExecutor,
+                skillContext = skillContext,
+                memoryContext = memoryContext,
+                mcpTools = mcpTools,
+                executionContext = executor.terminalExecutionContext,
+                onProgress = { progressEvent ->
+                    acceptEvent(
+                        session,
+                        progressEvent,
+                        archivedEvents,
+                        entrySurfaceGuard,
+                        checkpointRecorder,
+                    )
                 },
             )
+            val runTools = buildRunTools(
+                mcpTools = mcpTools,
+                subagentAllowed = subagentAllowed(),
+                includeHistoryTool = historyTool != null,
+                includeCharacterMemoryTools = characterMemoryTools != null && memoryEnabled,
+            )
+            val runToolExecutor = AgentModelClient.ToolExecutor { call ->
+                if (call.name in AgentSubagentToolCatalog.names) {
+                    if (!subagentAllowed()) {
+                        AgentModelClient.ToolResult(
+                            JSONObject()
+                                .put("ok", false)
+                                .put("code", "SUBAGENT_DISABLED")
+                                .put("message", "Subagent 权限已关闭")
+                                .toString(),
+                        )
+                    } else if (call.name == AgentSubagentToolCatalog.PROFILE_TOOL_NAME) {
+                        subagentExecutor.executeProfileManagement(call)
+                    } else {
+                        subagentExecutor.execute(call.round, call)
+                    }
+                } else if (call.name == AgentConversationToolCatalog.READ_HISTORY && historyTool != null) {
+                    historyTool.execute(call)
+                } else if (call.name in CharacterMemoryTools.NAMES && characterMemoryTools != null) {
+                    if (!Prefs.isToolEnabled(call.name)) {
+                        AgentModelClient.ToolResult(
+                            JSONObject()
+                                .put("ok", false)
+                                .put("code", "TOOL_DISABLED")
+                                .put("message", "工具 ${call.name} 已在工具列表中关闭，本次未执行")
+                                .toString(),
+                        )
+                    } else {
+                        characterMemoryTools.execute(call)
+                    }
+                } else routingExecutor.execute(call).also { result ->
+                    if (call.name == "memory_write") {
+                        runCatching { JSONObject(result.content) }.getOrNull()
+                            ?.takeIf { it.optBoolean("ok") }
+                            ?.let { ConversationMemoryPins.recordOwnWrite(conversationId, it.optString("revision")) }
+                    }
+                }
+            }
+            val completedResponse = AgentModelClient.complete(
+                config = request.config,
+                sessionId = request.effectiveModelSessionId,
+                operationId = request.runId,
+                initialUserMessageId = uiPayload?.promptMessageId(request.runId) ?: "user-${request.runId}",
+                initialSupplementIndex = uiPayload?.lastSupplementIndex ?: 0,
+                roleplayContext = roleplayContext,
+                rewriteReply = request.operation == AgentRuntimeWire.OP_REWRITE_REPLY,
+                compactOnly = request.operation == AgentRuntimeWire.OP_COMPACT,
+                onContextSnapshot = { snapshot ->
+                    // 压缩会把历史里的记忆写入摘要掉，下一轮需要重新注入最新记忆。
+                    ConversationMemoryPins.forget(conversationId)
+                    val committed = snapshot.copy(operationId = request.runId)
+                    AgentRunCheckpointStore.saveContext(appContext, request.runId, committed)
+                    session.updateContext(committed)
+                },
+                onTranscript = { transcript ->
+                    AgentRunCheckpointStore.saveTranscript(appContext, request.runId, transcript)
+                    session.updateTranscript(transcript)
+                },
+                capabilitiesProvider = { AgentToolCapabilities.capture(appContext) },
+                prompt = request.prompt,
+                assistantScreenContext = request.assistantScreenContext,
+                toolExecutor = runToolExecutor,
+                images = request.images,
+                history = request.history,
+                runController = runController,
+                skillContext = skillContext,
+                memoryContext = memoryContext,
+                additionalTools = runTools,
+                executionContext = executor.terminalExecutionContext,
+            ) { event ->
+                timing.accept(event)
+                acceptEvent(
+                    session,
+                    event,
+                    archivedEvents,
+                    entrySurfaceGuard,
+                    checkpointRecorder,
+                )
+            }
             response = completedResponse
-            modelCompleted = true
-            AgentRuntimeWire.RunResult(runId = request.runId, ok = true, content = completedResponse.content,
-                reasoningContent = completedResponse.reasoningContent, transcript = completedResponse.transcript,
-                timings = completedResponse.timings)
+            AgentRuntimeWire.RunResult(
+                runId = request.runId,
+                ok = true,
+                content = completedResponse.content,
+                reasoningContent = completedResponse.reasoningContent,
+                transcript = completedResponse.transcript,
+                contextSnapshot = completedResponse.contextSnapshot?.copy(operationId = request.runId),
+                operation = request.operation,
+                rewriteTargetMessageId = request.rewriteTargetMessageId,
+            )
         } catch (throwable: Throwable) {
-            cancelled = runController.isCancelled || throwable is AgentRunCancelledException ||
-                throwable is java.util.concurrent.CancellationException || throwable is InterruptedException
+            // 失败时历史是否完整落盘不确定，放弃固定的记忆快照；记忆未变时重新注入的内容逐字节相同。
+            ConversationMemoryPins.forget(memoryConversationId)
+            cancelled = runController.isCancelled || throwable is AgentRunCancelledException
             val modelFailure = throwable as? AgentModelExecutionException
-            val message = if (cancelled) "已停止" else throwable.message ?: throwable.javaClass.simpleName
-            // This catch is after the retry loop has given up, not a ModelRetryScheduled event.
-            // Freeze while the original generation is still attached, before terminal delivery.
-            if (AgentParentNetworkFailure.isFinal(throwable, cancelled)) {
-                AgentChildRunControl.terminate(session, AgentChildControlPolicy.Reason.FINAL_NETWORK_FAILURE)
-            }
-            if (cancelled) AndroidAgentLogger.info("Agent runtime stopped") else {
-                val requestFailure = modelFailure?.cause as? AgentModelFailure
-                AndroidAgentLogger.error("Agent runtime failed: type=${throwable.safeLogType()}, " +
-                    "model_code=${requestFailure?.code.orEmpty()}, cause_type=${requestFailure?.cause?.safeLogType().orEmpty()}, " +
-                    "detail=${(requestFailure?.message ?: throwable.message).orEmpty().take(600)}")
-                AgentErrorReconnectTerminal.failureEvent(archivedEvents, throwable, request.config.apiKey)?.let {
-                    runCatching { acceptEvent(session, it, archivedEvents, entrySurfaceGuard, checkpointRecorder) }
-                }
-                val event = AgentEvent.RunFailed(message)
-                runCatching { acceptEvent(session, event, archivedEvents, entrySurfaceGuard, checkpointRecorder) }
-                    .onFailure { checkpointFailure ->
-                        AndroidAgentLogger.error("Agent runtime failure checkpoint failed: type=${checkpointFailure.safeLogType()}")
-                        session.emit(event)
-                    }
-            }
-            if (throwable is Error || throwable is java.util.concurrent.CancellationException) throw throwable
-            AgentRuntimeWire.RunResult(runId = request.runId, ok = false, content = "", error = message,
-                reasoningContent = modelFailure?.reasoningContent ?: (throwable as? AgentRunCancelledException)?.reasoningContent.orEmpty(),
-                transcript = modelFailure?.transcript ?: (throwable as? AgentRunCancelledException)?.transcript.orEmpty())
-        } finally {
-            if (modelCompleted && !cancelled && !runController.isCancelled) {
-                // A normal final/supplemental reply seals only parent control. Children retain
-                // their execution and tool/service leases across detach until they finish.
-                // SUCCESS never pauses, cancels or automatically resumes a child task.
-                AgentChildRunControl.terminate(session, AgentChildControlPolicy.Reason.SUCCESS)
-                try {
-                    val receipt = localTools?.completeVirtualDelivery()
-                    virtualDeliveryCompleted = session.taskSurfaceMode == io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.BACKGROUND &&
-                        receipt != null && receipt.opt("ok") == true && receipt.opt("handedOff") == true && receipt.opt("released") == true
-                    if (receipt != null && (!receipt.optBoolean("ok") || receipt.opt("released") != true)) {
-                        deliveryFailure = receipt.optString("error", "AUTO_FINISH_FAILED")
-                    }
-                } catch (_: Exception) { deliveryFailure = "AUTO_FINISH_FAILED" }
+            val message = if (cancelled) {
+                "已停止"
             } else {
-                // No automatic delivery after provider failure or user stop. Owner IPC is not
-                // attached to the cancelled controller; this path verifies cleanup or reports it.
-                cleanupFailure = io.github.mangi.eta.agent.device.VirtualDisplayAbortCleanup.failureCode {
-                    localTools?.cleanupAbortedVirtualSession()
+                throwable.message ?: throwable.javaClass.simpleName
+            }
+            if (cancelled) {
+                AndroidAgentLogger.info("Agent runtime stopped")
+            } else {
+                val requestFailure = modelFailure?.cause as? AgentModelFailure
+                AndroidAgentLogger.error(
+                    "Agent runtime failed: type=${throwable.safeLogType()}, " +
+                        "model_code=${requestFailure?.code.orEmpty()}, " +
+                        "cause_type=${requestFailure?.cause?.safeLogType().orEmpty()}"
+                )
+                val event = AgentEvent.RunFailed(message)
+                runCatching {
+                    acceptEvent(
+                        session,
+                        event,
+                        archivedEvents,
+                        entrySurfaceGuard,
+                        checkpointRecorder,
+                    )
+                }.onFailure { checkpointFailure ->
+                    AndroidAgentLogger.error(
+                        "Agent runtime failure checkpoint failed: " +
+                            "type=${checkpointFailure.safeLogType()}"
+                    )
+                    session.emit(event)
                 }
             }
-            session.childCompactor = null
-            childContextSink.set(null)
-            registeredChildGenerations.forEach(AgentChildTaskGroups::detach)
+            AgentRuntimeWire.RunResult(
+                runId = request.runId,
+                ok = false,
+                content = "",
+                error = message,
+                reasoningContent = modelFailure?.reasoningContent.orEmpty(),
+                transcript = modelFailure?.transcript.orEmpty(),
+                contextSnapshot = modelFailure?.contextSnapshot?.copy(operationId = request.runId) ?: session.contextSnapshot,
+                operation = request.operation,
+                rewriteTargetMessageId = request.rewriteTargetMessageId,
+            )
+        } finally {
             runCatching { toolsBinding?.close() }
-            runCatching { toolsOwner?.release() }
-            unownedSkillRoot?.let { root -> runCatching { SkillRuntime.releaseRunSkills(appContext, root) } }
+            runCatching { toolExecutor?.close() }
+            runCatching { guiRun?.close() }
+            runCatching { browserBinding?.close() }
         }
-        deliveryFailure?.let { code ->
-            val message = "副屏自动回迁/释放未完成（$code）；会话已保留，不能视为交付成功。"
-            result = result.copy(ok = false, content = result.content + "\n\n" + message, error = message)
-        }
-        cleanupFailure?.let { code ->
-            val message = "副屏清理/释放未确认（$code）；已保留恢复状态，不会强制关闭或重放操作。"
-            result = result.copy(ok = false, content = listOf(result.content, message).filter { it.isNotBlank() }.joinToString("\n\n"),
-                error = listOfNotNull(result.error?.takeIf { it.isNotBlank() }, message).joinToString("\n"))
-        }
-        result = result.copy(virtualDeliveryCompleted = result.ok && virtualDeliveryCompleted && !cancelled && !runController.isCancelled)
-        val completedRequest = runCatching { snapshotRequest(request) }.getOrElse { throwable ->
-            AndroidAgentLogger.error("Agent runtime request snapshot failed: type=${throwable.safeLogType()}")
-            request
-        }
-        val committed = session.complete(result) { terminal ->
-            runCatching { checkpointRecorder?.seal() }.onFailure { throwable ->
-                AndroidAgentLogger.error("Agent runtime checkpoint seal failed: type=${throwable.safeLogType()}")
+
+        if (cancelled && session.isTerminal) {
+            runCatching {
+                persistArtifacts(snapshotRequest(request), result, snapshotArchivedEvents(archivedEvents))
+            }.onFailure { throwable ->
+                AndroidAgentLogger.error(
+                    "Agent runtime cancelled result persistence failed: " +
+                        "type=${throwable.safeLogType()}"
+                )
             }
-            runCatching { persistArtifacts(completedRequest, terminal, archivedEvents) }.onFailure { throwable ->
-                AndroidAgentLogger.error("Agent runtime artifact persistence failed: type=${throwable.safeLogType()}")
-            }
+            return Outcome(
+                result = result,
+                entrySurfaceGuard = entrySurfaceGuard,
+                shouldUpdateHost = true,
+            )
         }
-        return Outcome(session.terminalResult ?: result, entrySurfaceGuard, completedRequest.takeIf { committed },
-            response.takeIf { committed && session.terminalResult?.ok == true }, committed)
+
+        val completedRequest = runCatching { snapshotRequest(request) }
+            .getOrElse { throwable ->
+                AndroidAgentLogger.error(
+                    "Agent runtime request snapshot failed: type=${throwable.safeLogType()}"
+                )
+                request
+            }
+        val committed = session.complete(result) {
+            runCatching { checkpointRecorder?.seal() }
+                .onFailure { throwable ->
+                    AndroidAgentLogger.error(
+                        "Agent runtime checkpoint seal failed: type=${throwable.safeLogType()}"
+                    )
+                }
+            runCatching { persistArtifacts(completedRequest, result, snapshotArchivedEvents(archivedEvents)) }
+                .onFailure { throwable ->
+                    AndroidAgentLogger.error(
+                        "Agent runtime artifact persistence failed: type=${throwable.safeLogType()}"
+                    )
+                }
+        }
+        return Outcome(
+            result = result,
+            entrySurfaceGuard = entrySurfaceGuard,
+            completedRequest = completedRequest.takeIf { committed },
+            response = response.takeIf { committed },
+            shouldUpdateHost = committed,
+        )
     }
 
-    // All stages below start inside this synchronized method: executor monitor acquisition is
-    // excluded. checkpoint.accept includes the recorder call (and its own monitor, if contended).
-    @Synchronized private fun acceptEvent(session: AgentRuntimeSession, event: AgentEvent,
-        archivedEvents: MutableList<AgentEvent>, entrySurfaceGuard: EntrySurfaceGuard?,
-        checkpointRecorder: AgentRunCheckpointRecorder?) {
-        if (event is AgentEvent.QuestionRequested || event is AgentEvent.QuestionResolved) {
-            AgentQuestionEventPublisher.publish(session, event) {
-                checkpointRecorder?.let { recorder ->
-                    measureRuntimeStreamStage("runtime.checkpoint.accept") { recorder.accept(event) }
+    private fun acceptEvent(
+        session: AgentRuntimeSession,
+        event: AgentEvent,
+        archivedEvents: MutableList<AgentEvent>?,
+        entrySurfaceGuard: EntrySurfaceGuard?,
+        checkpointRecorder: AgentRunCheckpointRecorder?,
+    ) {
+        checkpointRecorder?.accept(event)
+        if (!session.emit(event)) return
+        // 多 Subagent 并发会跨线程回调 acceptEvent；只缓存可落盘事件，避免瞬态进度堆积内存。
+        if (archivedEvents != null) {
+            event.recoveryProjection()?.let { durable ->
+                synchronized(archivedEvents) {
+                    archivedEvents.add(durable)
                 }
             }
-        } else {
-            if (!session.emit(event) {
-                checkpointRecorder?.let { recorder ->
-                    measureRuntimeStreamStage("runtime.checkpoint.accept") { recorder.accept(event) }
-                }
-            }) return
         }
-        archivedEvents += event
-        if (event is AgentEvent.ModelRetryScheduled) AndroidAgentLogger.warn("Agent runtime event: ${event.toLogLine()}")
-        else if (event !is AgentEvent.AssistantBlockDelta) AndroidAgentLogger.debug { "Agent runtime event: ${event.toLogLine()}" }
-        runCatching { onAcceptedEvent(event, entrySurfaceGuard) }.onFailure { throwable ->
-            AndroidAgentLogger.warnThrottled("runtime_event_projection_failed") {
-                "Agent runtime event projection failed: type=${throwable.safeLogType()}"
+        if (event is AgentEvent.ModelRetryScheduled) {
+            AndroidAgentLogger.warn("Agent runtime event: ${event.toLogLine()}")
+        } else if (event !is AgentEvent.AssistantBlockDelta) {
+            AndroidAgentLogger.debug { "Agent runtime event: ${event.toLogLine()}" }
+        }
+        runCatching { onAcceptedEvent(event, entrySurfaceGuard) }
+            .onFailure { throwable ->
+                AndroidAgentLogger.warnThrottled("runtime_event_projection_failed") {
+                    "Agent runtime event projection failed: type=${throwable.safeLogType()}"
+                }
+            }
+    }
+
+    private fun snapshotArchivedEvents(archivedEvents: MutableList<AgentEvent>?): List<AgentEvent> {
+        if (archivedEvents == null) return emptyList()
+        return synchronized(archivedEvents) { archivedEvents.toList() }
+    }
+
+    companion object {
+        internal fun supportsHistoryTool(operation: String): Boolean =
+            operation == AgentRuntimeWire.OP_CHAT || operation == AgentRuntimeWire.OP_COMPACT
+
+        internal fun buildRunTools(
+            mcpTools: JSONArray,
+            subagentAllowed: Boolean,
+            includeHistoryTool: Boolean,
+            includeCharacterMemoryTools: Boolean,
+            isToolEnabled: (String) -> Boolean = Prefs::isToolEnabled,
+        ): JSONArray = JSONArray(mcpTools.toString()).also { tools ->
+            if (subagentAllowed) AgentSubagentToolCatalog.appendSchemas(tools)
+            if (includeHistoryTool) tools.put(AgentConversationToolCatalog.schema())
+            if (includeCharacterMemoryTools) {
+                val temp = JSONArray().also(CharacterMemoryTools::appendSchemas)
+                for (index in 0 until temp.length()) {
+                    val schema = temp.getJSONObject(index)
+                    val name = schema.getJSONObject("function").getString("name")
+                    if (isToolEnabled(name)) {
+                        tools.put(schema)
+                    }
+                }
             }
         }
     }

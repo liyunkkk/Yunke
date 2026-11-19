@@ -57,23 +57,16 @@
 # ── 序列化与网络依赖 ─────────────────────────────────────────────────────────
 # DataStore、kotlinx.serialization、OkHttp 与 Okio 均自带精确的 consumer rules；
 # 不在 App 层重复保留整个类或包，避免阻断裁剪、内联和混淆。
+# Nimbus 内嵌 Gson 携带此 CLASS 级静态检查注解，运行时不依赖它。
+-dontwarn com.google.errorprone.annotations.CanIgnoreReturnValue
+
 # 保留源码与行号属性，便于使用 release mapping 还原线上堆栈。
 -keepattributes SourceFile,LineNumberTable
 
-# JNI looks up configuration fields/classes by their upstream names.
--keep class com.k2fsa.sherpa.ncnn.** { *; }
-
-# app_process 按字面类名启动只读探针，R8 看不到 shell 字符串里的引用。
-# 保留 CLI 入口 public static void main(String[])，以及探针会执行到的 vd 类，避免 release 裁剪或改名。
--keep class vd.android.ReadOnlyProbe {
+# app_process 通过固定类名启动受控的一方应用与虚拟屏操作入口。
+-keep class io.github.mangi.eta.agent.phone.PhoneCommandMain {
     public static void main(java.lang.String[]);
 }
--keep class vd.android.AndroidBridge { *; }
--keep class vd.android.AndroidReadOnlyBackend { *; }
--keep class vd.android.AndroidReadOnlyBackend$* { *; }
--keep class vd.close.TaskHandle { *; }
--keep class vd.close.ActionResult { *; }
--keep class vd.close.CloseSurface { *; }
-
-# Root app_process entrypoints packaged in the app APK.
--keep class vd.runtime.** { *; }
+-keep class io.github.mangi.eta.agent.virtualdisplay.VirtualDisplayCommandMain {
+    public static void main(java.lang.String[]);
+}

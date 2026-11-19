@@ -1,8 +1,12 @@
 package io.github.mangi.eta.agent.model
 
+import io.github.mangi.eta.agent.terminal.TerminalEnvironment
+import io.github.mangi.eta.agent.terminal.TerminalExecutionContext
 import io.github.mangi.eta.agent.memory.AgentMemoryContext
 import io.github.mangi.eta.agent.skill.SkillContext
 import io.github.mangi.eta.agent.skill.SkillIndexEntry
+import io.github.mangi.eta.agent.device.RootAccessState
+import io.github.mangi.eta.agent.device.RootAccessStatus
 import org.json.JSONArray
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -12,11 +16,61 @@ import org.junit.Test
 
 class AgentPromptBuilderTest {
     @Test
-    fun generatedSystemPromptDoesNotInjectModelIdentity() {
-        for (providerPrompt in listOf("自定义回答风格", "")) {
+    fun rootPromptOnlyDependsOnGrantSoTransientProbeStatesKeepThePrefixStable() {
+        fun prompt(state: RootAccessState) = AgentPromptBuilder.buildSystemMessages(
+            config = modelConfig("", terminalTools = true, browserTools = false),
+            skillContext = SkillContext.EMPTY, memoryContext = AgentMemoryContext.DISABLED,
+            rootAvailable = state.isGranted,
+        ).toString()
+        val ungranted = listOf(
+            RootAccessState(isChecking = true),
+            RootAccessState(RootAccessStatus.UNKNOWN),
+            RootAccessState(RootAccessStatus.TIMED_OUT),
+            RootAccessState(RootAccessStatus.DENIED),
+            RootAccessState(RootAccessStatus.UNAVAILABLE),
+        ).map(::prompt)
+        assertEquals(1, ungranted.distinct().size)
+        val granted = prompt(RootAccessState(RootAccessStatus.GRANTED, suPresent = true))
+        assertEquals(granted, prompt(RootAccessState(RootAccessStatus.GRANTED, suPresent = true, isChecking = true)))
+        assertTrue(granted.contains("Root 授权已确认"))
+        assertTrue(ungranted.first().contains("这不代表设备不支持 Root"))
+        for (contents in ungranted + granted) {
+            assertTrue(contents.contains("identity=user 是显式选择"))
+            assertTrue(contents.contains("terminal(action=check_root)"))
+        }
+    }
+
+    @Test
+    fun terminalPromptDescribesTheActualRunWorkspaceAndSeparateLifecycles() {
+        val messages = AgentPromptBuilder.buildSystemMessages(
+            config = modelConfig("", terminalTools = true, browserTools = false),
+            skillContext = SkillContext.EMPTY,
+            memoryContext = AgentMemoryContext.DISABLED,
+            rootAvailable = false,
+            executionContext = TerminalExecutionContext(TerminalEnvironment.DEBIAN, null, "/eta/custom workspace"),
+        )
+        val terminal = messages.systemContents().single { it.contains("Eta 内置文件与终端工具") }
+        assertTrue(terminal.contains("/eta/custom workspace"))
+        assertTrue(terminal.contains("debian"))
+        assertTrue(terminal.contains("identity=user"))
+        assertTrue(terminal.contains("不要用 & 起后台进程"))
+        assertTrue(terminal.contains("common_tools"))
+        assertTrue(terminal.contains("profiles"))
+        assertTrue(terminal.contains("terminal_job"))
+        assertTrue(terminal.contains("terminal_daemon"))
+        assertTrue(terminal.contains("environment=\"linux\""))
+        assertTrue(terminal.contains("同一个物理文件夹"))
+        assertTrue(terminal.contains("禁止在两个环境之间重复复制"))
+        assertFalse(terminal.contains("async=true"))
+        assertFalse(terminal.contains("read_async_result"))
+    }
+
+    @Test
+    fun currentModelIdentityFollowsConfigWithCustomOrEmptyProviderPrompt() {
+        for (providerPrompt in listOf("你是小满", "")) {
             val config = modelConfig(providerPrompt, terminalTools = false, browserTools = false)
                 .copy(model = "provider/model-a", modelDisplayName = "显示名称")
-            for (modelId in listOf(config.model, "provider/model-b", "gpt-6-astra")) {
+            for (modelId in listOf(config.model, "provider/model-b")) {
                 val messages = AgentPromptBuilder.buildSystemMessages(
                     config = config.copy(model = modelId),
                     skillContext = SkillContext.EMPTY,
@@ -24,31 +78,15 @@ class AgentPromptBuilderTest {
                     rootAvailable = false,
                 )
 
-                val contents = messages.systemContents()
-                assertTrue(contents.any { it.contains("以系统提示中的助手人格为准") })
-                assertFalse(contents.any { it.contains("当前配置的模型：") })
-                assertFalse(contents.any { it.contains("询问所用模型时按当前配置") })
-                assertFalse(contents.any { it.contains("模型名称可能是服务商别名") })
-                assertFalse(contents.any { it.contains(modelId) || it.contains(config.modelDisplayName) })
+                val identity = messages.systemContents().single { it.contains("当前配置的模型：") }
+                assertFalse(messages.systemContents().any { it.contains("你是 Eta") })
+                assertTrue(identity.contains("当前配置的模型：\"$modelId\""))
+                assertFalse(identity.contains(config.modelDisplayName))
+                if (modelId != config.model) assertFalse(identity.contains(config.model))
                 if (providerPrompt.isNotBlank()) {
                     assertEquals(providerPrompt, messages.getJSONObject(0).getString("content"))
                 }
             }
-        }
-    }
-
-    @Test
-    fun visionCapabilityWarningRemainsWithoutModelIdentity() {
-        for (vision in listOf(false, true)) {
-            val contents = AgentPromptBuilder.buildSystemMessages(
-                config = modelConfig("", terminalTools = false, browserTools = false)
-                    .copy(model = "provider-routing-only", supportsVision = vision),
-                skillContext = SkillContext.EMPTY,
-                memoryContext = AgentMemoryContext.DISABLED,
-                rootAvailable = false,
-            ).systemContents()
-            assertEquals(!vision, contents.any { it.contains("当前模型未启用图片输入") })
-            assertFalse(contents.any { it.contains("provider-routing-only") })
         }
     }
 
@@ -76,7 +114,7 @@ class AgentPromptBuilderTest {
         )
 
         assertEquals(
-            listOf("system", "system", "system", "system", "system", "user", "assistant", "user"),
+            listOf("system", "system", "system", "system", "user", "assistant", "user"),
             messages.roles(),
         )
         assertEquals("自定义系统约束", messages.getJSONObject(0).getString("content"))
@@ -87,9 +125,6 @@ class AgentPromptBuilderTest {
         assertTrue(messages.systemContents().any { it.contains("立即调用工具") })
         assertTrue(messages.systemContents().any { it.contains("不要先输出计划、解释或中间进度") })
         assertTrue(messages.systemContents().any { it.contains("不要为了展示思考而拆成多个回合") })
-        assertFalse(messages.systemContents().any { it.contains("默认优先并行委派多个") })
-        assertFalse(messages.systemContents().any { it.contains("本轮已公开子代理") })
-        assertFalse(messages.systemContents().any { it.contains("同文件写冲突") })
         assertTrue(messages.systemContents().any { it.contains("不要例行调用 observe_screen") })
         assertTrue(messages.systemContents().any { it.contains("读取或汇总屏幕信息") })
         assertTrue(messages.systemContents().any { it.contains("确认最终结果") })
@@ -110,61 +145,20 @@ class AgentPromptBuilderTest {
         assertTrue(messages.systemContents().any { it.contains("合法且克制的 GitHub Flavored Markdown") })
         assertTrue(messages.systemContents().any { it.contains("不用整句粗体冒充标题") })
         assertTrue(messages.systemContents().any { it.contains("表格前后留空行") })
-        assertTrue(messages.getJSONObject(2).getString("content").contains("open_and_exec"))
-        assertTrue(messages.getJSONObject(2).getString("content").contains("同一轮模型回复最多调用一次 read_image"))
-        assertTrue(messages.getJSONObject(2).getString("content").contains("read_image 可直接读取 Linux 的 /workspace"))
-        assertTrue(messages.getJSONObject(2).getString("content").contains("再在下一轮调用下一张"))
+        assertTrue(messages.getJSONObject(2).getString("content").contains("只需 command"))
+        assertTrue(messages.getJSONObject(2).getString("content").contains("同一轮最多读取一张"))
+        assertTrue(messages.getJSONObject(2).getString("content").contains("观察返回内容后再读下一张"))
+        assertTrue(messages.getJSONObject(3).getString("content").contains("可调用 subagent 派发子智能体"))
         assertFalse(messages.systemContents().any { it.contains("网页浏览、读取") })
-        assertTrue(messages.systemContents().any { it.contains("持久记忆已关闭") })
-        assertTrue(messages.systemContents().any { it.contains("当前助手未开启 Skills") })
-        assertEquals("旧问题", messages.getJSONObject(5).getString("content"))
-        assertEquals("旧回答", messages.getJSONObject(6).getString("content"))
+        assertEquals("旧问题", messages.getJSONObject(4).getString("content"))
+        assertEquals("旧回答", messages.getJSONObject(5).getString("content"))
 
-        val currentContent = messages.getJSONObject(7).getJSONArray("content")
+        val currentContent = messages.getJSONObject(6).getJSONArray("content")
         assertEquals("当前问题", currentContent.getJSONObject(0).getString("text"))
         assertEquals(
             image.reference,
             currentContent.getJSONObject(1).getJSONObject("image_url").getString("url"),
         )
-    }
-
-    @Test
-    fun delegationRuleIsASeparateMessageAheadOfOperationalGuidance() {
-        val without = AgentPromptBuilder.buildSystemMessages(
-            config = modelConfig("", terminalTools = true, browserTools = false),
-            skillContext = SkillContext.EMPTY,
-            memoryContext = AgentMemoryContext.DISABLED,
-            rootAvailable = false,
-            delegationAvailable = false,
-        )
-        assertFalse(without.systemContents().any { it.contains("本轮已公开子代理") })
-
-        val messages = AgentPromptBuilder.buildSystemMessages(
-            config = modelConfig("", terminalTools = true, browserTools = false),
-            skillContext = SkillContext.EMPTY,
-            memoryContext = AgentMemoryContext.DISABLED,
-            rootAvailable = false,
-            delegationAvailable = true,
-        )
-        val contents = messages.systemContents()
-        val delegationAt = contents.indexOfFirst { it.contains("本轮已公开子代理") }
-        val screenAt = contents.indexOfFirst { it.contains("需要看屏幕时") }
-        assertTrue(delegationAt >= 0 && screenAt > delegationAt)
-        val rule = contents[delegationAt]
-        assertTrue(rule.contains("不能据此把源码阅读也留在主代理"))
-        assertTrue(rule.contains("多文件调查不是琐碎任务"))
-        assertTrue(rule.contains("必须在同一轮并行调用 delegate_task"))
-        assertTrue(rule.contains("已经派出的子任务默认继续在后台执行"))
-        assertTrue(rule.contains("不会自动恢复此前已经暂停的任务"))
-        assertTrue(rule.contains("不改变显式暂停、停止、取消及失败的既有处理"))
-        assertTrue(rule.contains("无需仅为保持子任务运行而等待所有结果或持续轮询"))
-        assertTrue(rule.contains("不得宣称已完成或已验收"))
-        assertTrue(rule.contains("凡依赖子任务结果的结论，仍必须取回结果并核对证据"))
-        assertFalse(without.systemContents().any { it.contains("默认继续在后台执行") })
-        assertFalse(rule.contains("需要看屏幕时"))
-        assertEquals(without.length() + 1, messages.length())
-        assertTrue(contents.any { it.contains("不要用本条终端要求") })
-        assertFalse(contents.any { it.contains("默认优先并行委派多个") })
     }
 
     @Test
@@ -195,16 +189,33 @@ class AgentPromptBuilderTest {
         assertEquals(listOf("system", "system", "system", "system", "user"), messages.roles())
         val systemContents = messages.systemContents()
         assertTrue(systemContents.any { it.contains("browser_use") })
-        assertTrue(systemContents.any { it.contains("desktop_chrome") })
-        assertTrue(systemContents.any { it.contains("get_backbone") })
-        assertTrue(systemContents.any { it.contains("/var/minis/offloads") })
-        assertFalse(systemContents.any { it.contains("open_and_exec") })
+        assertFalse(systemContents.any { it.contains("只需 command") })
+        assertTrue(messages.getJSONObject(2).getString("content").contains("可调用 subagent 派发子智能体"))
         val skillMessage = systemContents.single { it.contains("id=screen-audit") }
-        assertTrue(skillMessage.contains("path=/var/minis/skills/screen-audit/SKILL.md"))
+        assertEquals(skillMessage, messages.getJSONObject(3).getString("content"))
+        assertTrue(skillMessage.contains("path=/skills/screen-audit/SKILL.md"))
         assertTrue(skillMessage.contains("capabilities=scripts, assets"))
         assertTrue(skillMessage.contains("description=检查屏幕 并输出 结论"))
         assertTrue(skillMessage.contains("先调用 skills_read"))
         assertEquals("读取网页", messages.getJSONObject(4).getString("content"))
+    }
+
+    @Test
+    fun subagentGuidanceFollowsTheSwitchWithoutChangingOtherSystemMessages() {
+        val config = modelConfig("自定义系统约束", terminalTools = true, browserTools = true)
+        fun contents(enabled: Boolean) = AgentPromptBuilder.buildSystemMessages(
+            config = config.copy(subagentTools = enabled),
+            skillContext = SkillContext.EMPTY,
+            memoryContext = AgentMemoryContext.DISABLED,
+            rootAvailable = false,
+        ).systemContents()
+
+        val disabled = contents(false)
+        val enabled = contents(true)
+        val subagentGuidance = "可调用 subagent 派发子智能体"
+        assertFalse(disabled.any { it.contains(subagentGuidance) })
+        assertEquals(1, enabled.count { it.contains(subagentGuidance) })
+        assertEquals(disabled, enabled.filterNot { it.contains(subagentGuidance) })
     }
 
     @Test

@@ -1,24 +1,20 @@
 package io.github.mangi.eta.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -28,144 +24,114 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListLayoutInfo
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.layout.LazyLayoutCacheWindow
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.DocumentScanner
 import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.RocketLaunch
 import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
-import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableLongStateOf
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.SideEffect
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Outline
-import androidx.compose.ui.graphics.Shape
-import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
-import androidx.compose.ui.input.nestedscroll.NestedScrollSource
-import androidx.compose.ui.input.nestedscroll.nestedScroll
-import androidx.compose.ui.input.pointer.PointerEventPass
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.graphics.drawscope.clipRect
-import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.draw.dropShadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.CompositingStrategy
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.layout
-import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.shadow.Shadow
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.ui.platform.LocalView
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.Density
-import androidx.compose.ui.unit.LayoutDirection
-import androidx.compose.ui.unit.Velocity
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.itos.coui.effect.couiButtonFeedback
+import com.itos.coui.layout.CouiPageDefaults
+import com.itos.coui.shape.CouiShape
+import com.itos.coui.text.CouiTextKind
+import com.itos.coui.text.Text as CouiText
+import com.itos.coui.theme.CouiTheme
 import io.github.mangi.eta.R
-import io.github.mangi.eta.agent.browser.AgentBrowserSession
-import io.github.mangi.eta.agent.model.AgentModelClient
-import io.github.mangi.eta.agent.voice.VoiceChatSnapshot
-import io.github.mangi.eta.agent.voice.VoiceEntryMode
-import io.github.mangi.eta.agent.voice.VoiceModeController
-import io.github.mangi.eta.agent.voice.VoiceModePhase
-import io.github.mangi.eta.agent.voice.VoiceModeState
-import top.yukonga.miuix.kmp.blur.LayerBackdrop
-import top.yukonga.miuix.kmp.blur.layerBackdrop
-import io.github.mangi.eta.agent.voice.VOICE_MODE_SPEECH_OWNER_PREFIX
-import io.github.mangi.eta.data.model.AnswerFoldLevel
+import io.github.mangi.eta.agent.browser.BrowserSessionSnapshot
+import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.data.model.ReasoningEffort
+import io.github.mangi.eta.data.repository.ConversationBranchBoundary
+import io.github.mangi.eta.ui.model.branchMessageOutline
 import io.github.mangi.eta.ui.app.AgentConversationRevisionReducer
-import io.github.mangi.eta.ui.app.LocalAppearanceSettings
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.ui.layout.rememberFloatingBottomBarInsets
+import io.github.mangi.eta.ui.markdown.StreamingMarkdownStateCache
+import io.github.mangi.eta.ui.model.ConversationHistoryLoadState
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
-import io.github.mangi.eta.ui.model.latestBilledContextTokens
-import io.github.mangi.eta.ui.model.canContinueDisconnectedRun
-import io.github.mangi.eta.ui.model.isRetryableFailure
+import io.github.mangi.eta.ui.model.AgentContextUsageUi
 import io.github.mangi.eta.ui.model.AgentMessageUi
-import io.github.mangi.eta.ui.model.SystemNoticeMessageUi
 import io.github.mangi.eta.ui.model.AgentModelPickerUiState
 import io.github.mangi.eta.ui.model.MessageEditUiState
-import io.github.mangi.eta.ui.model.ConversationMentionInputUi
 import io.github.mangi.eta.ui.model.PendingFileReferenceUi
 import io.github.mangi.eta.ui.model.PendingImageUi
+import io.github.mangi.eta.ui.model.QueuedMessageUi
 import io.github.mangi.eta.ui.model.ThinkingMessageUi
 import io.github.mangi.eta.ui.model.ToolActivityMessageUi
-import io.github.mangi.eta.ui.model.ToolActivityStatusUi
 import io.github.mangi.eta.ui.model.ToolSummaryMessageUi
 import io.github.mangi.eta.ui.model.UserMessageUi
-import io.github.mangi.eta.ui.model.isResumeAfterCompress
-import io.github.mangi.eta.ui.model.isSteerSupplement
-import kotlin.math.abs
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import io.github.mangi.eta.ui.model.latestContextUsage
+import io.github.mangi.eta.ui.voice.SpeechAutoReadAloud
+import io.github.mangi.eta.ui.voice.SpeechPlaybackHost
+import kotlin.math.exp
+import kotlin.math.min
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.flow.collectLatest
-import top.yukonga.miuix.kmp.basic.CircularProgressIndicator
+import kotlinx.coroutines.withTimeoutOrNull
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.blur.Backdrop
+import top.yukonga.miuix.kmp.glass.GlassIconButton
+import top.yukonga.miuix.kmp.glass.glassPress
+import top.yukonga.miuix.kmp.squircle.squircleBorder
+import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import top.yukonga.miuix.kmp.utils.scrollEndHaptic
@@ -177,48 +143,33 @@ import top.yukonga.miuix.kmp.utils.scrollEndHaptic
  * 空 assistant 占位不参与布局，避免刚发送时出现一个无内容消息节点。
  */
 @Composable
-@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class)
 internal fun AgentChatBody(
-    voiceController: VoiceModeController,
     messages: List<AgentChatMessageUi>,
-    history: List<AgentModelClient.ConversationMessage>,
     modelPickerState: AgentModelPickerUiState,
-    requestOverheadTokens: Int = 0,
-    measuredContextTokens: Int? = null,
-    contextDisplayPolicy: io.github.mangi.eta.ui.model.ContextDisplayPolicy = io.github.mangi.eta.ui.model.ContextDisplayPolicy(),
-    billedOverheadTokens: Int? = null,
-    livePromptTokens: Int? = null,
-    livePromptIsProjected: Boolean = false,
-    billedHistoryTokens: Int? = null,
-    activeRunContextWindow: Int? = null,
-    childContexts: List<io.github.mangi.eta.agent.delegation.SubAgentContextStats> = emptyList(),
-    compactingModelName: String = "",
-    selectedContextTaskId: String? = null,
-    onContextTaskSelected: ((String?) -> Unit)? = null,
-    autoCompressEnabled: Boolean = false,
+    isCompacting: Boolean,
+    isBranching: Boolean,
     input: String,
-    draftField: androidx.compose.foundation.text.input.TextFieldState? = null,
     isStreaming: Boolean,
-    isPaused: Boolean = false,
-    canContinueDisconnected: Boolean = false,
-    isCompressingContext: Boolean = false,
-    isWaitingForCompression: Boolean = false,
     reasoningEffort: ReasoningEffort,
     availableReasoningEfforts: List<ReasoningEffort>,
     pendingImages: List<PendingImageUi>,
     pendingFileReferences: List<PendingFileReferenceUi>,
-    conversationMentions: ConversationMentionInputUi = ConversationMentionInputUi(),
+    queuedMessages: List<QueuedMessageUi> = emptyList(),
+    inputSyncVersion: Int = 0,
+    focusInputOnSync: Boolean = true,
     messageEdit: MessageEditUiState?,
-    collaborationConversationId: String? = null,
-    assistantId: String = "",
     onReasoningEffortChange: (ReasoningEffort) -> Unit,
-    onModelSelected: (String, String) -> Unit,
+    onCompactContext: () -> Unit,
+    canCompactContext: Boolean,
+    onModelSelected: (String) -> Unit,
     onSubmit: (String) -> Unit,
+    onInterruptAndSubmit: (String) -> Unit = onSubmit,
+    onSteerQueuedMessage: (String) -> Unit = {},
+    onRecallQueuedMessage: (String, String) -> Unit = { _, _ -> },
+    onRemoveQueuedMessage: (String) -> Unit = {},
     onStop: () -> Unit,
-    onContinue: () -> Unit = {},
-    onAbortPausedRun: () -> Unit = {},
     onAttachImage: (String) -> Unit,
-    onAttachVideo: (String) -> Unit,
     onRemoveImage: (String) -> Unit,
     onAttachFiles: (List<String>) -> Unit,
     onAttachFolder: (String) -> Unit,
@@ -228,128 +179,50 @@ internal fun AgentChatBody(
     onCancelMessageEdit: () -> Unit,
     onDeleteMessage: (String) -> Unit,
     onRegenerateMessage: (String) -> Unit,
-    onBranchMessage: (String) -> Unit = {},
-    onQuestionDraftChanged: (String, String, io.github.mangi.eta.agent.question.AgentQuestionAnswer) -> Unit = { _, _, _ -> },
-    onSubmitQuestionAnswer: (String, String) -> Unit = { _, _ -> },
+    onBranchMessage: (String) -> Unit,
+    onSelectReplyCandidate: (String, Int) -> Unit,
     onSuggestionClick: (String) -> Unit,
     onRunTraceClick: () -> Unit,
     onOpenBrowser: () -> Unit,
-    onEditAssistant: (String) -> Unit,
-    onAssistantSelected: (String) -> Unit = {},
-    gptSpeedMode: io.github.mangi.eta.data.model.GptSpeedMode = io.github.mangi.eta.data.model.GptSpeedMode.NORMAL,
-    onCycleGptSpeedMode: () -> Unit = {},
+    hasEarlierMessages: Boolean = false,
+    messageStartIndex: Int = 0,
+    historyLoadState: ConversationHistoryLoadState = ConversationHistoryLoadState.Idle,
+    onLoadEarlierMessages: () -> Unit = {},
+    onHistoryViewportChanged: (Boolean) -> Unit = {},
     isDrawerOpen: Boolean = false,
-    scrollToMessageId: String? = null,
-    onScrollToMessageConsumed: () -> Unit = {},
+    topInset: Dp = 0.dp,
     modifier: Modifier = Modifier,
 ) {
-    val chatComposeStartedNs = if (StreamPerformanceDiagnostics.enabled) System.nanoTime() else 0L
-    val chatUiActive = LocalChatUiActive.current
-    val routeCovered = LocalChatRouteCovered.current
-    val transitionActive = LocalChatTransitionActive.current
-    // 停稳且完全盖住时保留当前快照，避免设置页和管理页跟着重排。
-    // 横滑手势和回弹期间露出的部分必须继续走正常打字机，不能追平、不能停住。
-    val followLiveTranscript = chatUiActive && !isChatSettledCovered(routeCovered, transitionActive)
-    val frozenChatSnapshot = remember(followLiveTranscript) {
-        if (followLiveTranscript) null else Triple(messages, isStreaming, isPaused)
-    }
-    val uiMessages = frozenChatSnapshot?.first ?: messages
-    val uiStreaming = frozenChatSnapshot?.second ?: isStreaming
-    val uiPaused = frozenChatSnapshot?.third ?: isPaused
-    // 一盖住就停震动；打字机只在导航仍在动、聊天露出时继续。
-    SideEffect {
-        StreamPerformanceDiagnostics.record("chat.compose", value = messages.size.toLong())
-        if (chatComposeStartedNs != 0L) {
-            StreamPerformanceDiagnostics.record(
-                "chat.compose.elapsed",
-                System.nanoTime() - chatComposeStartedNs,
-            )
+    val visibleMessages = remember(messages, messageEdit?.targetMessageId, messageEdit?.preserveFollowingMessages) {
+        AgentConversationRevisionReducer.visibleMessagesForEdit(
+            messages = messages,
+            targetMessageId = messageEdit?.takeUnless { it.preserveFollowingMessages }?.targetMessageId,
+        ).filterNot { message ->
+            message is AgentMessageUi && message.content.isBlank()
         }
     }
+    val initialScrollIndex = remember {
+        visibleMessages.toTimelineEntries().size + if (hasEarlierMessages) 1 else 0
+    }
+    val scrollState = rememberLazyListState(initialFirstVisibleItemIndex = initialScrollIndex)
     val keyboard = LocalSoftwareKeyboardController.current
-    val focusManager = LocalFocusManager.current
-    val view = LocalView.current
-    val context = LocalContext.current
-    val voiceState by voiceController.state.collectAsState()
-    val voiceLevel by voiceController.level.collectAsState()
     val density = LocalDensity.current
-    val imeInsets = WindowInsets.ime
-    val isKeyboardVisible by remember(imeInsets, density) {
-        derivedStateOf { imeInsets.getBottom(density) > 0 }
+    val imeBottomPx = WindowInsets.ime.getBottom(density)
+    val isKeyboardVisible = imeBottomPx > 0
+    val browserSnapshot = LocalAgentBrowserSession.current?.snapshots?.collectAsState()?.value
+        ?: BrowserSessionSnapshot()
+    val contextUsage = remember(messages, modelPickerState.selectedModel) {
+        latestContextUsage(messages, modelPickerState.selectedModel)
     }
-    val browserShortcut by remember {
-        AgentBrowserSession.snapshots
-            .map { snapshot ->
-                Triple(snapshot.available, snapshot.lastAgentRunId, snapshot.lastAgentToolCallId)
-            }
-            .distinctUntilChanged()
-    }.collectAsState(initial = Triple(false, null, null))
-    val visibleMessagesCache = remember { AgentVisibleMessagesCache() }
-    val visibleMessages = remember(uiMessages, messageEdit?.targetMessageId) {
-        visibleMessagesCache.project(uiMessages, messageEdit?.targetMessageId)
-    }
-    LaunchedEffect(messages, isStreaming) {
-        val last = messages.filterIsInstance<AgentMessageUi>().lastOrNull()
-        val speechText = last?.content.orEmpty()
-        voiceController.updateChat(
-            VoiceChatSnapshot(
-                isStreaming = isStreaming,
-                lastAgentId = last?.id,
-                lastAgentText = speechText,
-            )
-        )
-    }
-    val speechPlayback by io.github.mangi.eta.agent.voice.tts.SpeechPlayback.state.collectAsState()
-    LaunchedEffect(visibleMessages, messageEdit?.targetMessageId, speechPlayback.owner) {
-        val owner = speechPlayback.owner
-        val visibleCompletedIds = visibleMessages.mapNotNull { message ->
-            (message as? AgentMessageUi)?.takeIf { !it.isStreaming }?.id
-        }.toSet()
-        if (shouldStopOrphanSpeechPlayback(owner, messageEdit != null, visibleCompletedIds)) {
-            io.github.mangi.eta.agent.voice.tts.SpeechPlayback.stop("orphan_reply")
-        }
-    }
-    // Project once for both the initial tail anchor and the rendered rows below. In
-    // particular, do not derive a second full timeline just to ask for its size: this
-    // list can contain thousands of streaming/tool messages.
-    val timelineProjection = remember { AgentTimelineProjectionCache() }
-    val timelineEntries = remember(visibleMessages) {
-        StreamPerformanceDiagnostics.measure("timeline.project", visibleMessages.size.toLong()) { timelineProjection.project(visibleMessages) }
-    }
-    val hasCompactingChildContext = remember(childContexts) { childContexts.any { it.isCompacting } }
-    val initialBottomItemIndex = remember(timelineEntries.size, isCompressingContext, isWaitingForCompression, hasCompactingChildContext) {
-        initialTimelineItemIndex(
-            timelineEntries = timelineEntries,
-            isCompressingContext = isCompressingContext,
-            isWaitingForCompression = isWaitingForCompression,
-            hasCompactingChildContext = hasCompactingChildContext,
-        )
-    }
-    // A default one-item prefetch is too shallow for mixed short tool rows and tall Markdown.
-    // Keep one viewport on both sides: ahead prepares incoming rows; behind prevents
-    // immediate disposal/recomposition when expansion or a direction reversal moves the boundary.
-    val chatCacheWindow = remember {
-        LazyLayoutCacheWindow(
-            aheadFraction = CHAT_CACHE_AHEAD_VIEWPORTS,
-            behindFraction = CHAT_CACHE_BEHIND_VIEWPORTS,
-        )
-    }
-    val scrollState = rememberLazyListState(
-        cacheWindow = chatCacheWindow,
-        initialFirstVisibleItemIndex = initialBottomItemIndex,
-    )
-
-    io.github.mangi.eta.ui.haptics.StreamingHaptics.Observe(
-        enabled = !isPaused && !routeCovered,
-        conversationId = collaborationConversationId,
-    )
-
     val currentBrowserMessageId = remember(
         visibleMessages,
-        browserShortcut,
+        browserSnapshot.available,
+        browserSnapshot.lastAgentRunId,
+        browserSnapshot.lastAgentToolCallId,
     ) {
-        val (available, runId, toolCallId) = browserShortcut
-        if (!available || runId == null || toolCallId == null) {
+        val runId = browserSnapshot.lastAgentRunId
+        val toolCallId = browserSnapshot.lastAgentToolCallId
+        if (!browserSnapshot.available || runId == null || toolCallId == null) {
             null
         } else {
             visibleMessages.lastOrNull { message ->
@@ -360,263 +233,129 @@ internal fun AgentChatBody(
             }?.id
         }
     }
-    val submitScrollScope = rememberCoroutineScope()
-    var keepBottomAnchored by remember { mutableStateOf(true) }
+    var sentFromKeyboard by remember { mutableStateOf(false) }
+    var keepBottomAnchored by rememberSaveable { mutableStateOf(true) }
 
-    // Eta Mod：轮次刻度轨——从同一份 timelineEntries 派生刻度（与 Number444 的
-    // buildTurnTicks 同一语义；Yunke 不另起第二份时间线投影）。
-    // 轮数 < MIN_TURN_TICKS（3）时 tickRail 为 null，刻度条不显示，短会话只留
-    // ConversationTurnNavigationButton（见 README「按钮为什么保留」）。
-    val turnTicks = remember(timelineEntries) { buildTurnTicks(timelineEntries) }
-    // 本对话累计用量：用量面板展示输入/输出与缓存命中率。
-    val conversationUsage = remember(visibleMessages) {
-        io.github.mangi.eta.ui.model.conversationTokenUsage(visibleMessages)
-    }
-    // 列表视口同步来的浮点当前轮；刻度条刮擦期间由刻度条接管，松手后回到这里。
-    val visibleTurn = remember { mutableFloatStateOf(-1f) }
-    // 刮擦气泡目标轮；气泡渲染在底部栏带子 Box 之外（带子 Box 会裁剪子内容溢出）。
-    var tickBubbleTick by remember { mutableStateOf<TurnTick?>(null) }
-    // 轻点跳转请求：行下标换算在 AgentConversationMessages 里（PATCH_03），
-    // 这里只发请求；nonce 保证同一轮连点两次也会再次触发。
-    var tickJumpRequest by remember { mutableStateOf<Pair<TurnTick, Int>?>(null) }
-    var tickJumpNonce by remember { mutableIntStateOf(0) }
-    // 刮擦跟随目标：实时、无动画，同样由 AgentConversationMessages 消费。
-    var tickScrubMessageId by remember { mutableStateOf<String?>(null) }
-    // Eta Mod：刻度轨可见性——抄上一条/下一条按钮（showMessageNavigation，约 :1830）：
-    // 平时不常驻；内层（PATCH_03）在滚动中 / 不在底部时上报 true，到底部静止
-    // TICK_RAIL_IDLE_HIDE_DELAY_MS 后上报 false；刮擦时外层强制可见。
-    var tickRailVisibleReported by remember { mutableStateOf(false) }
-    var tickRailScrubbing by remember { mutableStateOf(false) }
-    val tickRailVisible = tickRailScrubbing || tickRailVisibleReported
-    val tickRail: (@Composable () -> Unit)? = if (turnTicks.size >= MIN_TURN_TICKS) {
-        {
-            TurnTickRail(
-                ticks = turnTicks,
-                currentTurn = visibleTurn,
-                visible = tickRailVisible,
-                onTap = { tick ->
-                    // 末轮即“回到底部”，由消费端走 snapListToBottom；其余轮走行下标跳转。
-                    keepBottomAnchored = tick == turnTicks.lastOrNull()
-                    tickJumpNonce += 1
-                    tickJumpRequest = tick to tickJumpNonce
-                },
-                onScrubStart = {
-                    tickRailScrubbing = true
-                    keepBottomAnchored = false
-                },
-                onScrubTick = { tick -> tickScrubMessageId = tick.firstUserMessageId },
-                onScrubEnd = { atLatest ->
-                    tickRailScrubbing = false
-                    // 必须清掉刮擦目标：tickScrubMessageId 留着的话，下面那个
-                    // LaunchedEffect(tickScrubMessageId, timelineRows) 会在每次
-                    // timelineRows 变化时重跑——也就是流式输出的每一帧——把列表
-                    // 反复拉回那次刮擦指向的旧提问，表现为「输出时莫名跳回上一个提问」。
-                    tickScrubMessageId = null
-                    if (atLatest) {
-                        keepBottomAnchored = true
-                        tickJumpNonce += 1
-                        tickJumpRequest = turnTicks.lastOrNull()?.to(tickJumpNonce)
-                    }
-                },
-                onBubbleChanged = { tickBubbleTick = it },
-            )
+    LaunchedEffect(isStreaming) {
+        if (isStreaming && sentFromKeyboard) {
+            keyboard?.hide()
+            sentFromKeyboard = false
         }
-    } else {
-        null
     }
 
     LaunchedEffect(isDrawerOpen) {
         if (isDrawerOpen) {
-            hideChatInputIme(focusManager, keyboard, view)
+            keyboard?.hide()
         }
     }
 
-    val billedContextTokens = remember(livePromptTokens, livePromptIsProjected, messageEdit) {
-        if (messageEdit != null) {
-            null
-        } else {
-            livePromptTokens.takeUnless { livePromptIsProjected }
-        }
-    }
-    val projectedContextTokens = livePromptTokens.takeIf { livePromptIsProjected && messageEdit == null && uiStreaming }
-    val imageSourceCache = remember { ChatImageSourceCache() }
-    val previewGallery by produceState<List<String>>(emptyList(), visibleMessages, pendingImages) {
-        // This used to parse EVERY historical reply synchronously on each text delta.
-        // Cancelling this producer prevents obsolete galleries from being published.
-        value = withContext(Dispatchers.Default) {
-            StreamPerformanceDiagnostics.measure("gallery.scan", visibleMessages.size.toLong()) {
-                collectPreviewableChatImages(visibleMessages, pendingImages) { message ->
-                    imageSourceCache.sources(message.id, message.content)
-                }
-            }
-        }
-    }
-    androidx.compose.runtime.CompositionLocalProvider(
-        LocalAgentContextTelemetry provides AgentContextTelemetry(childContexts, modelPickerState.selectedModel?.displayName.orEmpty(), compactingModelName, selectedContextTaskId, onContextTaskSelected)
-    ) {
-        ChatImagePreviewHost(gallery = previewGallery) {
-            AgentChatScaffold(
-                collaborationConversationId = collaborationConversationId,
-                visibleMessages = visibleMessages,
-                timelineEntries = timelineEntries,
-                hasMessages = visibleMessages.isNotEmpty(),
-                scrollState = scrollState,
-                input = input,
-                draftField = draftField,
-                modelPickerState = modelPickerState,
-                history = history,
-                billedContextTokens = billedContextTokens,
-                projectedContextTokens = projectedContextTokens,
-                billedHistoryTokens = billedHistoryTokens,
-                requestOverheadTokens = requestOverheadTokens,
-                measuredContextTokens = measuredContextTokens,
-                contextDisplayPolicy = contextDisplayPolicy,
-                billedOverheadTokens = billedOverheadTokens,
-                activeRunContextWindow = activeRunContextWindow,
-                autoCompressEnabled = autoCompressEnabled,
-                isStreaming = uiStreaming,
-                isPaused = uiPaused,
-                isCompressingContext = isCompressingContext,
-                isWaitingForCompression = isWaitingForCompression,
-                reasoningEffort = reasoningEffort,
-                availableReasoningEfforts = availableReasoningEfforts,
-                pendingImages = pendingImages,
-                pendingFileReferences = pendingFileReferences,
-                conversationMentions = conversationMentions,
-                messageEdit = messageEdit,
-                assistantId = assistantId,
-                voiceState = voiceState,
-                onStartVoiceMode = voiceController::start,
-                onStopVoiceMode = voiceController::stop,
-                voiceLevel = voiceLevel,
-                showEmptySuggestions = !isKeyboardVisible,
-                keepBottomAnchored = keepBottomAnchored,
-                onBottomAnchorChanged = { keepBottomAnchored = it },
-                conversationUsage = conversationUsage,
-                tickRail = tickRail,
-                tickBubble = tickBubbleTick,
-                turnTicks = turnTicks,
-                onVisibleTurnChanged = { visibleTurn.floatValue = it },
-                tickJumpRequest = tickJumpRequest,
-                onTickJumpConsumed = { tickJumpRequest = null },
-                tickScrubMessageId = tickScrubMessageId,
-                tickScrubbing = tickRailScrubbing,
-                tickRailVisible = tickRailVisible,
-                onTickRailVisibilityChanged = { tickRailVisibleReported = it },
-                onSubmit = { text ->
-                    // Hide only for this submit action, never for a later streaming/tool update.
-                    keyboard?.hide()
-                    // 发送即重新锚定底部：用户从历史上方直接发送时，同帧内 isStreaming 与
-                    // 新消息一起到位，立即回到底部并恢复后续的流式平滑跟底。
-                    keepBottomAnchored = true
-                    onSubmit(text)
-                    submitScrollScope.launch {
-                        // Cancel an old fling, then anchor the edited/replaced list after layout.
-                        scrollState.scroll(androidx.compose.foundation.MutatePriority.PreventUserInput) { }
-                        withFrameNanos { }
-                        keepBottomAnchored = true
-                        val last = scrollState.layoutInfo.totalItemsCount - 1
-                        if (last >= 0) scrollState.requestScrollToItem(last)
-                    }
-                },
-                onReasoningEffortChange = onReasoningEffortChange,
-                onModelSelected = onModelSelected,
-                onStop = onStop,
-                onContinue = onContinue,
-                onAbortPausedRun = onAbortPausedRun,
-                onAttachImage = onAttachImage,
-                onAttachVideo = onAttachVideo,
-                onRemoveImage = onRemoveImage,
-                onAttachFiles = onAttachFiles,
-                onAttachFolder = onAttachFolder,
-                onAttachFilePath = onAttachFilePath,
-                onRemoveFileReference = onRemoveFileReference,
-                onEditMessage = onEditMessage,
-                onCancelMessageEdit = onCancelMessageEdit,
-                onDeleteMessage = onDeleteMessage,
-                onRegenerateMessage = onRegenerateMessage,
-                onBranchMessage = onBranchMessage,
-                onQuestionDraftChanged = onQuestionDraftChanged,
-                onSubmitQuestionAnswer = onSubmitQuestionAnswer,
-                onSuggestionClick = onSuggestionClick,
-                onRunTraceClick = onRunTraceClick,
-                onOpenBrowser = onOpenBrowser,
-                onEditAssistant = onEditAssistant,
-                onAssistantSelected = onAssistantSelected,
-                gptSpeedMode = gptSpeedMode,
-                onCycleGptSpeedMode = onCycleGptSpeedMode,
-                currentBrowserMessageId = currentBrowserMessageId,
-                scrollToMessageId = scrollToMessageId,
-                onScrollToMessageConsumed = onScrollToMessageConsumed,
-                modifier = modifier,
-            )
-        }
+    SpeechPlaybackHost {
+        SpeechAutoReadAloud(messages = messages, isStreaming = isStreaming)
+        AgentChatScaffold(
+            visibleMessages = visibleMessages,
+            hasMessages = visibleMessages.isNotEmpty() || hasEarlierMessages,
+            scrollState = scrollState,
+            input = input,
+            modelPickerState = modelPickerState,
+            isCompacting = isCompacting,
+            isBranching = isBranching,
+            contextUsage = contextUsage,
+            isStreaming = isStreaming,
+            reasoningEffort = reasoningEffort,
+            availableReasoningEfforts = availableReasoningEfforts,
+            pendingImages = pendingImages,
+            pendingFileReferences = pendingFileReferences,
+            queuedMessages = queuedMessages,
+            inputSyncVersion = inputSyncVersion,
+            focusInputOnSync = focusInputOnSync,
+            messageEdit = messageEdit,
+            showEmptySuggestions = !isKeyboardVisible,
+            keepBottomAnchored = keepBottomAnchored,
+            onBottomAnchorChanged = { keepBottomAnchored = it },
+            onSubmit = { text ->
+                sentFromKeyboard = true
+                // 发送即重新锚定底部：用户从历史上方直接发送时，同帧内 isStreaming 与
+                // 新消息一起到位，立即回到底部并恢复后续的流式平滑跟底。
+                keepBottomAnchored = true
+                onSubmit(text)
+            },
+            onInterruptAndSubmit = { text ->
+                sentFromKeyboard = true
+                keepBottomAnchored = true
+                onInterruptAndSubmit(text)
+            },
+            onSteerQueuedMessage = { id ->
+                keepBottomAnchored = true
+                onSteerQueuedMessage(id)
+            },
+            onRecallQueuedMessage = onRecallQueuedMessage,
+            onRemoveQueuedMessage = onRemoveQueuedMessage,
+            onReasoningEffortChange = onReasoningEffortChange,
+            onCompactContext = onCompactContext,
+            canCompactContext = canCompactContext,
+            onModelSelected = onModelSelected,
+            onStop = onStop,
+            onAttachImage = onAttachImage,
+            onRemoveImage = onRemoveImage,
+            onAttachFiles = onAttachFiles,
+            onAttachFolder = onAttachFolder,
+            onAttachFilePath = onAttachFilePath,
+            onRemoveFileReference = onRemoveFileReference,
+            onEditMessage = onEditMessage,
+            onCancelMessageEdit = onCancelMessageEdit,
+            onDeleteMessage = onDeleteMessage,
+            onRegenerateMessage = onRegenerateMessage,
+            onBranchMessage = onBranchMessage,
+            onSelectReplyCandidate = onSelectReplyCandidate,
+            onSuggestionClick = onSuggestionClick,
+            onRunTraceClick = onRunTraceClick,
+            onOpenBrowser = onOpenBrowser,
+            currentBrowserMessageId = currentBrowserMessageId,
+            hasEarlierMessages = hasEarlierMessages,
+            messageStartIndex = messageStartIndex,
+            historyLoadState = historyLoadState,
+            onLoadEarlierMessages = onLoadEarlierMessages,
+            onHistoryViewportChanged = onHistoryViewportChanged,
+            topInset = topInset,
+            modifier = modifier,
+        )
     }
 }
 
 @Composable
 @OptIn(ExperimentalLayoutApi::class)
-internal fun AgentChatScaffold(
+private fun AgentChatScaffold(
     visibleMessages: List<AgentChatMessageUi>,
-    timelineEntries: List<AgentTimelineEntry>,
     hasMessages: Boolean,
     scrollState: LazyListState,
     input: String,
-    draftField: androidx.compose.foundation.text.input.TextFieldState? = null,
     modelPickerState: AgentModelPickerUiState,
-    history: List<AgentModelClient.ConversationMessage>,
-    billedContextTokens: Int? = null,
-    projectedContextTokens: Int? = null,
-    billedHistoryTokens: Int? = null,
-    requestOverheadTokens: Int = 0,
-    measuredContextTokens: Int? = null,
-    contextDisplayPolicy: io.github.mangi.eta.ui.model.ContextDisplayPolicy = io.github.mangi.eta.ui.model.ContextDisplayPolicy(),
-    billedOverheadTokens: Int? = null,
-    activeRunContextWindow: Int? = null,
-    autoCompressEnabled: Boolean,
+    isCompacting: Boolean,
+    isBranching: Boolean,
+    contextUsage: AgentContextUsageUi,
     isStreaming: Boolean,
-    isPaused: Boolean = false,
-    isCompressingContext: Boolean = false,
-    isWaitingForCompression: Boolean = false,
     reasoningEffort: ReasoningEffort,
     availableReasoningEfforts: List<ReasoningEffort>,
     pendingImages: List<PendingImageUi>,
     pendingFileReferences: List<PendingFileReferenceUi>,
-    conversationMentions: ConversationMentionInputUi = ConversationMentionInputUi(),
+    queuedMessages: List<QueuedMessageUi>,
+    inputSyncVersion: Int,
+    focusInputOnSync: Boolean,
     messageEdit: MessageEditUiState?,
-    collaborationConversationId: String? = null,
-    assistantId: String = "",
-    voiceState: VoiceModeState = VoiceModeState(),
-    onStartVoiceMode: (VoiceEntryMode) -> Unit = {},
-    onStopVoiceMode: () -> Unit = {},
-    voiceLevel: Float = 0f,
     showEmptySuggestions: Boolean,
     keepBottomAnchored: Boolean,
     onBottomAnchorChanged: (Boolean) -> Unit,
-    /** 本对话累计用量（输入/输出/缓存），只给用量面板展示。 */
-    conversationUsage: io.github.mangi.eta.ui.model.ConversationTokenUsageUi? = null,
-    // Eta Mod：轮次刻度轨——外层 AgentChatBody 派生，只做透传。
-    tickRail: (@Composable () -> Unit)? = null,
-    tickBubble: TurnTick? = null,
-    turnTicks: List<TurnTick> = emptyList(),
-    onVisibleTurnChanged: (Float) -> Unit = {},
-    tickJumpRequest: Pair<TurnTick, Int>? = null,
-    onTickJumpConsumed: () -> Unit = {},
-    tickScrubMessageId: String? = null,
-    /** 是否正在刮擦刻度轨（透传给消息列表，决定刮擦跟随滚动是否生效）。 */
-    tickScrubbing: Boolean = false,
-    // Eta Mod：刻度轨可见性——tickRailVisible 下发给底部栏（带子淡入淡出），
-    // onTickRailVisibilityChanged 上报自消息列表的锚点观测（PATCH_03）。
-    tickRailVisible: Boolean = false,
-    onTickRailVisibilityChanged: (Boolean) -> Unit = {},
     onSubmit: (String) -> Unit,
+    onInterruptAndSubmit: (String) -> Unit,
+    onSteerQueuedMessage: (String) -> Unit,
+    onRecallQueuedMessage: (String, String) -> Unit,
+    onRemoveQueuedMessage: (String) -> Unit,
     onReasoningEffortChange: (ReasoningEffort) -> Unit,
-    onModelSelected: (String, String) -> Unit,
+    onCompactContext: () -> Unit,
+    canCompactContext: Boolean,
+    onModelSelected: (String) -> Unit,
     onStop: () -> Unit,
-    onContinue: () -> Unit = {},
-    onAbortPausedRun: () -> Unit = {},
     onAttachImage: (String) -> Unit,
-    onAttachVideo: (String) -> Unit,
     onRemoveImage: (String) -> Unit,
     onAttachFiles: (List<String>) -> Unit,
     onAttachFolder: (String) -> Unit,
@@ -626,45 +365,25 @@ internal fun AgentChatScaffold(
     onCancelMessageEdit: () -> Unit,
     onDeleteMessage: (String) -> Unit,
     onRegenerateMessage: (String) -> Unit,
-    onBranchMessage: (String) -> Unit = {},
-    onQuestionDraftChanged: (String, String, io.github.mangi.eta.agent.question.AgentQuestionAnswer) -> Unit = { _, _, _ -> },
-    onSubmitQuestionAnswer: (String, String) -> Unit = { _, _ -> },
+    onBranchMessage: (String) -> Unit,
+    onSelectReplyCandidate: (String, Int) -> Unit,
     onSuggestionClick: (String) -> Unit,
     onRunTraceClick: () -> Unit,
     onOpenBrowser: () -> Unit,
-    onEditAssistant: (String) -> Unit,
-    onAssistantSelected: (String) -> Unit = {},
     currentBrowserMessageId: String?,
-    scrollToMessageId: String? = null,
-    onScrollToMessageConsumed: () -> Unit = {},
-    gptSpeedMode: io.github.mangi.eta.data.model.GptSpeedMode = io.github.mangi.eta.data.model.GptSpeedMode.NORMAL,
-    onCycleGptSpeedMode: () -> Unit = {},
+    hasEarlierMessages: Boolean,
+    messageStartIndex: Int,
+    historyLoadState: ConversationHistoryLoadState,
+    onLoadEarlierMessages: () -> Unit,
+    onHistoryViewportChanged: (Boolean) -> Unit,
+    topInset: Dp,
     modifier: Modifier = Modifier,
 ) {
-    val appearance = LocalAppearanceSettings.current
-    val showMorphLoading = shouldShowMorphLoadingIndicator(
-        messages = visibleMessages,
-        isStreaming = isStreaming,
-        isPaused = isPaused,
-        isCompressingContext = isCompressingContext,
-        enabled = appearance.morphLoadingIndicator,
-        beforeResponseOnly = appearance.morphLoadingBeforeResponseOnly,
-    )
+    val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
+    val chatBackdrop = if (isCoui) null else rememberGlassBackdrop()
 
-    // 语音态（voice mode）：顶部 AI 回复卡片与底部控制胶囊共用一份玻璃取样层；
-    // backdrop 记录的是整个聊天表面（消息 + 输入框），textureBlur 才能取到毛玻璃底色。
-    val voiceGlassBackdrop = rememberVoiceGlassBackdrop()
-    // 「消息」按钮收起的浮层；再次进入语音态自动复位。
-    var voiceOverlayCollapsed by remember { mutableStateOf(false) }
-    LaunchedEffect(voiceState.active) {
-        if (voiceState.active) voiceOverlayCollapsed = false
-    }
-    val voiceOverlayActive = (voiceState.active || voiceState.error != null) && !voiceOverlayCollapsed
-    Box(modifier = modifier.fillMaxSize()) {
     Scaffold(
-        modifier = Modifier
-            .fillMaxSize()
-            .then(if (voiceGlassBackdrop != null) Modifier.layerBackdrop(voiceGlassBackdrop) else Modifier),
+        modifier = modifier.fillMaxSize(),
         containerColor = Color.Transparent,
         contentWindowInsets = WindowInsets(
             left = 0.dp,
@@ -674,179 +393,96 @@ internal fun AgentChatScaffold(
         ),
         bottomBar = {
             AgentChatBottomBar(
-                collaborationConversationId = collaborationConversationId,
                 input = input,
-                draftField = draftField,
-                modelPickerState = modelPickerState,
-                history = historyForContextSendBudget(
-                    history, measuredContextTokens, autoCompressEnabled,
-                ),
-                billedContextTokens = billedContextTokens,
-                projectedContextTokens = projectedContextTokens,
-                billedHistoryTokens = billedHistoryTokens,
-                requestOverheadTokens = requestOverheadTokens,
-                measuredContextTokens = measuredContextTokens,
-                contextDisplayPolicy = contextDisplayPolicy,
-                billedOverheadTokens = billedOverheadTokens,
-                activeRunContextWindow = activeRunContextWindow,
-                autoCompressEnabled = autoCompressEnabled,
+                isCompacting = isCompacting,
+                contextUsage = contextUsage,
                 showContextUsage = hasMessages,
-                conversationUsage = conversationUsage,
                 isStreaming = isStreaming,
-                isPaused = isPaused,
-                canContinueDisconnected = canContinueDisconnectedRun(visibleMessages),
-                isCompressingContext = isCompressingContext,
-                showMorphLoading = showMorphLoading,
                 reasoningEffort = reasoningEffort,
                 availableReasoningEfforts = availableReasoningEfforts,
                 pendingImages = pendingImages,
                 pendingFileReferences = pendingFileReferences,
-            conversationMentions = conversationMentions,
+                queuedMessages = queuedMessages,
+                inputSyncVersion = inputSyncVersion,
+                focusInputOnSync = focusInputOnSync,
                 messageEdit = messageEdit,
-                assistantId = assistantId,
-                voiceState = voiceState,
-                onStartVoiceMode = onStartVoiceMode,
-                onStopVoiceMode = onStopVoiceMode,
-                voiceLevel = voiceLevel,
-                voiceGlassBackdrop = voiceGlassBackdrop,
-                voiceOverlayCollapsed = voiceOverlayCollapsed,
-                onVoiceOverlayCollapsedChange = { voiceOverlayCollapsed = it },
+                glassBackdrop = chatBackdrop,
                 onSubmit = onSubmit,
+                onInterruptAndSubmit = onInterruptAndSubmit,
+                onSteerQueuedMessage = onSteerQueuedMessage,
+                onRecallQueuedMessage = onRecallQueuedMessage,
+                onRemoveQueuedMessage = onRemoveQueuedMessage,
                 onReasoningEffortChange = onReasoningEffortChange,
-                onModelSelected = onModelSelected,
+                onCompactContext = onCompactContext,
+                canCompactContext = canCompactContext,
                 onStop = onStop,
-                onContinue = onContinue,
-                onAbortPausedRun = onAbortPausedRun,
                 onAttachImage = onAttachImage,
-                onAttachVideo = onAttachVideo,
                 onRemoveImage = onRemoveImage,
                 onAttachFiles = onAttachFiles,
                 onAttachFolder = onAttachFolder,
                 onAttachFilePath = onAttachFilePath,
                 onRemoveFileReference = onRemoveFileReference,
                 onCancelMessageEdit = onCancelMessageEdit,
-                onEditAssistant = onEditAssistant,
-                onAssistantSelected = onAssistantSelected,
-                gptSpeedMode = gptSpeedMode,
-                onCycleGptSpeedMode = onCycleGptSpeedMode,
             )
         },
     ) { innerPadding ->
         val bottomPadding = innerPadding.calculateBottomPadding()
-        Box(modifier = Modifier.fillMaxSize()) {
-        if (!hasMessages) {
-            EmptyChatState(
-                showSuggestions = showEmptySuggestions,
-                onSuggestionClick = onSuggestionClick,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(bottom = bottomPadding),
-            )
-        } else {
-            AgentConversationMessages(
-                visibleMessages = visibleMessages,
-                timelineEntries = timelineEntries,
-                scrollState = scrollState,
-                isStreaming = isStreaming,
-                isPaused = isPaused,
-                isCompressingContext = isCompressingContext,
-                isWaitingForCompression = isWaitingForCompression,
-                bottomInset = bottomPadding,
-                keepBottomAnchored = keepBottomAnchored,
-                onBottomAnchorChanged = onBottomAnchorChanged,
-                turnTicks = turnTicks,
-                onVisibleTurnChanged = onVisibleTurnChanged,
-                tickJumpRequest = tickJumpRequest,
-                onTickJumpConsumed = onTickJumpConsumed,
-                tickScrubMessageId = tickScrubMessageId,
-                tickScrubbing = tickScrubbing,
-                onTickRailVisibilityChanged = onTickRailVisibilityChanged,
-                onSuggestionClick = onSuggestionClick,
-                onRunTraceClick = onRunTraceClick,
-                onOpenBrowser = onOpenBrowser,
-                onEditMessage = onEditMessage,
-                onDeleteMessage = onDeleteMessage,
-                onRegenerateMessage = onRegenerateMessage,
-                onBranchMessage = onBranchMessage,
-                onQuestionDraftChanged = onQuestionDraftChanged,
-                onSubmitQuestionAnswer = onSubmitQuestionAnswer,
-                messageActionsEnabled = !isStreaming && !isPaused &&
-                    !isCompressingContext &&
-                    messageEdit == null,
-                branchEnabled = !isCompressingContext && messageEdit == null,
-                editTargetMessageId = messageEdit?.targetMessageId,
-                currentBrowserMessageId = currentBrowserMessageId,
-                scrollToMessageId = scrollToMessageId,
-                onScrollToMessageConsumed = onScrollToMessageConsumed,
-                modifier = Modifier
-                    .fillMaxSize(),
-            )
-        }
-        // Eta Mod：轮次刻度轨改为纵向，浮在对话记录右侧、垂直居中。
-        // 气泡必须渲染在轨的 Box 之外会遮蔽的位置：这里放在轨左侧，随轨一起淡入淡出。
-        if (tickRail != null) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .fillMaxHeight()
-                    .padding(vertical = 8.dp)
-                    .padding(end = 2.dp),
-                contentAlignment = Alignment.CenterEnd,
-            ) {
-                if (tickRailVisible) {
-                    tickBubble?.let { bubble ->
-                        TurnTickBubble(
-                            tick = bubble,
-                            modifier = Modifier
-                                .align(Alignment.CenterEnd)
-                                .padding(end = TurnTickRailWidth + 8.dp),
-                        )
-                    }
-                }
-                tickRail()
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .captureGlassBackdrop(chatBackdrop),
+        ) {
+            if (!hasMessages) {
+                EmptyChatState(
+                    showSuggestions = showEmptySuggestions,
+                    onSuggestionClick = onSuggestionClick,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(top = topInset, bottom = bottomPadding),
+                )
+            } else {
+                AgentConversationMessages(
+                    visibleMessages = visibleMessages,
+                    scrollState = scrollState,
+                    isStreaming = isStreaming,
+                    topInset = topInset,
+                    bottomInset = bottomPadding,
+                    keepBottomAnchored = keepBottomAnchored,
+                    onBottomAnchorChanged = onBottomAnchorChanged,
+                    onSuggestionClick = onSuggestionClick,
+                    onRunTraceClick = onRunTraceClick,
+                    onOpenBrowser = onOpenBrowser,
+                    onEditMessage = onEditMessage,
+                    onDeleteMessage = onDeleteMessage,
+                    onRegenerateMessage = onRegenerateMessage,
+                    onBranchMessage = onBranchMessage,
+                    onSelectReplyCandidate = onSelectReplyCandidate,
+                    messageActionsEnabled = !isStreaming && !isCompacting && !isBranching && messageEdit == null,
+                    editTargetMessageId = messageEdit?.targetMessageId,
+                    currentBrowserMessageId = currentBrowserMessageId,
+                    hasEarlierMessages = hasEarlierMessages,
+                    messageStartIndex = messageStartIndex,
+                    historyLoadState = historyLoadState,
+                    onLoadEarlierMessages = onLoadEarlierMessages,
+                    onHistoryViewportChanged = onHistoryViewportChanged,
+                    modifier = Modifier.fillMaxSize(),
+                )
             }
         }
-        }
-    }
     }
 }
-
-// Eta Mod：刻度轨到底部静止后自动隐藏的宽限（毫秒）。按钮逻辑本身没有计时器，
-// 是纯位置判断（到锚定底部立刻消失）；刻度条多留 2.5 秒，给刚到到底部的用户
-// 一个顺手点刻度跳回去的窗口。单点常量，真机可调。
-private const val TICK_RAIL_IDLE_HIDE_DELAY_MS = 2500L
-
-// Eta Mod：轮次刻度轨跟随——锚点观测流里多发的一组视口位置，随 flow 值一起去重。
-private data class TurnFollowState(
-    val isUserScrolling: Boolean,
-    val isAtBottom: Boolean,
-    val anchored: Boolean,
-    val firstVisibleFloat: Float,
-    val totalItemsCount: Int,
-)
 
 @Composable
 @OptIn(ExperimentalLayoutApi::class)
 internal fun AgentConversationMessages(
     visibleMessages: List<AgentChatMessageUi>,
     scrollState: LazyListState,
-    timelineEntries: List<AgentTimelineEntry>? = null,
     isStreaming: Boolean,
-    isPaused: Boolean = false,
-    isCompressingContext: Boolean = false,
-    isWaitingForCompression: Boolean = false,
     bottomInset: Dp,
     keepBottomAnchored: Boolean,
     onBottomAnchorChanged: (Boolean) -> Unit,
-    // Eta Mod：轮次刻度轨——外层 AgentChatBody 派生（turnTicks）与下发的跳转请求。
-    turnTicks: List<TurnTick> = emptyList(),
-    onVisibleTurnChanged: (Float) -> Unit = {},
-    tickJumpRequest: Pair<TurnTick, Int>? = null,
-    onTickJumpConsumed: () -> Unit = {},
-    tickScrubMessageId: String? = null,
-    /** 是否正在刮擦刻度轨；只有为 true 时上面那个刮擦跟随 effect 才会滚动。 */
-    tickScrubbing: Boolean = false,
-    onTickRailVisibilityChanged: (Boolean) -> Unit = {},
+    assistantOverlay: Boolean = false,
+    topInset: Dp = 0.dp,
     onSuggestionClick: (String) -> Unit = {},
     onRunTraceClick: () -> Unit = {},
     onOpenBrowser: () -> Unit = {},
@@ -854,657 +490,176 @@ internal fun AgentConversationMessages(
     onDeleteMessage: (String) -> Unit = {},
     onRegenerateMessage: (String) -> Unit = {},
     onBranchMessage: (String) -> Unit = {},
-    onQuestionDraftChanged: (String, String, io.github.mangi.eta.agent.question.AgentQuestionAnswer) -> Unit = { _, _, _ -> },
-    onSubmitQuestionAnswer: (String, String) -> Unit = { _, _ -> },
+    onSelectReplyCandidate: (String, Int) -> Unit = { _, _ -> },
     messageActionsEnabled: Boolean = false,
-    branchEnabled: Boolean = false,
     editTargetMessageId: String? = null,
     currentBrowserMessageId: String? = null,
-    scrollToMessageId: String? = null,
-    onScrollToMessageConsumed: () -> Unit = {},
+    hasEarlierMessages: Boolean = false,
+    messageStartIndex: Int = 0,
+    historyLoadState: ConversationHistoryLoadState = ConversationHistoryLoadState.Idle,
+    onLoadEarlierMessages: () -> Unit = {},
+    onHistoryViewportChanged: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    // Independent, trace-gated telemetry also covers idle conversations. No frame loop.
-    val scrollTraceEnabled = rememberChatScrollTraceEnabled()
-    val chatListTrace = ChatScrollMonitor(state = scrollState, enabled = scrollTraceEnabled)
-    // Observe attach/detach only; never change lazy keys or remount completed content.
-    val diagnosticGeneration = StreamPerformanceDiagnostics.sessionGeneration.longValue
-    val diagnosticList = remember(scrollState, diagnosticGeneration) { nextStreamDiagnosticListId() }
-    val diagnosticListAttribution = StreamPerformanceDiagnostics.listAttribution(diagnosticList)
-    traceChatListOwnerExecution(chatListTrace, scrollTraceEnabled)
-    // Retain successful parses beyond individual lazy-row compositions.
-    val completedMarkdownCache = remember(scrollState) { CompletedMarkdownCache() }
-    // AgentChatBody supplies this projection so the initial tail anchor and the
-    // rendered rows share one remembered full-list derivation. The standalone voice
-    // panel still computes it here when it calls this renderer directly.
-    val projectedTimelineEntries = timelineEntries ?: run {
-        val standaloneTimelineProjection = remember { AgentTimelineProjectionCache() }
-        remember(visibleMessages) {
-            StreamPerformanceDiagnostics.measure("timeline.project", visibleMessages.size.toLong()) {
-                standaloneTimelineProjection.project(visibleMessages)
-            }
-        }
+    // 上一版条目只作复用比对，不参与组合观察。
+    val timelineCache = remember { TimelineEntriesCache() }
+    val timelineEntries = remember(visibleMessages) {
+        visibleMessages.toTimelineEntries(previous = timelineCache.entries)
     }
-    val expansionSaver = remember {
-        listSaver<Map<String, Boolean>, String>(
-            save = { value -> value.flatMap { (key, expanded) -> listOf(key, expanded.toString()) } },
-            restore = { value -> value.chunked(2).filter { it.size == 2 }.associate { it[0] to (it[1] == "true") } },
-        )
+    SideEffect { timelineCache.entries = timelineEntries }
+    val activeWorkProcessKey = if (isStreaming) {
+        (timelineEntries.lastOrNull() as? AgentTimelineEntry.WorkProcess)?.key
+    } else {
+        null
     }
-    var workExpansionOverrides by rememberSaveable(stateSaver = expansionSaver) {
-        mutableStateOf<Map<String, Boolean>>(emptyMap())
+    // 复制按钮只出现在每轮对话的最终结果上，中间步骤的过渡文本不提供复制入口。
+    // 流式进行中当前这一轮尚未收尾，此时的“最后一条正文”只是中间步骤，不标记。
+    val finalResultMessageIds = remember(visibleMessages, isStreaming) {
+        resolveFinalResultMessageIds(visibleMessages, isStreaming = isStreaming)
     }
-    val workAnimations = remember(scrollState) { mutableStateMapOf<String, WorkGroupAnimation>() }
-    val mountedWorkSteps = remember(scrollState) { HashMap<String, MutableSet<String>>() }
-    val workAnimationGeneration = remember(scrollState) { longArrayOf(0L) }
-    fun finishWorkExit(groupKey: String, rowKey: String, generation: Long) {
-        val current = workAnimations[groupKey] ?: return
-        val next = current.finishExit(rowKey, generation)
-        if (next == null) workAnimations.remove(groupKey)
-        else if (next !== current) workAnimations[groupKey] = next
-    }
-    LaunchedEffect(projectedTimelineEntries) {
-        val activeKeys = projectedTimelineEntries.filterIsInstance<AgentTimelineEntry.WorkProcess>().mapTo(mutableSetOf()) { it.key }
-        if (workExpansionOverrides.keys.any { it !in activeKeys }) {
-            workExpansionOverrides = workExpansionOverrides.filterKeys { it in activeKeys }
-        }
-        workAnimations.keys.toList().filter { it !in activeKeys }.forEach { workAnimations.remove(it) }
-        // A streaming update may remove a pending row without composing it again.
-        projectedTimelineEntries.filterIsInstance<AgentTimelineEntry.WorkProcess>().forEach { group ->
-            val animation = workAnimations[group.key] ?: return@forEach
-            val keys = group.messages.mapTo(HashSet()) { "work-step:${it.id}" }
-            (animation.pendingExitKeys - keys).forEach { finishWorkExit(group.key, it, animation.generation) }
-        }
-    }
-    workAnimations.forEach { (groupKey, animation) ->
-        androidx.compose.runtime.key(groupKey, animation.generation) {
-            LaunchedEffect(Unit) {
-                // Only the click's first lazy measurement cohort may enter. Later
-                // virtualization is settled, even while another row is animating.
-                withFrameNanos { }
-                animation.entrance.seal()
-            }
-        }
-    }
-    val retainedWorkSteps = workAnimations.mapValues { it.value.retainedStepKeys }
-    val timelineRowsProjection = remember { AgentTimelineRowsCache() }
-    // Run state still drives footers/reveal below. Row projection only reads it
-    // for the trailing work default; ordinary message rows do not depend on it.
-    val rowStreamingDefault = projectedTimelineEntries.streamingWorkDefault(workExpansionOverrides, isStreaming)
-    // 「本轮回答出来，就把回答之前的内容收起来」：只在整轮停下之后生效，
-    // 生成过程中一律沿用旧的「跑着的摊开、跑完的收起」，不打扰看进度。
-    // 收起范围由档位决定：激进=整轮一张卡；普通=只收思考/工具；不折叠=彻底不收。
-    val answerFoldLevel = LocalAppearanceSettings.current.answerFoldLevel
-    val answerFoldEnabled = answerFoldLevel != AnswerFoldLevel.NONE
-    val isTurnSettled = !isStreaming && !isPaused && !isCompressingContext
-    val foldedWorkKeys = remember(projectedTimelineEntries, answerFoldEnabled, isTurnSettled) {
-        projectedTimelineEntries.autoFoldedWorkKeys(answerFoldEnabled && isTurnSettled)
-    }
-    val timelineRows = remember(
-        projectedTimelineEntries, workExpansionOverrides, rowStreamingDefault, retainedWorkSteps, foldedWorkKeys,
-    ) {
-        StreamPerformanceDiagnostics.measure("timeline.project", projectedTimelineEntries.size.toLong()) {
-            timelineRowsProjection.project(
-                projectedTimelineEntries, workExpansionOverrides, rowStreamingDefault, retainedWorkSteps, foldedWorkKeys,
-            )
-        }
-    }
-
-    // Eta Mod：刻度跟随的行空间边界——每轮首条用户消息经消息 id 换算成行下标。
-    // 用户消息永远是独立 Message 行（toTimelineEntries 只把思考/工具消息组进
-    // WorkProcess），所以正常情况下每个 tick 都能换算到；换算不到的轮次直接丢弃
-    //（见 README 风险：折叠工作组与压缩占位行）。
-    val turnRowBoundaries = remember(timelineRows, turnTicks) {
-        turnTicks.mapNotNull { tick ->
-            timelineRows.indexOfFirst { it.containsMessageId(tick.firstUserMessageId) }
-                .takeIf { it >= 0 }
-        }
-    }
-
-    // Eta Mod：bottomItemIndex 提前声明（合查 BLOCKER 2 修法，见下条说明）。
-    // 下面的轻点跳转 effect 在原声明（:838）之前引用它，Kotlin 局部 val 不能前向引用。
-    // 合查报告只说移 bottomItemIndex 一行是不够的：它依赖的 compressingItemCount
-    // 声明在 :837，同样在 scrollToMessageId effect 之后，单移一行会造出新的前向引用。
-    // 所以 telemetry / compressingChildren / compressingItemCount / bottomItemIndex
-    // 四行整块上移——它们的依赖只有 timelineRows、函数参数与组合局部变量，全部满足；
-    // 原位置的四行由下一个 hunk 删掉。
-    val telemetry = LocalAgentContextTelemetry.current
-    val compressingChildren = telemetry.children.filter { it.isCompacting }
-    val compressingItemCount = if (isCompressingContext || isWaitingForCompression || compressingChildren.isNotEmpty()) 1 else 0
-    val bottomItemIndex = timelineRows.size + compressingItemCount
-    LaunchedEffect(scrollToMessageId, timelineRows) {
-        val target = scrollToMessageId ?: return@LaunchedEffect
-        val index = timelineRows.indexOfFirst { it.containsMessageId(target) }
-        if (index >= 0) {
-            onBottomAnchorChanged(false)
-            scrollState.animateScrollToItem(index)
-            onScrollToMessageConsumed()
-        } else if (timelineRows.isNotEmpty()) {
-            onScrollToMessageConsumed()
-        }
-    }
-
-    // Eta Mod：刻度轨轻点跳转——经消息 id 中转到行下标（与上面 scrollToMessageId
-    // 同一写法，禁止直接拿 timelineIndex 当 animateScrollToItem 参数）；
-    // 末轮回底走现成的 snapListToBottom；nonce 在外层递增，保证同一轮连点也触发。
-    LaunchedEffect(tickJumpRequest, timelineRows) {
-        val (tick, _) = tickJumpRequest ?: return@LaunchedEffect
-        if (tick == turnTicks.lastOrNull()) {
-            snapListToBottom(scrollState, bottomItemIndex)
-        } else {
-            val index = timelineRows.indexOfFirst { it.containsMessageId(tick.firstUserMessageId) }
-            if (index >= 0) {
-                scrollState.animateScrollToItem(index)
-            } else {
-                snapListToBottom(scrollState, bottomItemIndex)
-            }
-        }
-        onTickJumpConsumed()
-    }
-    // Eta Mod：刻度轨刮擦跟随——实时、无动画；目标行不存在时不跳（等下一帧 tick）。
-    LaunchedEffect(tickScrubMessageId, tickScrubbing, timelineRows) {
-        // 只在「正在刮擦」时跟随；其余时刻即使 id 残留也不滚动。
-        if (!tickScrubbing) return@LaunchedEffect
-        val targetId = tickScrubMessageId ?: return@LaunchedEffect
-        val index = timelineRows.indexOfFirst { it.containsMessageId(targetId) }
-        if (index >= 0) scrollState.requestScrollToItem(index)
-    }
-    // Project onto the EXACT rows consumed by LazyColumn. Expansion and late
-    // records move only the footer anchor, never the message or callback owner.
-    // Generation only relaxes branching on PREVIOUS completed turns. The current
-    // turn has no action bar until it closes, even between text/tool blocks.
-    val turnFooters = remember(timelineRows, isStreaming, isPaused, isCompressingContext) {
-        timelineRows.turnFooters(
-            isStreaming = isStreaming,
-            isCompressingContext = isCompressingContext,
-            isPaused = isPaused,
-        )
-    }
-    val finalResultMessageIds = remember(turnFooters) {
-        turnFooters.values.mapTo(mutableSetOf()) { it.id }
-    }
-    // Reveal dependencies follow the projection's existing anchors, not a
-    // second ownership heuristic. A stopped notice can own actions while an
-    // earlier answer in that same turn is still revealing. New user boundaries
-    // and completed footer anchors prevent one turn from blocking another.
-    val footerRevealMessages = remember(timelineRows, turnFooters) {
-        buildMap<String, List<AgentMessageUi>> {
-            val answers = mutableListOf<AgentMessageUi>()
-            timelineRows.forEach { row ->
-                val message = (row as? AgentTimelineRow.Message)?.message
-                if (message is UserMessageUi && !message.isSteerSupplement()) answers.clear()
-                if (message is AgentMessageUi && message.content.isNotBlank()) answers.add(message)
-                if (row.key in turnFooters) {
-                    put(row.key, answers.toList())
-                    answers.clear()
-                }
-            }
-        }
+    val branchMessageIds = remember(visibleMessages, isStreaming) {
+        ConversationBranchBoundary.eligibleMessageIds(visibleMessages.branchMessageOutline(), running = isStreaming)
     }
     // 流式消息的渲染会话按 id 提升到列表层持有：item 滚出视口被 LazyColumn 销毁后，
     // 滑回时复用同一解析会话与打字机进度，避免整段内容重新解析并重放显现动画。
-    val fallbackStreamingStates = remember { mutableStateMapOf<String, StreamingMarkdownState>() }
-    val streamingMarkdownStates = LocalStreamingMarkdownStates.current ?: fallbackStreamingStates
-    // Messages already on screen before this live run must not replay. A text block that
-    // arrives and ends in one snapshot is absent from this set, so it still gets a typewriter.
-    val settledMessageIds = remember {
-        mutableSetOf<String>().apply {
-            if (isStreaming || isPaused) visibleMessages.forEach { add(it.id) }
+    val streamingMarkdownCache = remember { StreamingMarkdownStateCache() }
+    val streamingMarkdownStates = streamingMarkdownCache.states
+    val streamingMessageIds = remember(visibleMessages) {
+        visibleMessages.mapNotNullTo(mutableSetOf()) { message ->
+            when (message) {
+                is AgentMessageUi -> message.id.takeIf { message.isStreaming }
+                is ThinkingMessageUi -> message.id.takeIf { message.isStreaming }
+                else -> null
+            }
+        }.also { ids ->
+            ids.forEach { streamingMarkdownCache.getOrCreate(it) }
         }
     }
-    SideEffect {
-        if (!isStreaming && !isPaused) {
-            settledMessageIds.clear()
-            visibleMessages.forEach { settledMessageIds.add(it.id) }
-        }
+    LaunchedEffect(streamingMarkdownCache, streamingMessageIds) {
+        snapshotFlow { streamingMarkdownCache.unusedMessageIds(streamingMessageIds) }
+            .collect { unused ->
+                if (unused.isNotEmpty()) streamingMarkdownCache.discardUnused(streamingMessageIds)
+            }
     }
-    LaunchedEffect(visibleMessages, streamingMarkdownStates) {
-        val activeIds = visibleMessages.mapTo(mutableSetOf()) { it.id }
-        streamingMarkdownStates.keys.retainAll(activeIds)
-    }
-    val userMessageTargets = remember(timelineRows) { timelineRows.lazyUserMessageIndices() }
-    val directionThreshold = with(LocalDensity.current) { 12.dp.toPx() }
-    val directionTracker = remember(scrollState, directionThreshold) {
-        ConversationNavigationDirectionTracker(directionThreshold)
-    }
-    var navigationDirection by remember(scrollState) { mutableStateOf(ConversationNavigationDirection.Down) }
-    var messageNavigationJob by remember(scrollState) { mutableStateOf<Job?>(null) }
-    DisposableEffect(scrollState) {
-        onDispose { messageNavigationJob?.cancel() }
-    }
+    val earlierMessagesItemCount = if (hasEarlierMessages) 1 else 0
+    val bottomItemIndex = timelineEntries.size + earlierMessagesItemCount
     val isUserDragging by scrollState.interactionSource.collectIsDraggedAsState()
-    // 手指拖走后的惯性也算用户滚动；跟底自己的 scrollBy 不能把这个标志打开。
-    var isUserScrolling by remember { mutableStateOf(false) }
-    // Observe user motion synchronously, before the asynchronous drag collector
-    // and before another scheduled follow frame can mutate the list position.
-    // 手指是否按在列表上。只观察、不消费事件。
-    val pointerDown = remember { mutableStateOf(false) }
-    var heldLeadingGapPx by remember { mutableIntStateOf(0) }
-    var programmaticUserScrolls by remember { mutableIntStateOf(0) }
-    val userScrollConnection = remember(scrollState, directionTracker) {
-        object : NestedScrollConnection {
-            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                if (source == NestedScrollSource.UserInput && available.y != 0f) {
-                    // 有些滚动也用 UserInput 来源，但手指根本没按下：把某块内容带进可视区
-                    // （BringIntoView，例如取得焦点的选区）、无障碍滚动。它们不算用户滑动，
-                    // 不能关掉跟底；否则快速输出时跟底一断，已经落后的那截一帧画进输入框。
-                    if (!isUserScrollGesture(pointerDown.value)) {
-                        if (StreamPerformanceDiagnostics.enabled && programmaticUserScrolls < 6) {
-                            programmaticUserScrolls++
-                            val frames = Throwable().stackTrace
-                            StreamPerformanceDiagnostics.note("scroll") {
-                                // 跟底状态在后面才声明；同一时刻的 follow 行已由越线诊断记录。
-                                "source=userInputWithoutPointer dy=${available.y.toInt()} " +
-                                    "userScroll=$isUserScrolling stack=${compactStack(frames)}"
-                            }
-                        }
-                        return Offset.Zero
-                    }
-                    messageNavigationJob?.cancel()
-                    workAnimations.values.forEach { it.entrance.seal() }
-                    isUserScrolling = true
-                    navigationDirection = directionTracker.onScroll(available.y, userInput = true)
-                }
-                return Offset.Zero
-            }
-
-            override suspend fun onPreFling(available: Velocity): Velocity {
-                directionTracker.endGesture()
-                return Velocity.Zero
-            }
+    val isAtBottom by remember(scrollState) {
+        derivedStateOf { !scrollState.canScrollForward }
+    }
+    val isListMeasured by remember(scrollState) {
+        derivedStateOf {
+            scrollState.layoutInfo.let { it.totalItemsCount > 0 && it.viewportEndOffset > it.viewportStartOffset }
         }
     }
     val densityScale = LocalDensity.current.density
     val coroutineScope = rememberCoroutineScope()
-    val currentAnchor = rememberUpdatedState(keepBottomAnchored)
-    val currentStreaming = rememberUpdatedState(isStreaming)
-    val currentVisibleMessages = rememberUpdatedState(visibleMessages)
-    val currentDragging = rememberUpdatedState(isUserDragging)
+    var expandSuppressVersion by remember { mutableIntStateOf(0) }
+    var suppressAutoReanchor by remember { mutableStateOf(false) }
 
-    LaunchedEffect(scrollState) {
-        snapshotFlow { currentDragging.value to scrollState.isScrollInProgress }
-            .collect { (dragging, inProgress) ->
-                StreamPerformanceDiagnostics.record("scroll.state", value = if (dragging) 1 else 0)
-                isUserScrolling = when {
-                    dragging -> true
-                    !inProgress -> false
-                    else -> isUserScrolling
-                }
-            }
+    LaunchedEffect(expandSuppressVersion) {
+        if (expandSuppressVersion == 0) return@LaunchedEffect
+        suppressAutoReanchor = true
+        delay(EXPAND_REANCHOR_SUPPRESS_MS)
+        suppressAutoReanchor = false
     }
 
-    var hasLeftBottom by remember { mutableStateOf(false) }
-    // Eta Mod：刻度跟随——复用下面已有的锚点观测，不另起高频 snapshotFlow。
-    val currentOnVisibleTurnChanged by rememberUpdatedState(onVisibleTurnChanged)
-    val currentTurnRowBoundaries by rememberUpdatedState(turnRowBoundaries)
-    // Eta Mod：刻度轨可见性上报——抄上一条/下一条按钮（showMessageNavigation）：
-    // 只在用户离开底部时出现，回到锚定底部即消失；上报走这个回调到外层。
-    val currentOnTickRailVisibilityChanged by rememberUpdatedState(onTickRailVisibilityChanged)
-    val tickRailVisibilityScope = rememberCoroutineScope()
-    LaunchedEffect(scrollState) {
-        var lastReportedTurn = -1f
-        // 刻度轨可见性本地状态：hide job 与已上报值只在主线程碰（collect 与
-        // hide job 都跑在 Main 上），无竞态。
-        var railHideJob: Job? = null
-        var railVisible = false
-        snapshotFlow {
-            if (messageNavigationJob != null) null
-            else {
-                val info = scrollState.layoutInfo
-                val first = info.visibleItemsInfo.firstOrNull()
-                val firstFloat = if (first == null) {
-                    -1f
-                } else {
-                    first.index + if (first.size > 0) {
-                        (-first.offset.toFloat() / first.size).coerceIn(0f, 1f)
-                    } else {
-                        0f
-                    }
-                }
-                TurnFollowState(
-                    isUserScrolling = isUserScrolling,
-                    isAtBottom = scrollState.isConversationAtBottom(),
-                    anchored = currentAnchor.value,
-                    firstVisibleFloat = firstFloat,
-                    totalItemsCount = info.totalItemsCount,
-                )
-            }
+    val onExpandItem = remember(onBottomAnchorChanged) {
+        {
+            suppressAutoReanchor = true
+            expandSuppressVersion += 1
+            onBottomAnchorChanged(false)
         }
-            .distinctUntilChanged { old, new ->
-                if (old == null || new == null) old == new
-                else old.isUserScrolling == new.isUserScrolling &&
-                    old.isAtBottom == new.isAtBottom &&
-                    old.anchored == new.anchored &&
-                    abs(old.firstVisibleFloat - new.firstVisibleFloat) < 0.002f
-            }
-            .collect { state ->
-                val (userScrolling, atBottom, anchored, firstFloat, totalItems) = state ?: return@collect
-                if (userScrolling && !atBottom) hasLeftBottom = true
-                val next = resolveKeepBottomAnchored(
-                    current = anchored,
-                    isUserDragging = userScrolling,
-                    isAtBottom = atBottom,
-                    hasLeftBottom = hasLeftBottom,
-                )
-                if (next && atBottom) hasLeftBottom = false
-                if (next != anchored) onBottomAnchorChanged(next)
-                // 刻度跟随：首可见行浮点位置 → 浮点轮次，0.002 阈值去重后上报。
-                // 刮擦期间 TurnTickRail 优先用 scrubTurn，这里照常上报也不会打架。
-                val boundaries = currentTurnRowBoundaries
-                if (firstFloat >= 0f && boundaries.size >= MIN_TURN_TICKS) {
-                    val turn = resolveVisibleTurn(firstFloat, boundaries, totalItems)
-                    if (turn >= 0f && abs(turn - lastReportedTurn) >= 0.002f) {
-                        lastReportedTurn = turn
-                        currentOnVisibleTurnChanged(turn)
-                    }
-                }
-                // 刻度轨可见性：滚动中，或不在底部时显示；到底部且静止
-                // TICK_RAIL_IDLE_HIDE_DELAY_MS 后隐藏。按钮（showMessageNavigation）
-                // 是纯位置判断（!keepBottomAnchored），到锚定底部立刻消失；
-                // 刻度条多留 2.5 秒宽限，给刚到到底部的用户一个顺手点刻度跳回去的窗口。
-                // 刮擦期间外层强制可见（tickRailScrubbing），这里不用管；松手后
-                // 若已到底部且静止，hide job 到时即隐藏。
-                // 只认「用户把对话滑离了底部」这一个信号（anchored = keepBottomAnchored）。
-                // 旧写法 userScrolling || !atBottom 会把「不在底部」也算进来，于是
-                // 加图片撑高输入栏、弹出输入法压小视口、语音输入改高度时列表暂时不在
-                // 底部，刻度轨就被无端唤出来。改用 anchored 后与原来的上一条/下一条
-                // 按钮同一口径：只有用户真的滑动对话才会出现。
-                val railActive = !anchored
-                if (railActive) {
-                    railHideJob?.cancel()
-                    railHideJob = null
-                    if (!railVisible) {
-                        railVisible = true
-                        currentOnTickRailVisibilityChanged(true)
-                    }
-                } else if (railHideJob == null) {
-                    railHideJob = tickRailVisibilityScope.launch {
-                        delay(TICK_RAIL_IDLE_HIDE_DELAY_MS)
-                        railHideJob = null
-                        if (railVisible) {
-                            railVisible = false
-                            currentOnTickRailVisibilityChanged(false)
-                        }
-                    }
-                }
-            }
     }
 
+    LaunchedEffect(
+        isListMeasured,
+        isUserDragging,
+        isAtBottom,
+        keepBottomAnchored,
+        suppressAutoReanchor,
+    ) {
+        if (!isListMeasured) return@LaunchedEffect
+        val next = resolveKeepBottomAnchored(
+            current = keepBottomAnchored,
+            isUserDragging = isUserDragging,
+            isAtBottom = isAtBottom,
+            suppressAutoReanchor = suppressAutoReanchor,
+        )
+        if (next != keepBottomAnchored) {
+            onBottomAnchorChanged(next)
+        }
+    }
+
+    val tailMessage = visibleMessages.lastOrNull() as? AgentMessageUi
+    val currentTailMessage by rememberUpdatedState(tailMessage)
+    // 显现进度属于尾部条目的高频状态；列表作用域只观察离散化后的布尔值。
+    val isTailRendering by remember {
+        derivedStateOf {
+            currentTailMessage?.let { message ->
+                streamingMarkdownStates[message.id]?.let { state ->
+                    state.revealedContent != message.content
+                }
+            } == true
+        }
+    }
     var isBottomSettling by remember { mutableStateOf(isStreaming) }
-    LaunchedEffect(scrollState) {
-        snapshotFlow {
-            bottomFollowSettlingState(
-                streaming = currentStreaming.value,
-                anchored = currentAnchor.value,
-                userScrolling = isUserScrolling,
-            ) {
-                hasPendingAssistantReveal(currentVisibleMessages.value) { message ->
-                    val retained = streamingMarkdownStates[message.id]
-                    retained != null && retained.revealedContent != message.content
-                }
+
+    LaunchedEffect(isStreaming, isTailRendering, keepBottomAnchored, isUserDragging) {
+        if (!keepBottomAnchored || isUserDragging) {
+            isBottomSettling = false
+        } else if (isStreaming || isTailRendering) {
+            isBottomSettling = true
+        } else if (isBottomSettling) {
+            // 显现完成后还会切换稳定排版并插入操作行，等其完成测量并对齐底部后收口。
+            withFrameNanos { }
+            withFrameNanos { }
+            withTimeoutOrNull(BOTTOM_SETTLE_TIMEOUT_MS) {
+                snapshotFlow { !scrollState.canScrollForward }.first { it }
             }
+            isBottomSettling = false
         }
-            .distinctUntilChanged()
-            .collectLatest { state ->
-                if (state == BottomFollowSettlingState.Disabled) {
-                    isBottomSettling = false
-                } else if (state == BottomFollowSettlingState.Active) {
-                    isBottomSettling = true
-                } else if (isBottomSettling) {
-                    withFrameNanos { }
-                    withFrameNanos { }
-                    snapshotFlow { !scrollState.canScrollForward }.first { it }
-                    isBottomSettling = false
-                }
-            }
     }
 
-    var initialBottomPositionPending by remember(scrollState) { mutableStateOf(true) }
-    val currentScrollTarget by rememberUpdatedState(scrollToMessageId)
-    val markdownTransitionActive = LocalChatTransitionActive.current
-    val routeCovered = LocalChatRouteCovered.current
-    val settledCover = isChatSettledCovered(routeCovered, markdownTransitionActive)
-    val settledCoverNow by rememberUpdatedState(settledCover)
-    // Freezing the transcript retains isStreaming=true. Explicitly park the controller too,
-    // or queued overflow and reveal drain still call scrollBy behind the settled page.
+    val historyPaging = rememberChatHistoryPaging(
+        scrollState = scrollState,
+        entries = timelineEntries,
+        messageStartIndex = messageStartIndex,
+        messageCount = visibleMessages.size,
+        hasEarlier = hasEarlierMessages,
+        loadState = historyLoadState,
+        enabled = !isStreaming && editTargetMessageId == null,
+        canReleasePages = !isTailRendering && !isBottomSettling,
+        keepBottomAnchored = keepBottomAnchored,
+        onBottomAnchorChanged = onBottomAnchorChanged,
+        onLoadEarlier = onLoadEarlierMessages,
+        onViewportChanged = onHistoryViewportChanged,
+    )
+
     val shouldFollowBottom by rememberUpdatedState(
         resolveBottomFollowEnabled(
             isStreaming = isStreaming,
             keepBottomAnchored = keepBottomAnchored,
-            isUserDragging = initialBottomPositionPending || isUserScrolling || messageNavigationJob != null,
-            isBottomSettling = isBottomSettling,
-            settledCover = settledCover,
-        )
-    )
-    // 跟底时上提让尾部一直停在静止线上：列表变高多少，同一帧就上提多少，下沿不动。
-    // 以前点开最底部一行时先暂停上提，让内容从上沿往下长过静止线、再由跟底滚动追回来，
-    // 标签会先不动、再被推上去，看起来像折了两次。现在展开从下沿长出（见 tailDetailsEnter），
-    // 上提照常，标签随动画一帧一帧往上让开。
-    // Keep the last lift layer/geometry mounted while hidden. Parking the scroll clock must
-    // not remove the lift and move the already-revealed text on the first swipe-back frame.
-    val shouldLiftTail = resolveBottomFollowEnabled(
-        isStreaming = isStreaming,
-        keepBottomAnchored = keepBottomAnchored,
-        isUserDragging = initialBottomPositionPending || isUserScrolling || messageNavigationJob != null,
-        isBottomSettling = isBottomSettling,
-    )
-    val markdownViewport = remember { io.github.mangi.eta.ui.markdown.MarkdownDrawViewport() }
-    // 被盖住但仍露在屏幕上时不走整列离屏裁剪。完全打开时仍按原来的条件。
-    val shouldClipTail = shouldClipChatTail(
-        isStreaming = isStreaming,
-        isBottomSettling = isBottomSettling,
-        keepBottomAnchored = keepBottomAnchored,
-        isUserScrolling = isUserScrolling,
-        isUserDragging = isUserDragging,
-        navigationActive = messageNavigationJob != null || scrollToMessageId != null,
-        routeCovered = routeCovered,
-    )
-    SideEffect {
-        markdownViewport.updateEnabled(
-            !shouldLiftTail && !shouldClipTail && !routeCovered && !markdownTransitionActive,
-        )
-    }
-    // 附件、输入框换行和 IME 改的是实际尾部留白，不是新消息增长。
-    // 静态时没有跟底控制器接手；只在仍锚定且视口静止线确实变化时重新停靠。
-    AnchorChatTailOnViewportChange(scrollState, bottomItemIndex) {
-        !settledCoverNow && currentAnchor.value && !currentStreaming.value && !isBottomSettling &&
-            !initialBottomPositionPending && !pointerDown.value && !currentDragging.value &&
-            !isUserScrolling && messageNavigationJob == null && currentScrollTarget == null
-    }
-    SideEffect {
-        traceChatListOwnerCommit(
-            trace = chatListTrace,
-            enabled = scrollTraceEnabled,
             isUserDragging = isUserDragging,
-            isUserScrolling = isUserScrolling,
             isBottomSettling = isBottomSettling,
-            keepBottomAnchored = keepBottomAnchored,
-            shouldClipTail = shouldClipTail,
-            shouldFollowBottom = shouldFollowBottom,
-            navigationActive = messageNavigationJob != null,
         )
-    }
-    val isListScrollable by remember {
-        derivedStateOf { scrollState.canScrollForward || scrollState.canScrollBackward }
-    }
-    var streamFilledViewport by remember { mutableStateOf(false) }
-    LaunchedEffect(isStreaming, isListScrollable) {
-        streamFilledViewport = if (isStreaming) streamFilledViewport || isListScrollable else false
-    }
-    // 点击回调里问一次：这一行下面的内容会不会停在原处。只读 State，不参与组合；
-    // remember 后引用不变，作为 CompositionLocal 提供时不会让整页重组。
-    val expansionPinnedNow: () -> Boolean = remember(scrollState) {
-        {
-            resolveExpansionHoldsBottom(
-                following = shouldFollowBottom,
-                arrangedToBottom = shouldPinConversationToBottom(currentStreaming.value, streamFilledViewport),
-                listScrollable = isListScrollable,
-            )
-        }
-    }
-    // 下沿被钉住的展开期间，跟底滚动每帧把新增高度一次吃掉，不走平滑加速。
-    // 平滑跟底第一帧不动、之后慢慢加速，其余全靠绘制上提；上提一旦超过列表尾部留白，
-    // 尾部哨兵被挤出可视区，上提归零，内容一帧掉下去三百多像素。展开动画本身已经是平滑的，
-    // 这段时间里标签随动画逐帧上移即可。只在协程里读，写入不触发重组。
-    var bottomSnapUntilNanos by remember { mutableLongStateOf(0L) }
-    val expansionHoldsBottom: () -> Boolean = remember(scrollState) {
-        {
-            expansionPinnedNow().also { pinned ->
-                if (pinned) bottomSnapUntilNanos = System.nanoTime() + EXPANSION_BOTTOM_SNAP_NANOS
-            }
-        }
-    }
-    // A measured/recovered message can be virtualized during a large expansion. Its stable
-    // key must not replay the root opacity animation when composed again in the same chat.
-    val appearedMessageKeys = remember { HashSet<String>() }
-    // 点开工具或推理后，逐帧记下列表状态：跟底、上提、暂停上提、哨兵相对静止线的位置、
-    // 用户是否在拖动。只在点击窗口内运行，读 layoutInfo 不参与组合。
-    LaunchedEffect(scrollState) {
-        snapshotFlow { StreamPerformanceDiagnostics.probeRequests.intValue }
-            .collectLatest { request ->
-                if (request == 0) return@collectLatest
-                while (StreamPerformanceDiagnostics.probing) {
-                    val frameNanos = withFrameNanos { it }
-                    StreamPerformanceDiagnostics.probeListSample(frameNanos) {
-                        val info = scrollState.layoutInfo
-                        // shouldLiftTail 是组合时的快照，这里按当前的跟底状态重新算。
-                        val liftingNow = shouldFollowBottom
-                        val lift = if (liftingNow) {
-                            resolveFollowTailLag(true, scrollState.followTailOverflow()).liftPx.toInt()
-                        } else 0
-                        "follow=$shouldFollowBottom lift=$liftingNow liftPx=$lift pinned=${expansionPinnedNow()} snap=${System.nanoTime() < bottomSnapUntilNanos} " +
-                            "userScroll=$isUserScrolling overflowPx=${scrollState.followTailOverflow()} " +
-                            "first=${scrollState.firstVisibleItemIndex}:${scrollState.firstVisibleItemScrollOffset} " +
-                            "visible=${info.visibleItemsInfo.size} total=${info.totalItemsCount}"
-                    }
-                }
-            }
-    }
-    // 快速输出时尾部越过静止线、画进输入框的诊断。只在布局或跟底状态变化时取样（snapshotFlow），
-    // 不额外请求帧。跟底上提时列表裁在静止线上，真正画进输入框的只能是没在上提的时候；
-    // 上提时越线的部分被裁掉，只计数。跟底的各个条件变化、越线开始和结束各记一行。
-    LaunchedEffect(scrollState) {
-        snapshotFlow {
-            val generation = StreamPerformanceDiagnostics.sessionGeneration.longValue
-            generation to (StreamPerformanceDiagnostics.enabled && (currentStreaming.value || isBottomSettling))
-        }
-            .distinctUntilChanged()
-            .collectLatest { (generation, active) ->
-                if (!active) return@collectLatest
-                var lastState = ""
-                var breachSamples = 0
-                var breachMaxPx = 0
-                snapshotFlow {
-                    if (StreamPerformanceDiagnostics.sessionGeneration.longValue != generation ||
-                        !StreamPerformanceDiagnostics.enabled) return@snapshotFlow null
-                    val info = scrollState.layoutInfo
-                    val sentinel = info.visibleItemsInfo.firstOrNull { it.key == ChatBottomSentinelKey }
-                    val last = info.visibleItemsInfo.lastOrNull()
-                    val tailBottom = resolveTailBottomPx(
-                        sentinelBottom = sentinel?.let { it.offset + it.size },
-                        lastVisibleIndex = last?.index,
-                        lastVisibleBottom = last?.let { it.offset + it.size },
-                        totalItems = info.totalItemsCount,
-                    )
-                    val restLine = info.viewportEndOffset - info.afterContentPadding
-                    val lifting = shouldFollowBottom
-                    val lift = if (lifting) {
-                        resolveFollowTailLag(true, scrollState.followTailOverflow()).liftPx.toInt()
-                    } else 0
-                    TailBreachSample(
-                        overPx = resolveTailDrawnOverflow(tailBottom, restLine, lift),
-                        tailBottomPx = tailBottom,
-                        restLinePx = restLine,
-                        padPx = info.afterContentPadding,
-                        sentinelVisible = sentinel != null,
-                        lastIndex = last?.index ?: -1,
-                        totalItems = info.totalItemsCount,
-                        lifting = lifting,
-                        state = "follow=$lifting streaming=${currentStreaming.value} " +
-                            "anchored=${currentAnchor.value} userScroll=$isUserScrolling " +
-                            "settling=$isBottomSettling initialPending=$initialBottomPositionPending " +
-                            "nav=${messageNavigationJob != null}",
-                    )
-                }
-                    .distinctUntilChanged()
-                    .collect { sample ->
-                        if (sample == null || StreamPerformanceDiagnostics.sessionGeneration.longValue != generation ||
-                            !StreamPerformanceDiagnostics.enabled) return@collect
-                        val over = sample.overPx
-                        if (sample.state != lastState) {
-                            StreamPerformanceDiagnostics.note("follow") {
-                                "${sample.state} tailVisible=${sample.sentinelVisible} overPx=$over padPx=${sample.padPx}"
-                            }
-                            lastState = sample.state
-                        }
-                        if (over != null && over > 1) {
-                            StreamPerformanceDiagnostics.record(
-                                if (sample.lifting) "tail.clippedPx" else "tail.breachPx", value = over.toLong(),
-                            )
-                        }
-                        if (!sample.lifting && over != null && over > 1) {
-                            if (breachSamples == 0) {
-                                StreamPerformanceDiagnostics.note("breach") {
-                                    "state=start overPx=$over tailBottomPx=${sample.tailBottomPx} " +
-                                        "restLinePx=${sample.restLinePx} padPx=${sample.padPx} " +
-                                        "sentinel=${sample.sentinelVisible} last=${sample.lastIndex}/${sample.totalItems} " +
-                                        sample.state
-                                }
-                            }
-                            breachSamples++
-                            breachMaxPx = maxOf(breachMaxPx, over)
-                        } else if (breachSamples > 0) {
-                            StreamPerformanceDiagnostics.note("breach") {
-                                "state=end samples=$breachSamples maxOverPx=$breachMaxPx ${sample.state}"
-                            }
-                            breachSamples = 0
-                            breachMaxPx = 0
-                        }
-                    }
-            }
-    }
-    val viewportRecovery = remember(scrollState) {
-        BottomFollowViewportRecovery(scrollState, ChatBottomSentinelKey)
-    }
-    val canOwnWorkExpansionViewport: () -> Boolean = remember(scrollState) {
-        {
-            !settledCoverNow && resolveWorkExpansionViewportOwnership(
-                keepBottomAnchored = currentAnchor.value,
-                initialBottomPositionPending = initialBottomPositionPending,
-                pointerDown = pointerDown.value,
-                isUserDragging = currentDragging.value,
-                isUserScrolling = isUserScrolling,
-                navigationActive = messageNavigationJob != null || currentScrollTarget != null,
-            )
-        }
-    }
-
+    )
     val currentBottomItemIndex by rememberUpdatedState(bottomItemIndex)
     val bottomFollowDecisions = remember(scrollState) {
         Channel<BottomFollowDecision>(Channel.CONFLATED)
     }
 
-    // Initial positioning owns the list only once. New timeline items and network
-    // completion must go through the continuous follow controller below.
-    LaunchedEffect(scrollState) {
-        try {
-            val initial = snapshotFlow {
-                InitialBottomPosition(
-                    bottomItemIndex = currentBottomItemIndex,
-                    hasLayout = scrollState.layoutInfo.visibleItemsInfo.isNotEmpty(),
-                    anchored = currentAnchor.value,
-                    interrupted = isUserScrolling || messageNavigationJob != null || currentScrollTarget != null,
-                )
-            }.first { it.ready }
-            if (initial.shouldPosition) {
-                StreamPerformanceDiagnostics.record("follow.initialSnap")
-                snapListToBottom(scrollState, initial.bottomItemIndex) {
-                    currentAnchor.value && !isUserScrolling &&
-                        messageNavigationJob == null && currentScrollTarget == null
-                }
-            }
-        } finally {
-            initialBottomPositionPending = false
+    LaunchedEffect(isStreaming, keepBottomAnchored) {
+        if (isStreaming && keepBottomAnchored) {
+            suppressAutoReanchor = false
+        }
+        if (shouldRequestInitialBottom(
+                isStreaming = isStreaming,
+                keepBottomAnchored = keepBottomAnchored,
+                isUserDragging = isUserDragging,
+            )
+        ) {
+            scrollState.requestScrollToItem(currentBottomItemIndex)
         }
     }
 
@@ -1512,30 +667,18 @@ internal fun AgentConversationMessages(
     // 列表高度，但那是用户主动查看内容，不能被误判成尾部文字增长。
     LaunchedEffect(scrollState) {
         snapshotFlow {
-            // Preserve the existing gate; disabling must still send a zero target.
-            if (!shouldFollowBottom || pointerDown.value) return@snapshotFlow InactiveBottomFollowLayout
             val layoutInfo = scrollState.layoutInfo
             val sentinel = layoutInfo.visibleItemsInfo.firstOrNull { item ->
                 item.key == ChatBottomSentinelKey
             }
-            val lastVisible = layoutInfo.visibleItemsInfo.lastOrNull()
             BottomFollowLayout(
-                enabled = true,
+                enabled = shouldFollowBottom,
                 bottomItemIndex = currentBottomItemIndex,
-                // 哨兵被挤出可视区、但最后一段内容还可见时，用它的下沿，不再按整屏估算。
-                sentinelBottom = resolveTailBottomPx(
-                    sentinelBottom = sentinel?.let { it.offset + it.size },
-                    lastVisibleIndex = lastVisible?.index,
-                    lastVisibleBottom = lastVisible?.let { it.offset + it.size },
-                    totalItems = layoutInfo.totalItemsCount,
-                ),
-                // 视口已扣除底栏高度；这里只扣列表自身的尾部留白。
-                // 跟底目标仍是 afterContentPadding 之前的正文边界。
+                sentinelBottom = sentinel?.let { it.offset + it.size },
+                // 输入器高度属于滚动内容的 bottom inset，而不是滚动容器高度。
+                // 跟底目标应是 afterContentPadding 之前的正文边界。
                 viewportEnd = layoutInfo.viewportEndOffset - layoutInfo.afterContentPadding,
-                lastVisibleIndex = lastVisible?.index,
-                viewportSizePx = layoutInfo.viewportSize.height,
-                canScrollForward = scrollState.canScrollForward,
-                lastVisibleOffset = lastVisible?.offset,
+                lastVisibleIndex = layoutInfo.visibleItemsInfo.lastOrNull()?.index,
             )
         }
             .distinctUntilChanged()
@@ -1546,623 +689,251 @@ internal fun AgentConversationMessages(
                     sentinelBottom = layout.sentinelBottom,
                     viewportEnd = layout.viewportEnd,
                     lastVisibleIndex = layout.lastVisibleIndex,
-                    viewportSizePx = layout.viewportSizePx,
-                    canScrollForward = layout.canScrollForward,
                 )
-                StreamPerformanceDiagnostics.record("follow.decision", value = decision.scrollByPx.toLong())
                 bottomFollowDecisions.trySend(decision)
             }
     }
 
-    // One controller retains velocity across layout targets, including line-height
-    // steps. Neither a missing sentinel nor stream completion may bypass it.
-    LaunchedEffect(scrollState, bottomFollowDecisions, densityScale) {
-        val motion = BottomFollowMotion()
+    // 一个持续存在的帧时钟从当前屏幕位置追向最新目标。新字符继续到达时只更新目标，
+    // 不取消并重启动画，因此速度连续；用户开始拖动后，enabled=false 会立即停止跟随。
+    LaunchedEffect(scrollState, bottomFollowDecisions) {
         var remainingDistancePx = 0f
-        var previousFrameNanos: Long? = null
-        fun reset() {
-            remainingDistancePx = 0f
-            previousFrameNanos = null
-            motion.reset()
-        }
+        var requestIndex: Int? = null
+        var previousFrameNanos = 0L
+
         fun accept(decision: BottomFollowDecision) {
-            remainingDistancePx = decision.scrollByPx.coerceAtLeast(0).toFloat()
+            remainingDistancePx = decision.scrollByPx.toFloat()
+            requestIndex = decision.requestIndex
         }
+
         while (currentCoroutineContext().isActive) {
-            if (remainingDistancePx <= 0f) {
-                reset()
+            if (remainingDistancePx <= 0f && requestIndex == null) {
                 accept(bottomFollowDecisions.receive())
+                previousFrameNanos = 0L
             }
             while (true) {
-                accept(bottomFollowDecisions.tryReceive().getOrNull() ?: break)
+                val latest = bottomFollowDecisions.tryReceive().getOrNull() ?: break
+                accept(latest)
             }
-            if (!shouldFollowBottom || pointerDown.value || isUserScrolling || messageNavigationJob != null) {
-                reset()
+
+            if (!shouldFollowBottom) {
+                remainingDistancePx = 0f
+                requestIndex = null
+                continue
+            }
+
+            val targetIndex = requestIndex
+            if (targetIndex != null) {
+                scrollState.requestScrollToItem(targetIndex)
+                requestIndex = null
+                remainingDistancePx = 0f
                 continue
             }
             if (remainingDistancePx <= 0f) continue
+
             val frameNanos = withFrameNanos { it }
-            previousFrameNanos?.let {
-                StreamPerformanceDiagnostics.record("follow.frameGap", frameNanos - it)
+            val elapsedSeconds = if (previousFrameNanos == 0L) {
+                1f / 60f
+            } else {
+                ((frameNanos - previousFrameNanos) / 1_000_000_000f).coerceIn(0f, 0.05f)
             }
             previousFrameNanos = frameNanos
+
             while (true) {
-                accept(bottomFollowDecisions.tryReceive().getOrNull() ?: break)
+                val latest = bottomFollowDecisions.tryReceive().getOrNull() ?: break
+                accept(latest)
             }
-            if (!shouldFollowBottom || pointerDown.value || isUserScrolling || messageNavigationJob != null) {
-                reset()
-                continue
-            }
-            val snapping = System.nanoTime() < bottomSnapUntilNanos
-            val latestOverflow = scrollState.layoutInfo.measuredTailOverflow()
-            val expansionOwnsViewport = viewportRecovery.hasActiveExpansion(canOwnWorkExpansionViewport())
-            if (expansionOwnsViewport && latestOverflow == null) {
-                // The measured-anchor owner recovers unknown-tail expansion. Do not let the
-                // ordinary one-viewport fallback race it; retain the pending target for expiry.
-                motion.reset()
-                previousFrameNanos = null
-                continue
-            }
-            if ((snapping || expansionOwnsViewport) && latestOverflow != null) {
-                remainingDistancePx = latestOverflow.coerceAtLeast(0).toFloat()
-            }
-            val step = if (snapping) {
-                motion.reset()
-                remainingDistancePx
-            } else {
-                val smoothStep = motion.step(remainingDistancePx, frameNanos, densityScale)
-                val layout = scrollState.layoutInfo
-                // 绘制上提不能超过列表底部留白。先用真实滚动补掉超出缓冲的差额，
-                // 其余仍由原速度控制器平滑追赶；不能靠扩大裁剪或移走已被裁空的列表。
-                // 再收成整像素，避免小数滚动和整数上提把卡片底边顶开 1 像素。
-                snapFollowScrollStep(
-                    resolveBottomFollowViewportStep(
-                        smoothStepPx = smoothStep,
-                        measuredOverflowPx = layout.measuredTailOverflow(),
-                        afterContentPaddingPx = layout.afterContentPadding,
-                    ),
-                    remainingDistancePx,
-                )
-            }
-            // Within the draw buffer, the first frame still only establishes timing.
-            if (step <= 0f) continue
+            if (!shouldFollowBottom || requestIndex != null || remainingDistancePx <= 0f) continue
+
+            val step = smoothBottomFollowStep(
+                distancePx = remainingDistancePx,
+                elapsedSeconds = elapsedSeconds,
+                density = densityScale,
+            )
             var consumedStep = 0f
             try {
                 scrollState.scroll {
-                    if (!pointerDown.value && !isUserScrolling && messageNavigationJob == null && shouldFollowBottom) {
-                        // Post-layout expansion recovery may already have consumed this target.
-                        // Recheck fresh geometry inside the scroll owner, not the queued decision.
-                        val currentStep = resolveFollowScrollStepAfterRecovery(
-                            step, scrollState.layoutInfo.measuredTailOverflow(),
-                            expansionOwnsViewport = viewportRecovery.hasActiveExpansion(canOwnWorkExpansionViewport()),
-                        )
-                        consumedStep = StreamPerformanceDiagnostics.measure("follow.scroll") { scrollBy(currentStep) }
-                        if (StreamPerformanceDiagnostics.probing) {
-                            StreamPerformanceDiagnostics.probeNote("follow") {
-                                "stepPx=${"%.1f".format(step)} consumedPx=${"%.1f".format(consumedStep)} " +
-                                    "remainingPx=${"%.1f".format(remainingDistancePx - consumedStep)}"
-                            }
-                        }
-                        StreamPerformanceDiagnostics.record("follow.step", value = (consumedStep * 1000).toLong())
-                    }
+                    scrollBy(step)
+                    consumedStep = step
                 }
-                if (consumedStep > 0f) {
-                    remainingDistancePx = (remainingDistancePx - consumedStep).coerceAtLeast(0f)
-                } else reset()
+                remainingDistancePx = if (consumedStep > 0f) {
+                    (remainingDistancePx - consumedStep).coerceAtLeast(0f)
+                } else {
+                    0f
+                }
             } catch (cancelled: CancellationException) {
-                StreamPerformanceDiagnostics.record("follow.cancelled")
                 if (!currentCoroutineContext().isActive) throw cancelled
-                reset()
+                remainingDistancePx = 0f
             }
         }
     }
 
-    // 输入器悬浮在会话之上：视口铺满到屏幕底，输入框四周透明、能看到后面的消息。
-    // 跟底输出期间（思考/正文生成、未手动滑动），卡片/正文每长一行，跟底滚动要晚几帧
-    // 才追上。绘制阶段会把已经量到的尾部上提；输出及渲染收尾时才裁在输入框上方的静止线，
-    // 覆盖超快输出在 isStreaming 结束后、列表滚动尚未完成的过渡帧。
-    // 静态锚定只用于尾部停靠，不是永久绘制遮挡；无需先滑动，透明周边也能透出消息。
-    // 用户一拖动或跳转消息，输出保护也立即解除。
-    val restClip = remember(bottomInset) { ComposerRestClip(bottomInset + ConversationComposerGap) }
-    // 尾部这一帧量不到时不能把上提清零，否则卡片会掉进输入框再弹回来。
-    val heldTailLift = remember { intArrayOf(0) }
-    // The callback reports message.id, but a work step's lazy key is work-step:<id>.
-    // Both row branches capture the actual entry key before ThinkingRow changes its height.
-    val onThinkingRowToggle: (String, Boolean) -> Unit = { rowKey, willExpand ->
-        val now = System.nanoTime()
-        val alreadyPinned = expansionHoldsBottom()
-        val captured = if (willExpand) {
-            viewportRecovery.beginThinkingExpansion(
-                rowKey = rowKey,
-                expiresAtNanos = now + WORK_EXPANSION_RECOVERY_NANOS,
-                canOwnViewport = canOwnWorkExpansionViewport() &&
-                    (alreadyPinned || scrollState.isConversationAtBottom()),
-            )
-        } else {
-            viewportRecovery.cancelWorkExpansion(rowKey)
-            false
-        }
-        if (alreadyPinned || captured ||
-            (!willExpand && canOwnWorkExpansionViewport() && scrollState.isConversationAtBottom())
-        ) {
-            bottomSnapUntilNanos = now + EXPANSION_BOTTOM_SNAP_NANOS
-        }
-    }
-    Box(
-        modifier = modifier
-            .onGloballyPositioned(markdownViewport::updateCoordinates)
-            .clipToBounds()
-            // clipRect 和普通 clip 都裁不到子级 graphicsLayer（跟底上提、思考卡片的离屏纹理）。
-            // 先把整列画进一张按静止线裁切的离屏纹理，文字才不会露进输入框。
-            .then(
-                if (shouldClipTail) {
-                    Modifier.graphicsLayer {
-                        compositingStrategy = CompositingStrategy.Offscreen
-                        clip = true
-                        shape = restClip
-                    }
-                } else {
-                    Modifier
-                },
-            )
-            .drawWithContent {
-                // 不跟底时不要读 layoutInfo，否则每次滑动都让绘制层失效。
-                // 上提用的是本帧布局。输出很快时，新长出的一行会先画过静止线、进到输入框里。
-                // 跟底期间一律裁在静止线；上提仍然把已经量到的尾部停在线上方。
-                if (!shouldClipTail) {
-                    drawContent()
-                    return@drawWithContent
-                }
-                val restLine = (size.height - (bottomInset + ConversationComposerGap).toPx()).coerceAtLeast(0f)
-                clipRect(bottom = restLine) { this@drawWithContent.drawContent() }
-            },
-    ) {
-        val speechPrefaceProjection = remember { AgentSpeechPrefaceCache() }
-        val speechPrefaces = remember(visibleMessages, finalResultMessageIds) {
-            StreamPerformanceDiagnostics.measure("timeline.prefaces", visibleMessages.size.toLong()) {
-                speechPrefaceProjection.project(visibleMessages, finalResultMessageIds)
-            }
-        }
-        val messageActions = remember { ChatMessageActions() }
-        SideEffect {
-            messageActions.onSuggestionClick = onSuggestionClick
-            messageActions.onRunTraceClick = onRunTraceClick
-            messageActions.onOpenBrowser = onOpenBrowser
-            messageActions.onEditMessage = onEditMessage
-            messageActions.onDeleteMessage = onDeleteMessage
-            messageActions.onRegenerateMessage = onRegenerateMessage
-            messageActions.onBranchMessage = onBranchMessage
-            messageActions.onQuestionDraftChanged = onQuestionDraftChanged
-            messageActions.onSubmitQuestionAnswer = onSubmitQuestionAnswer
-            // Commit count only (ns=0): proves this content lambda was applied, not its cost.
-            StreamPerformanceDiagnostics.record("chat.content.commit", value = 1)
-        }
-        androidx.compose.runtime.CompositionLocalProvider(
-            io.github.mangi.eta.ui.markdown.LocalMarkdownDrawViewport provides markdownViewport,
-        ) {
-        LazyColumn(
-            state = scrollState,
-            verticalArrangement = if (!pointerDown.value && shouldPinConversationToBottom(isStreaming, streamFilledViewport)) {
-                Arrangement.Bottom
-            } else {
-                Arrangement.Top
-            },
-            modifier = Modifier
-                .streamDiagnosticMeasure("list.measure", diagnosticListAttribution)
-                .streamDiagnosticPlacement("list.place", diagnosticListAttribution)
-                .fillMaxSize()
-                // 层本身就会在滑动时整列重录。只有跟底上提才挂上；手指滑动时列表直接滚动，
-                // 已完成块的离屏纹理可以复用。打字机和振动不在这里停。
-                .then(if (shouldLiftTail) {
-                    Modifier.graphicsLayer {
-                        val overflow = scrollState.followTailOverflow()
-                        translationY = -nextHeldTailLift(
-                            shouldLift = true,
-                            overflowPx = overflow,
-                            heldPx = heldTailLift[0],
-                            pointerDown = pointerDown.value,
-                        ).also { heldTailLift[0] = it }.toFloat()
-                    }
-                } else {
-                    Modifier.also { heldTailLift[0] = 0 }
-                })
-                .onGloballyPositioned {
-                    StreamPerformanceDiagnostics.recordListGeometry(diagnosticList, scrollState, visibleMessages.size)
-                    // Post-layout, before draw: pinned work insertion preserves a measured
-                    // pre-click key even when the tail is outside the lazy measurement window.
-                    // Normal follow still consumes only excess beyond the existing draw buffer.
-                    val consumed = viewportRecovery.recover(
-                        canRecoverExpansion = canOwnWorkExpansionViewport,
-                    ) {
-                        shouldFollowBottom && canOwnWorkExpansionViewport()
-                    }
-                    if (consumed > 0f) {
-                        StreamPerformanceDiagnostics.record(
-                            "follow.viewportRecovery", value = (consumed * 1000).toLong(),
+    // 滚动层保持整屏，输入器作为后绘制浮层；输入器高度进入列表的
+    // afterContentPadding，确保跟到底部时最后一行停在输入器上方。
+    val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
+    val messagesBackdrop = if (isCoui || assistantOverlay) null else rememberGlassBackdrop()
+    CompositionLocalProvider(LocalOnChatItemExpand provides onExpandItem) {
+        Box(modifier = modifier.clipToBounds()) {
+            LazyColumn(
+                state = scrollState,
+                verticalArrangement = Arrangement.Top,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .captureGlassBackdrop(messagesBackdrop)
+                    .scrollEndHaptic()
+                    .nestedScroll(historyPaging.scrollConnection)
+                    .overScrollVertical(),
+                contentPadding = PaddingValues(
+                    top = topInset + if (assistantOverlay) 8.dp else 10.dp,
+                    bottom = bottomInset + 14.dp,
+                ),
+                overscrollEffect = null,
+            ) {
+                if (hasEarlierMessages) {
+                    item(key = ChatHistoryBoundaryKey) {
+                        AgentHistoryLoadStatus(
+                            state = historyLoadState,
+                            enabled = !isStreaming && editTargetMessageId == null,
+                            onRetry = historyPaging.retry,
                         )
                     }
                 }
-                .pointerInput(Unit) {
-                    try {
-                        awaitPointerEventScope {
-                            while (true) {
-                                val event = awaitPointerEvent(PointerEventPass.Initial)
-                                val pressed = event.changes.any { it.pressed }
-                                if (pointerDown.value != pressed) {
-                                    // Preserve short-list bottom alignment as real leading space.
-                                    // Otherwise tail growth moves the first row before scrollBy runs.
-                                    heldLeadingGapPx = if (pressed && !scrollState.canScrollBackward && !scrollState.canScrollForward) {
-                                        scrollState.layoutInfo.visibleItemsInfo.firstOrNull()
-                                            ?.takeIf { it.index == 0 }?.offset?.coerceAtLeast(0) ?: 0
-                                    } else 0
-                                    pointerDown.value = pressed
-                                }
-                            }
-                        }
-                    } finally {
-                        pointerDown.value = false
-                        heldLeadingGapPx = 0
-                    }
-                }
-                .nestedScroll(userScrollConnection)
-                // Navigation already emits one explicit click/long-press haptic.
-                .then(if (messageNavigationJob == null) Modifier.scrollEndHaptic() else Modifier)
-                .overScrollVertical(),
-            // 最后一条静止时停在输入框上方 14dp；手动滑动时内容可以滚到输入框后面。
-            contentPadding = PaddingValues(
-                top = 14.dp + with(LocalDensity.current) { heldLeadingGapPx.toDp() },
-                bottom = ConversationComposerGap + bottomInset,
-            ),
-            overscrollEffect = null,
-        ) {
-            items(
-                items = timelineRows,
-                key = { it.key },
-                contentType = { row ->
-                    when (row) {
-                        is AgentTimelineRow.Message -> "message"
-                        is AgentTimelineRow.WorkHeader -> "work-header"
-                        is AgentTimelineRow.WorkStep -> when (row.message) {
-                            is ToolActivityMessageUi -> "work-tool"
-                            is ThinkingMessageUi -> "work-thinking"
-                            else -> "work-summary"
-                        }
-                    }
-                },
-            ) { entry ->
-                // No UI container or rendering modifier: record committed row identity only.
-                ChatRowTrace(
-                    rowKey = entry.key,
-                    rowType = when (entry) {
-                        is AgentTimelineRow.Message -> when (entry.message) {
-                            is UserMessageUi -> "user"
-                            is AgentMessageUi -> "agent"
-                            is ThinkingMessageUi -> "thinking"
-                            is ToolActivityMessageUi -> "tool"
-                            else -> "message"
-                        }
-                        is AgentTimelineRow.WorkHeader -> "work-header"
-                        is AgentTimelineRow.WorkStep -> when (entry.message) {
-                            is ToolActivityMessageUi -> "work-tool"
-                            is ThinkingMessageUi -> "work-thinking"
-                            else -> "work-summary"
-                        }
-                    },
-                    enabled = scrollTraceEnabled,
-                )
-                // Keep the row key/index and animate its root, including its footer.
-                androidx.compose.runtime.CompositionLocalProvider(
-                    LocalExpansionHoldsBottom provides expansionHoldsBottom,
-                    LocalCompletedMarkdownCache provides completedMarkdownCache,
-                    LocalStreamDiagnosticRow provides StreamPerformanceDiagnostics.rowAttribution(
-                        diagnosticList, entry.key, timelineDiagnosticRowType(entry)),
-                ) {
-                val diagnosticRow = LocalStreamDiagnosticRow.current
-                val firstMessageAppearance = if (entry is AgentTimelineRow.Message) {
-                    // Retire an existing root's appearance on an explicit work toggle even
-                    // if LazyColumn retains its composition while temporarily unmeasured.
-                    // New message keys still get the normal fade; work height animation is unchanged.
-                    remember(entry.key, workExpansionOverrides) { appearedMessageKeys.add(entry.key) }
-                } else false
-                Column(
-                    modifier = Modifier
-                        .streamDiagnosticMeasure("row.measure", diagnosticRow)
-                        .streamDiagnosticPlacement("row.place", diagnosticRow)
-                        .streamDiagnosticDraw("row.draw", diagnosticRow)
-                        .fillMaxWidth().then(
-                        if (entry is AgentTimelineRow.Message) Modifier.animateItem(
-                            fadeInSpec = if (firstMessageAppearance) tween(durationMillis = 180) else null,
-                            placementSpec = null,
-                            fadeOutSpec = null,
-                        ) else Modifier,
-                    ),
-                ) {
-                when (entry) {
-                    is AgentTimelineRow.Message -> {
-                        val message = entry.message
-                        ChatMessageItem(
-                            message = message,
-                            speechPreface = "",
-                            retainedStreamingState = (message as? AgentMessageUi)
-                                ?.takeIf { agentMessage ->
-                                    agentMessage.isStreaming ||
-                                        streamingMarkdownStates.containsKey(agentMessage.id) ||
-                                        (
-                                            (isStreaming || isPaused) &&
-                                                agentMessage.id !in settledMessageIds &&
-                                                agentMessage.content.isNotEmpty()
-                                            )
-                                }
-                                ?.let { agentMessage ->
-                                    streamingMarkdownStates.getOrPut(agentMessage.id) {
-                                        StreamingMarkdownState()
-                                    }
-                                },
-                            actions = messageActions,
-                            showBrowserShortcut = message is ToolActivityMessageUi &&
-                                message.toolName == "browser_use" &&
-                                message.id == currentBrowserMessageId,
-                            enableLivePreview = message is ToolActivityMessageUi && !isStreaming,
-                            // UserMessageBubble ignores these switches; its toolbar is unchanged.
-                            showCopyAction = false,
-                            showMessageActions = false,
-                            messageActionsEnabled = message is UserMessageUi && messageActionsEnabled && !isStreaming && !isPaused,
-                            branchEnabled = message is UserMessageUi && branchEnabled,
-                            isEditing = message is UserMessageUi && message.id == editTargetMessageId,
-                            isPaused = isPaused,
-                            onThinkingToggle = if (message is ThinkingMessageUi) {
-                                { _, willExpand -> onThinkingRowToggle(entry.key, willExpand) }
-                            } else null,
-                            // Keep this modifier stable. Attaching fadeIn only after the run
-                            // ends replays appearance on the already-visible answer.
-                            modifier = Modifier,
-                        )
-                    }
-
-                    is AgentTimelineRow.WorkHeader -> {
-                        AgentWorkProcessHeader(
-                            messages = entry.group.messages,
-                            isPaused = isPaused,
-                            expanded = entry.expanded,
-                            folded = entry.folded,
-                            // Deleted retained keys no longer own a card slice or its bottom gap.
-                            hasVisibleSteps = entry.expanded || entry.group.messages.any { message ->
-                                "work-step:${message.id}" in retainedWorkSteps[entry.key].orEmpty()
-                            },
-                            onToggle = {
-                                // Retire the root fade for every message that already exists
-                                // before this explicit toggle mutates the projection. LazyColumn
-                                // composes a row only once it enters the viewport, so a pre-click
-                                // answer that was never mounted would otherwise be mistaken for a
-                                // new one and replay the 180ms fade on collapse/expand. Messages
-                                // created after this click are absent here and keep their fade.
-                                markExistingMessages(appearedMessageKeys, timelineRows, visibleMessages)
-                                val now = System.nanoTime()
-                                val alreadyPinned = expansionHoldsBottom()
-                                val captured = if (!entry.expanded) {
-                                    viewportRecovery.beginWorkExpansion(
-                                        groupKey = entry.key,
-                                        stepKeys = entry.group.messages.mapTo(HashSet<Any>()) { "work-step:${it.id}" },
-                                        expiresAtNanos = now + WORK_EXPANSION_RECOVERY_NANOS,
-                                        canOwnViewport = canOwnWorkExpansionViewport() &&
-                                            (alreadyPinned || scrollState.isConversationAtBottom()),
-                                    )
-                                } else {
-                                    // Closing a group also retires a captured inner thinking row.
-                                    viewportRecovery.cancelWorkExpansion(
-                                        entry.key, entry.group.messages.map { "work-step:${it.id}" },
-                                    )
-                                    false
-                                }
-                                val pinned = alreadyPinned || captured ||
-                                    (entry.expanded && canOwnWorkExpansionViewport() &&
-                                        scrollState.isConversationAtBottom())
-                                if (pinned) bottomSnapUntilNanos = now + EXPANSION_BOTTOM_SNAP_NANOS
-                                workAnimations[entry.key]?.entrance?.seal()
-                                val animation = newWorkGroupAnimation(
-                                    generation = ++workAnimationGeneration[0],
-                                    expanded = !entry.expanded,
-                                    fromBottom = pinned,
-                                    stepKeys = entry.group.messages.map { "work-step:${it.id}" },
-                                    mountedStepKeys = mountedWorkSteps[entry.key].orEmpty(),
-                                )
-                                if (animation.expanded || animation.pendingExitKeys.isNotEmpty()) {
-                                    workAnimations[entry.key] = animation
-                                } else workAnimations.remove(entry.key)
-                                val token = StreamPerformanceDiagnostics.markToggle("work", !entry.expanded)
-                                StreamPerformanceDiagnostics.probeEvent(
-                                    token,
-                                    "item",
-                                    "steps=${entry.group.messages.size} anchor=${if (pinned) "bottom" else "top"}",
-                                )
-                                workExpansionOverrides = workExpansionOverrides + (entry.key to !entry.expanded)
-                            },
-                        )
-                    }
-                    is AgentTimelineRow.WorkStep -> {
-                        val message = entry.message
-                        val retainedState = if (message is ThinkingMessageUi &&
-                            (message.isStreaming || streamingMarkdownStates.containsKey(message.id))) {
-                            streamingMarkdownStates.getOrPut(message.id) { StreamingMarkdownState() }
-                        } else null
-                        val animation = workAnimations[entry.groupKey]
-                        // Do not key this state by generation/target: a rapid opposite
-                        // click reverses the same transition at its current height.
-                        val appear = remember(entry.key) {
-                            val animate = entry.expanded && animation?.expanded == true &&
-                                animation.entrance.claim(entry.key)
-                            MutableTransitionState(entry.expanded && !animate)
-                        }
-                        SideEffect { appear.targetState = entry.expanded }
-                        DisposableEffect(entry.groupKey, entry.key) {
-                            mountedWorkSteps.getOrPut(entry.groupKey) { HashSet() }.add(entry.key)
-                            onDispose {
-                                mountedWorkSteps[entry.groupKey]?.let { keys ->
-                                    keys.remove(entry.key)
-                                    if (keys.isEmpty()) mountedWorkSteps.remove(entry.groupKey)
-                                }
-                                // An unmeasured exit must not keep the projection alive.
-                                workAnimations[entry.groupKey]?.let { current ->
-                                    finishWorkExit(entry.groupKey, entry.key, current.generation)
-                                }
-                            }
-                        }
-                        LaunchedEffect(entry.expanded, animation?.generation) {
-                            if (!entry.expanded && animation != null) {
-                                snapshotFlow { appear.isIdle && !appear.currentState && !appear.targetState }
-                                    .first { it }
-                                finishWorkExit(entry.groupKey, entry.key, animation.generation)
-                            }
-                        }
-                        val fromBottom = animation?.fromBottom ?: false
-                        AnimatedVisibility(
-                            visibleState = appear,
-                            enter = tailDetailsEnter(fromBottom = fromBottom),
-                            exit = tailDetailsExit(toBottom = fromBottom),
-                        ) {
-                        WorkProcessCardSlice(
-                            part = if (entry.isLast) WorkProcessCardPart.Last else WorkProcessCardPart.Middle,
-                            // The 4dp exterior card gap belongs outside visibility.
-                            // Transfer it to the Whole header only when all exits finish;
-                            // neither add a second gap at click nor jump at disposal.
-                            modifier = if (entry.isLast) Modifier.layout { measurable, constraints ->
-                                val placeable = measurable.measure(constraints)
-                                layout(placeable.width, (placeable.height - 4.dp.roundToPx()).coerceAtLeast(0)) {
-                                    placeable.placeRelative(0, 0)
-                                }
-                            } else Modifier,
-                        ) {
+                items(
+                    items = timelineEntries,
+                    key = { it.key },
+                    contentType = { it.contentType() },
+                ) { entry ->
+                    val itemModifier = Modifier.animateItem(
+                        fadeInSpec = tween(durationMillis = 180),
+                        placementSpec = null,
+                        // 历史轮次被编辑、删除或重新生成时必须立即退出；退出动画会让已从
+                        // 状态中裁掉的旧消息继续绘制，并与同位置的新流式消息短暂重叠。
+                        fadeOutSpec = null,
+                    )
+                    when (entry) {
+                        is AgentTimelineEntry.Message -> {
+                            val message = entry.message
                             ChatMessageItem(
                                 message = message,
-                                actions = messageActions,
-                                retainedStreamingState = retainedState,
+                                assistantOverlay = assistantOverlay,
+                                retainedStreamingState = (message as? AgentMessageUi)
+                                    ?.let { streamingMarkdownStates[it.id] },
+                                onSuggestionClick = onSuggestionClick,
+                                onRunTraceClick = onRunTraceClick,
+                                onOpenBrowser = onOpenBrowser,
                                 showBrowserShortcut = message is ToolActivityMessageUi &&
+                                    message.toolName == "browser_use" &&
                                     message.id == currentBrowserMessageId,
-                                enableLivePreview = message is ToolActivityMessageUi && !isStreaming,
-                                compact = true,
-                                isPaused = isPaused,
-                                onThinkingToggle = if (message is ThinkingMessageUi) {
-                                    { _, willExpand -> onThinkingRowToggle(entry.key, willExpand) }
-                                } else null,
-                                modifier = Modifier.padding(
-                                    top = if (entry.isFirst) 2.dp else 0.dp,
-                                    bottom = if (entry.isLast) 8.dp else 0.dp,
-                                ),
+                                showCopyAction = message !is AgentMessageUi ||
+                                    message.characterEditable || message.id in finalResultMessageIds,
+                                showMessageActions = !assistantOverlay && (
+                                    message.id in finalResultMessageIds ||
+                                        (message is AgentMessageUi && message.characterEditable)
+                                    ),
+                                messageActionsEnabled = messageActionsEnabled,
+                                showBranchAction = !assistantOverlay && message.id in branchMessageIds,
+                                onBranchMessage = onBranchMessage,
+                                isEditing = message.id == editTargetMessageId,
+                                onEditMessage = onEditMessage,
+                                onDeleteMessage = onDeleteMessage,
+                                onRegenerateMessage = onRegenerateMessage,
+                                onSelectReplyCandidate = onSelectReplyCandidate,
+                                modifier = itemModifier,
                             )
                         }
+
+                        is AgentTimelineEntry.WorkProcess -> {
+                            AgentWorkProcess(
+                                id = entry.key,
+                                active = entry.key == activeWorkProcessKey,
+                                messages = entry.messages,
+                                assistantOverlay = assistantOverlay,
+                                onOpenBrowser = onOpenBrowser,
+                                currentBrowserMessageId = currentBrowserMessageId,
+                                retainedStreamingStates = streamingMarkdownStates,
+                                modifier = itemModifier,
+                            )
                         }
-                        if (entry.isLast) Spacer(Modifier.height(4.dp))
                     }
                 }
-                turnFooters[entry.key]?.let { owner ->
-                    val revealPending = footerRevealMessages[entry.key].orEmpty().any { answer ->
-                        val retained = streamingMarkdownStates[answer.id]
-                        answer.isStreaming ||
-                            (retained != null && retained.revealedContent != answer.content && (isStreaming || isPaused)) ||
-                            (retained == null && (isStreaming || isPaused) && answer.id !in settledMessageIds)
-                    }
-                    AgentTurnFooter(
-                        message = owner,
-                        actions = messageActions,
-                        revealPending = revealPending,
-                        isRunActive = (isStreaming || isPaused) && owner.id !in finalResultMessageIds,
-                        speechPreface = speechPrefaces[owner.id].orEmpty(),
-                        messageActionsEnabled = messageActionsEnabled && !isStreaming && !isPaused,
-                        branchEnabled = branchEnabled,
+                item(key = ChatBottomSentinelKey) {
+                    Spacer(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(1.dp),
                     )
                 }
-                }
-                }
             }
-            if (compressingItemCount > 0) {
-                item(key = ChatContextCompressingKey) {
-                    Column {
-                        if (isCompressingContext || isWaitingForCompression) ContextCompressingIndicator(
-                            modelName = "${telemetry.compactingModelName.ifBlank { telemetry.mainModelName }}（主代理）",
-                            waiting = isWaitingForCompression && !isCompressingContext,
-                            modifier = Modifier.animateItem(
-                                fadeInSpec = tween(durationMillis = 180),
-                                placementSpec = null,
-                                fadeOutSpec = null,
+
+            AnimatedVisibility(
+                visible = !keepBottomAnchored && !isAtBottom,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = bottomInset + 8.dp),
+                enter = fadeIn(tween(160)) + scaleIn(tween(180), initialScale = 0.82f),
+                exit = fadeOut(tween(100)) + scaleOut(tween(120), targetScale = 0.86f),
+            ) {
+                val scrollToBottom: () -> Unit = {
+                    suppressAutoReanchor = false
+                    onBottomAnchorChanged(true)
+                    coroutineScope.launch {
+                        scrollState.animateScrollToItem(bottomItemIndex)
+                    }
+                }
+                if (isCoui) {
+                    val couiDark = CouiTheme.isDark
+                    IconButton(
+                        modifier = Modifier
+                            .dropShadow(
+                                shape = CircleShape,
+                                shadow = Shadow(
+                                    radius = 10.dp,
+                                    color = Color.Black,
+                                    alpha = if (couiDark) 0.24f else 0.08f,
+                                ),
+                            )
+                            .border(
+                                width = 0.5.dp,
+                                color = if (couiDark) Color(0x22FFFFFF) else Color(0x10000000),
+                                shape = CircleShape,
                             ),
+                        onClick = scrollToBottom,
+                        backgroundColor = if (couiDark) Color(0xFF24262B) else Color.White,
+                        minWidth = 36.dp,
+                        minHeight = 36.dp,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.ArrowDownward,
+                            contentDescription = stringResource(R.string.ui_back_to_bottom_32282e),
+                            modifier = Modifier.size(16.dp),
+                            tint = MiuixTheme.colorScheme.onSurface.copy(alpha = 0.78f),
                         )
-                        compressingChildren.forEach { child ->
-                            androidx.compose.runtime.key(child.taskId) {
-                                ContextCompressingIndicator(modelName = child.contextLabel())
-                            }
-                        }
+                    }
+                } else {
+                    GlassIconButton(
+                        onClick = scrollToBottom,
+                        backdrop = messagesBackdrop,
+                        size = 40.dp,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.ArrowDownward,
+                            contentDescription = stringResource(R.string.ui_back_to_bottom_32282e),
+                            modifier = Modifier.size(18.dp),
+                            tint = MiuixTheme.colorScheme.onSurface.copy(alpha = 0.85f),
+                        )
                     }
                 }
             }
-            item(key = ChatBottomSentinelKey) {
-                Spacer(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(1.dp),
-                )
-            }
         }
-
-        }
-
-        fun navigateUserMessage(toEdge: Boolean) {
-            // Do not queue animations on rapid taps; a new drag cancels the active jump.
-            if (messageNavigationJob != null) return
-            val direction = navigationDirection
-            val target = conversationUserMessageTarget(
-                userMessageTargets, scrollState.firstVisibleItemIndex, bottomItemIndex, direction, toEdge,
-                firstVisibleScrollOffset = scrollState.firstVisibleItemScrollOffset,
-            )
-            onBottomAnchorChanged(false)
-            messageNavigationJob = coroutineScope.launch {
-                try {
-                    // Let the follow/boundary-haptic observers yield before moving the list.
-                    withFrameNanos { }
-                    // Keep one continuous motion, slowing only at the selected user-message target.
-                    scrollState.animateToConversationTurn(target)
-                    if (target == bottomItemIndex) snapListToBottom(scrollState, currentBottomItemIndex)
-                    onBottomAnchorChanged(
-                        direction == ConversationNavigationDirection.Down && scrollState.isConversationAtBottom(),
-                    )
-                } finally {
-                    messageNavigationJob = null
-                }
-            }
-        }
-        // 上一条/下一条按钮已下线：横向刻度轨接管了轮次跳转（用户要求）。
-        // navigateUserMessage 仍保留，供无障碍/测试等其它路径复用。
     }
 }
 
-internal enum class BottomFollowSettlingState { Disabled, Active, Draining }
-
-/** Branch-equivalent short circuit: do not scan messages until reveal completion matters. */
-internal inline fun bottomFollowSettlingState(
-    streaming: Boolean,
-    anchored: Boolean,
-    userScrolling: Boolean,
-    pendingReveal: () -> Boolean,
-): BottomFollowSettlingState = when {
-    !anchored || userScrolling -> BottomFollowSettlingState.Disabled
-    streaming || pendingReveal() -> BottomFollowSettlingState.Active
-    else -> BottomFollowSettlingState.Draining
-}
-
-private val InactiveBottomFollowLayout = BottomFollowLayout(
-    enabled = false, bottomItemIndex = 0, sentinelBottom = null, viewportEnd = 0,
-    lastVisibleIndex = null, viewportSizePx = 0, canScrollForward = false, lastVisibleOffset = null,
-)
-
-internal data class BottomFollowLayout(
+private data class BottomFollowLayout(
     val enabled: Boolean,
     val bottomItemIndex: Int,
     val sentinelBottom: Int?,
     val viewportEnd: Int,
     val lastVisibleIndex: Int?,
-    val viewportSizePx: Int,
-    val canScrollForward: Boolean,
-    // Keep missing-sentinel targets live while scrolling inside one very tall item.
-    val lastVisibleOffset: Int?,
 )
 
 internal data class BottomFollowDecision(
@@ -2176,383 +947,252 @@ internal fun resolveBottomFollowDecision(
     sentinelBottom: Int?,
     viewportEnd: Int,
     lastVisibleIndex: Int?,
-    viewportSizePx: Int = viewportEnd,
-    canScrollForward: Boolean = true,
 ): BottomFollowDecision {
-    if (!enabled || !canScrollForward) return BottomFollowDecision()
+    if (!enabled) return BottomFollowDecision()
     val overflow = sentinelBottom?.minus(viewportEnd)
     return when {
         overflow != null && overflow > 0 -> BottomFollowDecision(scrollByPx = overflow)
-        sentinelBottom == null && lastVisibleIndex != null && lastVisibleIndex < bottomItemIndex ->
-            BottomFollowDecision(scrollByPx = viewportSizePx.coerceAtLeast(1))
+        sentinelBottom == null &&
+            lastVisibleIndex != null &&
+            lastVisibleIndex < bottomItemIndex -> BottomFollowDecision(requestIndex = bottomItemIndex)
         else -> BottomFollowDecision()
     }
 }
 
-internal data class InitialBottomPosition(
-    val bottomItemIndex: Int,
-    val hasLayout: Boolean,
-    val anchored: Boolean,
-    val interrupted: Boolean,
-) {
-    val ready: Boolean get() = !anchored || interrupted || (bottomItemIndex > 0 && hasLayout)
-    val shouldPosition: Boolean get() = ready && anchored && !interrupted
+internal fun smoothBottomFollowStep(
+    distancePx: Float,
+    elapsedSeconds: Float,
+    density: Float,
+): Float {
+    if (distancePx <= 0f || elapsedSeconds <= 0f) return 0f
+    if (distancePx <= BOTTOM_FOLLOW_SNAP_DISTANCE_PX) return distancePx
+
+    val frameSeconds = elapsedSeconds.coerceAtMost(BOTTOM_FOLLOW_MAX_FRAME_SECONDS)
+    val easedStep = distancePx * (1f - exp(-frameSeconds / BOTTOM_FOLLOW_RESPONSE_SECONDS))
+    val speedLimitedStep = BOTTOM_FOLLOW_MAX_SPEED_DP_PER_SECOND * density * frameSeconds
+    return min(distancePx, min(easedStep.coerceAtLeast(BOTTOM_FOLLOW_MIN_STEP_PX), speedLimitedStep))
+}
+
+internal sealed interface AgentTimelineEntry {
+    val key: String
+
+    data class Message(
+        val message: AgentChatMessageUi,
+    ) : AgentTimelineEntry {
+        override val key: String = message.id
+    }
+
+    data class WorkProcess(
+        override val key: String,
+        val messages: List<AgentChatMessageUi>,
+    ) : AgentTimelineEntry
 }
 
 /**
+ * 投影层只替换真正变化的消息实例；工作过程分组若成员实例全部未变，就复用上一版条目，
+ * 让已结束的分组在正文流式刷新时保持参数同一性并跳过重组。
+ */
+internal fun List<AgentChatMessageUi>.toTimelineEntries(
+    previous: List<AgentTimelineEntry> = emptyList(),
+): List<AgentTimelineEntry> = buildList {
+    val previousWorkByMessageId = previous.asSequence()
+        .filterIsInstance<AgentTimelineEntry.WorkProcess>()
+        .flatMap { entry -> entry.messages.asSequence().map { it.id to entry } }
+        .toMap()
+    val workMessages = mutableListOf<AgentChatMessageUi>()
+
+    fun flushWorkProcess() {
+        if (workMessages.isEmpty()) return
+        // 历史页可能从同一工作过程的中间开始；前插补齐后保留已显示分组的身份和滚动锚点。
+        val messageIds = workMessages.mapTo(HashSet()) { it.id }
+        val previousEntry = workMessages.firstNotNullOfOrNull { previousWorkByMessageId[it.id] }
+            ?.takeIf { entry -> entry.messages.all { it.id in messageIds } }
+        val key = previousEntry?.key ?: "work-${workMessages.first().id}"
+        val reusable = previousEntry?.takeIf { entry ->
+            entry.messages.size == workMessages.size &&
+                entry.messages.indices.all { index -> entry.messages[index] === workMessages[index] }
+        }
+        add(reusable ?: AgentTimelineEntry.WorkProcess(key = key, messages = workMessages.toList()))
+        workMessages.clear()
+    }
+
+    this@toTimelineEntries.forEach { message ->
+        if (message.isWorkProcessMessage()) {
+            workMessages += message
+        } else {
+            flushWorkProcess()
+            add(AgentTimelineEntry.Message(message))
+        }
+    }
+    flushWorkProcess()
+}
+
+private fun AgentTimelineEntry.contentType(): Any = when (this) {
+    is AgentTimelineEntry.WorkProcess -> AgentTimelineEntry.WorkProcess::class
+    is AgentTimelineEntry.Message -> message::class
+}
+
+private fun AgentChatMessageUi.isWorkProcessMessage(): Boolean =
+    this is ThinkingMessageUi || this is ToolActivityMessageUi || this is ToolSummaryMessageUi
+
+/**
  * 一轮对话（两条用户消息之间）里最后一条 Agent 正文视为最终结果，其余为中间步骤。
- * 流式或中途压缩期间当前轮次尚未结束，最后一轮不标记，等结束后复制按钮才出现；
+ * 流式传输期间当前轮次尚未结束，最后一轮不标记，等传输结束后复制按钮才出现；
  * 之前已结束轮次的最终结果不受影响。
- *
- * 追加/steering 的用户消息不算新一轮：被打断的正文和继续输出同属一段，
- * 操作栏只出现在整段结束后的最后一条。
  */
 internal fun resolveFinalResultMessageIds(
     messages: List<AgentChatMessageUi>,
     isStreaming: Boolean = false,
-    isCompressingContext: Boolean = false,
 ): Set<String> {
     val ids = LinkedHashSet<String>()
     var lastAgentMessageId: String? = null
     messages.forEach { message ->
         when (message) {
-            is UserMessageUi -> if (!message.isSteerSupplement()) {
+            is UserMessageUi -> {
                 lastAgentMessageId?.let(ids::add)
                 lastAgentMessageId = null
             }
             is AgentMessageUi -> lastAgentMessageId = message.id
-            is io.github.mangi.eta.ui.model.ErrorReconnectMessageUi -> if (message.isRetryableFailure()) {
-                ids.add(lastAgentMessageId ?: message.id)
-                lastAgentMessageId = null
-            }
-            is SystemNoticeMessageUi -> if (message.code.isRetryableFailure()) {
-                ids.add(message.id)
-                lastAgentMessageId = null
-            }
             else -> Unit
         }
     }
-    if (!isStreaming && !isCompressingContext) {
+    if (!isStreaming) {
         lastAgentMessageId?.let(ids::add)
     }
     return ids
 }
 
-/** One traversal for all final bubbles, rather than one history scan per answer. */
-internal fun visibleTurnSpeechPrefaces(
-    messages: List<AgentChatMessageUi>,
-    finalIds: Set<String>,
-): Map<String, String> {
-    if (finalIds.isEmpty()) return emptyMap()
-    val result = HashMap<String, String>(finalIds.size)
-    val parts = ArrayList<String>()
-    for (message in messages) {
-        if (message.id in finalIds) result[message.id] = parts.joinToString("\n\n")
-        when (message) {
-            is UserMessageUi -> if (!message.isSteerSupplement()) parts.clear()
-            is AgentMessageUi -> message.content.trim().takeIf { it.isNotBlank() }?.let(parts::add)
-            else -> Unit
-        }
-    }
-    return result
-}
-
-/** Visible assistant bubbles in the same turn, excluding collapsed thinking. */
-internal fun visibleTurnSpeechPreface(
-    messages: List<AgentChatMessageUi>,
-    finalId: String,
-): String {
-    val parts = ArrayList<String>()
-    for (message in messages) {
-        if (message.id == finalId) break
-        when (message) {
-            is UserMessageUi -> if (!message.isSteerSupplement()) parts.clear()
-            is AgentMessageUi -> message.content.trim().takeIf { it.isNotBlank() }?.let(parts::add)
-            else -> Unit
-        }
-    }
-    return parts.joinToString("\n\n")
-}
-
-
 @Composable
 private fun AgentChatBottomBar(
     input: String,
-    draftField: androidx.compose.foundation.text.input.TextFieldState? = null,
-    modelPickerState: AgentModelPickerUiState,
-    history: List<AgentModelClient.ConversationMessage>,
-    billedContextTokens: Int? = null,
-    projectedContextTokens: Int? = null,
-    billedHistoryTokens: Int? = null,
-    requestOverheadTokens: Int = 0,
-    measuredContextTokens: Int? = null,
-    contextDisplayPolicy: io.github.mangi.eta.ui.model.ContextDisplayPolicy = io.github.mangi.eta.ui.model.ContextDisplayPolicy(),
-    billedOverheadTokens: Int? = null,
-    activeRunContextWindow: Int? = null,
-    autoCompressEnabled: Boolean,
+    isCompacting: Boolean,
+    contextUsage: AgentContextUsageUi,
     showContextUsage: Boolean,
-    conversationUsage: io.github.mangi.eta.ui.model.ConversationTokenUsageUi? = null,
     isStreaming: Boolean,
-    isPaused: Boolean = false,
-    canContinueDisconnected: Boolean = false,
-    isCompressingContext: Boolean = false,
-    showMorphLoading: Boolean = false,
     reasoningEffort: ReasoningEffort,
     availableReasoningEfforts: List<ReasoningEffort>,
     pendingImages: List<PendingImageUi>,
     pendingFileReferences: List<PendingFileReferenceUi>,
-    conversationMentions: ConversationMentionInputUi = ConversationMentionInputUi(),
+    queuedMessages: List<QueuedMessageUi>,
+    inputSyncVersion: Int,
+    focusInputOnSync: Boolean,
     messageEdit: MessageEditUiState?,
-    collaborationConversationId: String? = null,
-    assistantId: String = "",
-    voiceState: VoiceModeState = VoiceModeState(),
-    onStartVoiceMode: (VoiceEntryMode) -> Unit = {},
-    onStopVoiceMode: () -> Unit = {},
-    // 语音态控制胶囊输入：麦克风电平、玻璃取样层、浮层收起状态。
-    voiceLevel: Float = 0f,
-    voiceGlassBackdrop: LayerBackdrop? = null,
-    voiceOverlayCollapsed: Boolean = false,
-    onVoiceOverlayCollapsedChange: (Boolean) -> Unit = {},
+    glassBackdrop: Backdrop?,
     onSubmit: (String) -> Unit,
+    onInterruptAndSubmit: (String) -> Unit,
+    onSteerQueuedMessage: (String) -> Unit,
+    onRecallQueuedMessage: (String, String) -> Unit,
+    onRemoveQueuedMessage: (String) -> Unit,
     onReasoningEffortChange: (ReasoningEffort) -> Unit,
-    onModelSelected: (String, String) -> Unit,
+    onCompactContext: () -> Unit,
+    canCompactContext: Boolean,
     onStop: () -> Unit,
-    onContinue: () -> Unit = {},
-    onAbortPausedRun: () -> Unit = {},
     onAttachImage: (String) -> Unit,
-    onAttachVideo: (String) -> Unit,
     onRemoveImage: (String) -> Unit,
     onAttachFiles: (List<String>) -> Unit,
     onAttachFolder: (String) -> Unit,
     onAttachFilePath: (String) -> Unit,
     onRemoveFileReference: (String) -> Unit,
     onCancelMessageEdit: () -> Unit,
-    onEditAssistant: (String) -> Unit,
-    onAssistantSelected: (String) -> Unit = {},
-    gptSpeedMode: io.github.mangi.eta.data.model.GptSpeedMode = io.github.mangi.eta.data.model.GptSpeedMode.NORMAL,
-    onCycleGptSpeedMode: () -> Unit = {},
 ) {
-    val drawerBlocksIme = LocalConversationDrawerBlocksIme.current
-    // 语音态点「键盘」：停止语音态后把焦点还回输入框，普通输入能力立即可用。
-    val composerFocus = remember { FocusRequester() }
+    val surface = MiuixTheme.colorScheme.surface
+    val bottomBarInsets = rememberFloatingBottomBarInsets(
+        baseInsets = WindowInsets.navigationBars,
+        fixedBottomPadding = 10.dp,
+    )
     Box(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .imePadding(),
     ) {
+        // 底部以连续垂直渐隐承接悬浮输入胶囊，避免一整块不透明实心矩形把消息流生硬截断。
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .background(
+                    Brush.verticalGradient(
+                        0.0f to Color.Transparent,
+                        0.26f to surface.copy(alpha = 0.86f),
+                        0.55f to surface.copy(alpha = 0.98f),
+                        1.0f to surface,
+                    ),
+                ),
+        )
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .then(if (drawerBlocksIme) Modifier else Modifier.imePadding()),
+                .windowInsetsPadding(bottomBarInsets)
+                .padding(top = 14.dp, start = 14.dp, end = 14.dp, bottom = 10.dp),
         ) {
-            // 输入框周围保持透明：消息列表延伸到底栏之后，只有输入框本体不透明。
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .navigationBarsPadding()
-                    .padding(start = 14.dp, end = 14.dp, bottom = 12.dp),
-            ) {
-                AgentChatTodoDock(
-                    conversationId = collaborationConversationId,
-                    runActive = isStreaming || isPaused,
-                )
-                // 语音态：回复卡片压胶囊上方（参考图一布局），胶囊在最下层；
-                // 输入框本体与其内部按钮照常渲染，不再被语音态面板替换。
-                AnimatedVisibility(
-                    visible = (voiceState.active || voiceState.error != null) && !voiceOverlayCollapsed,
-                    enter = fadeIn(tween(160)) + expandVertically(tween(200)),
-                    exit = fadeOut(tween(120)) + shrinkVertically(tween(160)),
-                ) {
-                    val voiceStreaming = voiceState.phase == VoiceModePhase.Thinking ||
-                        voiceState.phase == VoiceModePhase.Speaking
-                    VoiceReplyCard(
-                        statusText = voiceReplyPhaseLabel(voiceState.phase, voiceStreaming),
-                        reply = when (voiceState.phase) {
-                            VoiceModePhase.Connecting,
-                            VoiceModePhase.Listening,
-                            VoiceModePhase.Transcribing -> voiceState.transcript
-                            else -> voiceState.reply
-                        },
-                        streaming = voiceStreaming,
-                        backdrop = voiceGlassBackdrop,
-                        modifier = Modifier.padding(bottom = 20.dp),
-                    )
-                    VoiceControlCapsule(
-                        statusText = voiceReplyPhaseLabel(voiceState.phase, false),
-                        level = voiceLevel,
-                        listening = voiceState.phase == VoiceModePhase.Listening,
-                        backdrop = voiceGlassBackdrop,
-                        onMessage = { onVoiceOverlayCollapsedChange(true) },
-                        onKeyboard = {
-                            onStopVoiceMode()
-                            onVoiceOverlayCollapsedChange(false)
-                            composerFocus.requestFocus()
-                        },
-                        onStop = onStopVoiceMode,
-                        modifier = Modifier
-                            .padding(horizontal = 7.dp)
-                            .padding(bottom = 8.dp),
-                    )
-                }
-                AgentChatInputBar(
-                    collaborationConversationId = collaborationConversationId,
-                    input = input,
-                    draftField = draftField,
-                    modelPickerState = modelPickerState,
-                    history = history,
-                    billedContextTokens = billedContextTokens,
-                    projectedContextTokens = projectedContextTokens,
-                    billedHistoryTokens = billedHistoryTokens,
-                    requestOverheadTokens = requestOverheadTokens,
-                    measuredContextTokens = measuredContextTokens,
-                    contextDisplayPolicy = contextDisplayPolicy,
-                    billedOverheadTokens = billedOverheadTokens,
-                    activeRunContextWindow = activeRunContextWindow,
-                    autoCompressEnabled = autoCompressEnabled,
-                    showContextUsage = showContextUsage,
-                    conversationUsage = conversationUsage,
-                    isStreaming = isStreaming,
-                    isPaused = isPaused,
-                    canContinueDisconnected = canContinueDisconnected,
-                    isCompressingContext = isCompressingContext,
-                    showMorphLoading = showMorphLoading,
-                    reasoningEffort = reasoningEffort,
-                    availableReasoningEfforts = availableReasoningEfforts,
-                    pendingImages = pendingImages,
-                    pendingFileReferences = pendingFileReferences,
-                    conversationMentions = conversationMentions,
-                    isEditingMessage = messageEdit != null,
-                    assistantId = assistantId,
-                    voiceState = voiceState,
-                    onStartVoiceMode = onStartVoiceMode,
-                    onStopVoiceMode = onStopVoiceMode,
-                    editHasLaterTurns = messageEdit?.hasLaterTurns == true,
-                    onSubmit = onSubmit,
-                    onReasoningEffortChange = onReasoningEffortChange,
-                    onModelSelected = onModelSelected,
-                    onStop = onStop,
-                    onContinue = onContinue,
-                    onAbortPausedRun = onAbortPausedRun,
-                    onAttachImage = onAttachImage,
-                    onAttachVideo = onAttachVideo,
-                    onRemoveImage = onRemoveImage,
-                    onAttachFiles = onAttachFiles,
-                    onAttachFolder = onAttachFolder,
-                    onAttachFilePath = onAttachFilePath,
-                    onRemoveFileReference = onRemoveFileReference,
-                    onCancelMessageEdit = onCancelMessageEdit,
-                    onEditAssistant = onEditAssistant,
-                    onAssistantSelected = onAssistantSelected,
-                    gptSpeedMode = gptSpeedMode,
-                    onCycleGptSpeedMode = onCycleGptSpeedMode,
-                    focusRequester = composerFocus,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
+            AgentChatInputBar(
+                input = input,
+                isCompacting = isCompacting,
+                contextUsage = contextUsage,
+                showContextUsage = showContextUsage,
+                isStreaming = isStreaming,
+                reasoningEffort = reasoningEffort,
+                availableReasoningEfforts = availableReasoningEfforts,
+                pendingImages = pendingImages,
+                pendingFileReferences = pendingFileReferences,
+                queuedMessages = queuedMessages,
+                inputSyncVersion = inputSyncVersion,
+                focusInputOnSync = focusInputOnSync,
+                isEditingMessage = messageEdit != null,
+                editHasLaterTurns = messageEdit?.hasLaterTurns == true,
+                preserveFollowingMessages = messageEdit?.preserveFollowingMessages == true,
+                onSubmit = onSubmit,
+                onInterruptAndSubmit = onInterruptAndSubmit,
+                onSteerQueuedMessage = onSteerQueuedMessage,
+                onRecallQueuedMessage = onRecallQueuedMessage,
+                onRemoveQueuedMessage = onRemoveQueuedMessage,
+                onReasoningEffortChange = onReasoningEffortChange,
+                onCompactContext = onCompactContext,
+                canCompactContext = canCompactContext,
+                onStop = onStop,
+                onAttachImage = onAttachImage,
+                onRemoveImage = onRemoveImage,
+                onAttachFiles = onAttachFiles,
+                onAttachFolder = onAttachFolder,
+                onAttachFilePath = onAttachFilePath,
+                onRemoveFileReference = onRemoveFileReference,
+                onCancelMessageEdit = onCancelMessageEdit,
+                glassBackdrop = glassBackdrop,
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
     }
 }
 
-internal fun shouldShowMorphLoadingIndicator(
-    messages: List<AgentChatMessageUi>,
-    isStreaming: Boolean,
-    isPaused: Boolean = false,
-    isCompressingContext: Boolean = false,
-    enabled: Boolean,
-    beforeResponseOnly: Boolean,
-): Boolean {
-    if (!enabled || !isStreaming || isPaused || isCompressingContext) return false
-    if (!beforeResponseOnly) return true
-    return isWaitingForFirstModelOutput(messages)
-}
+private const val BOTTOM_FOLLOW_RESPONSE_SECONDS = 0.085f
+private const val BOTTOM_FOLLOW_MAX_FRAME_SECONDS = 0.05f
+private const val BOTTOM_FOLLOW_MAX_SPEED_DP_PER_SECOND = 720f
+private const val BOTTOM_FOLLOW_MIN_STEP_PX = 0.5f
+private const val BOTTOM_FOLLOW_SNAP_DISTANCE_PX = 0.75f
+private const val EXPAND_REANCHOR_SUPPRESS_MS = 350L
+private const val BOTTOM_SETTLE_TIMEOUT_MS = 600L
 
-internal fun isWaitingForFirstModelOutput(messages: List<AgentChatMessageUi>): Boolean {
-    val lastUserIndex = messages.indexOfLast { message ->
-        (message is UserMessageUi && !message.isSteerSupplement()) ||
-            (message is SystemNoticeMessageUi && message.code.isRetryableFailure()) ||
-            (message is io.github.mangi.eta.ui.model.ErrorReconnectMessageUi && message.isRetryableFailure())
-    }
-    if (lastUserIndex < 0) return false
-    return messages.asSequence()
-        .drop(lastUserIndex + 1)
-        .none(::isModelOutputMessage)
-}
-
-private fun isModelOutputMessage(message: AgentChatMessageUi): Boolean = when (message) {
-    is ThinkingMessageUi -> true
-    is ToolActivityMessageUi -> true
-    is ToolSummaryMessageUi -> true
-    is io.github.mangi.eta.ui.model.ErrorReconnectMessageUi -> true
-    is AgentMessageUi -> message.content.isNotBlank()
-    else -> false
-}
-
-private val ChatBackToBottomButtonSlot = 52.dp
-
-private const val CHAT_CACHE_AHEAD_VIEWPORTS = 1f
-private const val CHAT_CACHE_BEHIND_VIEWPORTS = 1f
-
-private const val ChatBottomSentinelKey = "agent-chat-bottom-sentinel"
-private const val ChatContextCompressingKey = "agent-chat-context-compressing"
-
-@Composable
-private fun ContextCompressingIndicator(waiting: Boolean = false, modelName: String = "", modifier: Modifier = Modifier) {
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(horizontal = 20.dp, vertical = 10.dp),
-        horizontalArrangement = Arrangement.Center,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        CircularProgressIndicator(size = 18.dp, strokeWidth = 2.dp)
-        Text(
-            text = if (waiting) stringResource(R.string.compress_conversation_waiting) else
-                "${modelName.ifBlank { "主代理" }} • 正在压缩上下文",
-            style = MiuixTheme.textStyles.body2,
-            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-            modifier = Modifier.padding(start = 8.dp),
-        )
-    }
+private class TimelineEntriesCache {
+    var entries: List<AgentTimelineEntry> = emptyList()
 }
 
 internal fun resolveKeepBottomAnchored(
     current: Boolean,
     isUserDragging: Boolean,
     isAtBottom: Boolean,
-    hasLeftBottom: Boolean = false,
+    suppressAutoReanchor: Boolean = false,
 ): Boolean = when {
-    // 手指一开始拖就停跟底；流式长高让 sentinel 离开视口时不能当成用户上滑。
-    isUserDragging -> false
-    // 只有真正滑离过底部再回来，才重新贴底，避免轻触后被跟底拽回去。
-    isAtBottom && (current || hasLeftBottom) -> true
+    isUserDragging -> isAtBottom
+    suppressAutoReanchor -> current
+    isAtBottom -> true
     else -> current
 }
-
-internal fun shouldPinConversationToBottom(
-    isStreaming: Boolean,
-    isScrollable: Boolean,
-): Boolean = !(isStreaming && isScrollable)
 
 internal fun resolveBottomFollowEnabled(
     isStreaming: Boolean,
     keepBottomAnchored: Boolean,
     isUserDragging: Boolean,
     isBottomSettling: Boolean = false,
-    settledCover: Boolean = false,
-): Boolean = !settledCover && (isStreaming || isBottomSettling) && keepBottomAnchored && !isUserDragging
-
-/** 尾部留白负责静态停靠；整宽裁剪只负责输出及布局追平前的防溢出。 */
-internal fun shouldClipChatTail(
-    isStreaming: Boolean,
-    isBottomSettling: Boolean,
-    keepBottomAnchored: Boolean,
-    isUserScrolling: Boolean,
-    isUserDragging: Boolean,
-    navigationActive: Boolean,
-    routeCovered: Boolean = false,
-): Boolean = (isStreaming || isBottomSettling) && keepBottomAnchored &&
-    !isUserScrolling &&
-    !isUserDragging &&
-    !navigationActive &&
-    !routeCovered
+): Boolean = (isStreaming || isBottomSettling) && keepBottomAnchored && !isUserDragging
 
 internal fun shouldRequestInitialBottom(
     isStreaming: Boolean,
@@ -2560,210 +1200,14 @@ internal fun shouldRequestInitialBottom(
     isUserDragging: Boolean,
 ): Boolean = isStreaming && keepBottomAnchored && !isUserDragging
 
-internal fun shouldSnapConversationToBottom(
-    isStreaming: Boolean,
-    keepBottomAnchored: Boolean,
-    isUserDragging: Boolean,
-    hasItems: Boolean,
-    scrollToMessageId: String? = null,
-): Boolean = hasItems &&
-    keepBottomAnchored &&
-    !isUserDragging &&
-    !isStreaming &&
-    scrollToMessageId == null
-
-internal fun resolveConversationBottomSnap(
-    bottomItemIndex: Int,
-    lastVisibleIndex: Int?,
-    lastVisibleBottom: Int?,
-    viewportEnd: Int,
-): BottomFollowDecision {
-    if (lastVisibleIndex == null || lastVisibleBottom == null || lastVisibleIndex < bottomItemIndex) {
-        return BottomFollowDecision(requestIndex = bottomItemIndex)
-    }
-    return BottomFollowDecision(scrollByPx = lastVisibleBottom - viewportEnd)
-}
-
-/**
- * Reposition an idle anchored tail only when the measured rest line changes.
- * Observe LazyColumn's applied padding/viewport, not a new bottomInset paired with
- * stale layoutInfo. Do not restart on enable/content changes: those belong to initial
- * positioning, navigation and the streaming follow controller respectively.
- */
-@Composable
-internal fun AnchorChatTailOnViewportChange(
-    scrollState: LazyListState,
-    bottomItemIndex: Int,
-    canPosition: () -> Boolean,
-) {
-    val currentBottomIndex by rememberUpdatedState(bottomItemIndex)
-    val currentCanPosition by rememberUpdatedState(canPosition)
-    LaunchedEffect(scrollState) {
-        var previousRestLine: Int? = null
-        snapshotFlow {
-            val info = scrollState.layoutInfo
-            if (info.totalItemsCount == 0 || info.viewportSize.height == 0) null
-            else info.viewportEndOffset - info.afterContentPadding
-        }
-            .distinctUntilChanged()
-            .collectLatest { restLine ->
-                if (restLine == null) return@collectLatest
-                val changed = previousRestLine != null && previousRestLine != restLine
-                previousRestLine = restLine
-                if (changed && currentCanPosition()) {
-                    snapListToBottom(scrollState, currentBottomIndex) { currentCanPosition() }
-                }
-            }
-    }
-}
-
-private suspend fun snapListToBottom(
-    scrollState: LazyListState,
-    bottomItemIndex: Int,
-    canPosition: () -> Boolean = { true },
-) {
-    repeat(3) {
-        if (!canPosition()) return
-        val layout = scrollState.layoutInfo
-        val lastVisible = layout.visibleItemsInfo.lastOrNull()
-        val viewportEnd = layout.viewportEndOffset - layout.afterContentPadding
-        val decision = resolveConversationBottomSnap(
-            bottomItemIndex = bottomItemIndex,
-            lastVisibleIndex = lastVisible?.index,
-            lastVisibleBottom = lastVisible?.let { it.offset + it.size },
-            viewportEnd = viewportEnd,
-        )
-        decision.requestIndex?.let { scrollState.scrollToItem(it) }
-        if (decision.scrollByPx != 0) {
-            scrollState.scroll { if (canPosition()) scrollBy(decision.scrollByPx.toFloat()) }
-        }
-        if (decision.requestIndex == null && decision.scrollByPx == 0) return
-        withFrameNanos { }
-    }
-}
-
-/** 尾部哨兵超出静止线的像素；哨兵不在可见项中时返回 null（尾部位置未知）。 */
-private fun LazyListState.followTailOverflow(): Int? {
-    val info = layoutInfo
-    // 列表自身在布局边界裁剪；上提超过尾部留白只会在输入框上方露出空白，最多上提到留白为止。
-    return info.measuredTailOverflow()?.coerceAtMost(info.afterContentPadding)
-}
-
-/** 未经过绘制上限截断的真实布局差额，供实际滚动消化超出缓冲的部分。 */
-private fun LazyListLayoutInfo.measuredTailOverflow(): Int? {
-    val sentinel = visibleItemsInfo.firstOrNull { it.key == ChatBottomSentinelKey }
-    val last = visibleItemsInfo.lastOrNull()
-    val bottom = resolveTailBottomPx(
-        sentinelBottom = sentinel?.let { it.offset + it.size },
-        lastVisibleIndex = last?.index,
-        lastVisibleBottom = last?.let { it.offset + it.size },
-        totalItems = totalItemsCount,
-    ) ?: return null
-    return bottom - (viewportEndOffset - afterContentPadding)
-}
-
-private data class TailBreachSample(
-    val overPx: Int?,
-    val tailBottomPx: Int?,
-    val restLinePx: Int,
-    val padPx: Int,
-    val sentinelVisible: Boolean,
-    val lastIndex: Int,
-    val totalItems: Int,
-    val lifting: Boolean,
-    val state: String,
-)
-
-/** UserInput 来源的滚动只有在手指按着时才算用户滑动；惯性走的是 SideEffect 来源，不经过这里。 */
-internal fun isUserScrollGesture(pointerDown: Boolean): Boolean = pointerDown
-
-/** 只保留类名和方法名（与主线程消息日志同一套截断规则），跳过本文件与协程、Compose 调度的帧。 */
-internal fun compactStack(frames: Array<StackTraceElement>, limit: Int = 14): String =
-    frames.asSequence()
-        .drop(1)
-        .map { "${toggleProbeClassName(it.className)}.${toggleProbeClassName(it.methodName)}" }
-        .filterNot { it.startsWith("kotlin.") || it.startsWith("java.") }
-        .take(limit)
-        .joinToString("<")
-
-/** 尾部画出来的位置越过静止线多少像素（上提之后）；尾部位置未知时为 null。 */
-internal fun resolveTailDrawnOverflow(tailBottomPx: Int?, restLinePx: Int, liftPx: Int): Int? =
-    tailBottomPx?.let { it - restLinePx - liftPx }
-
-/**
- * 尾部下沿。哨兵是最后一项；它被挤出可视区、但紧挨着它的最后一段内容仍可见时，
- * 用那一段的下沿代替（相差哨兵自身 1dp）。两者都看不到时返回 null。
- */
-internal fun resolveTailBottomPx(
-    sentinelBottom: Int?,
-    lastVisibleIndex: Int?,
-    lastVisibleBottom: Int?,
-    totalItems: Int,
-): Int? = when {
-    sentinelBottom != null -> sentinelBottom
-    lastVisibleIndex != null && lastVisibleBottom != null && totalItems >= 2 &&
-        lastVisibleIndex == totalItems - 2 -> lastVisibleBottom
-    else -> null
-}
-
-internal data class FollowTailLag(val liftPx: Float, val unknown: Boolean = false) {
-    companion object {
-        val None = FollowTailLag(0f)
-        val Unknown = FollowTailLag(0f, unknown = true)
-    }
-}
-
-/**
- * 跟底输出时，跟底滚动尚未追上的尾部超出量改为绘制上提，让尾部停在静止线上。
- * 不跟底（用户拖动、浏览历史、输出结束）时不做任何处理；尾部不可见时交给静止线裁剪兜底。
- */
-/**
- * 点开一行时，它下面的内容会不会停在屏幕原处。跟底时上提让尾部停在静止线；
- * 内容不满一屏且贴底排列时，列表变高也是往上长。两种情况下展开都该从下沿长出。
- */
-internal fun resolveExpansionHoldsBottom(
-    following: Boolean,
-    arrangedToBottom: Boolean,
-    listScrollable: Boolean,
-): Boolean = following || (arrangedToBottom && !listScrollable)
-
-// Preserve the measured recovery budget; it is NOT an entrance admission window.
-private const val WORK_EXPANSION_RECOVERY_NANOS = 680_000_000L
-// 180ms 展开动画加淡入，再留一点给最后一帧布局。
-private const val EXPANSION_BOTTOM_SNAP_NANOS = 400_000_000L
-
-internal fun resolveFollowTailLag(following: Boolean, tailOverflowPx: Int?): FollowTailLag = when {
-    !following -> FollowTailLag.None
-    tailOverflowPx == null -> FollowTailLag.Unknown
-    tailOverflowPx <= 0 -> FollowTailLag.None
-    else -> FollowTailLag(tailOverflowPx.toFloat())
-}
-
-/** 测量暂时缺失时保留上一帧上提，避免卡片底边在输入框附近来回跳。 */
-internal fun nextHeldTailLift(shouldLift: Boolean, overflowPx: Int?, heldPx: Int, pointerDown: Boolean = false): Int = when {
-    !shouldLift -> 0
-    pointerDown -> heldPx.coerceAtLeast(0)
-    overflowPx == null -> heldPx.coerceAtLeast(0)
-    else -> overflowPx.coerceAtLeast(0)
-}
-
-private fun LazyListState.isConversationAtBottom(): Boolean {
-    val info = layoutInfo
-    val sentinel = info.visibleItemsInfo.firstOrNull { it.key == ChatBottomSentinelKey }
-    return if (sentinel == null) {
-        !canScrollForward
-    } else {
-        val viewportEnd = info.viewportEndOffset - info.afterContentPadding
-        sentinel.offset + sentinel.size <= viewportEnd + 8
-    }
-}
-
 @Composable
 private fun EmptyChatState(
     showSuggestions: Boolean,
     onSuggestionClick: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val character = LocalRoleplayChat.current
+    val isCharacterConversation = character != null
     val suggestions = listOf(
         SuggestionItem(
             title = stringResource(R.string.ui_analyze_current_screen_ebf08f),
@@ -2788,85 +1232,88 @@ private fun EmptyChatState(
     )
 
     Box(modifier = modifier.fillMaxSize()) {
-        // Q4-A：借鉴旧版空态的中间布局（居中 Hero：主标题 + 副标题 + Try it 胶囊），
-        // 仅对齐布局形态，不引入旧版 Siri 主题体系，视觉仍沿用现版表面样式。
         Column(
             modifier = Modifier
                 .align(Alignment.Center)
-                .padding(bottom = 120.dp),
+                .padding(bottom = 56.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Text(
-                text = stringResource(R.string.ui_how_can_i_help_you_e75391),
-                style = MiuixTheme.textStyles.title2,
-                color = MiuixTheme.colorScheme.onSurface,
-            )
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            Text(
-                text = stringResource(R.string.siri_hero_subtitle),
-                style = MiuixTheme.textStyles.body2,
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.widthIn(max = 320.dp),
-            )
-
-            Spacer(modifier = Modifier.height(18.dp))
-
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(18.dp))
-                    .background(MiuixTheme.colorScheme.surface.copy(alpha = 0.72f))
-                    .border(
-                        width = 0.5.dp,
-                        color = MiuixTheme.colorScheme.outline.copy(alpha = 0.5f),
-                        shape = RoundedCornerShape(18.dp),
-                    )
-                    .clickable { onSuggestionClick(suggestions.first().prompt) }
-                    .padding(horizontal = 20.dp, vertical = 8.dp),
-            ) {
+            if (character != null) {
+                val isDark = MiuixTheme.colorScheme.surface.luminance() < 0.5f
+                CharacterAvatar(
+                    name = character.characterName,
+                    avatarPath = character.avatarPath,
+                    size = 68.dp,
+                    shape = CircleShape,
+                    borderWidth = 0.5.dp,
+                    borderColor = if (isDark) {
+                        Color.White.copy(alpha = 0.14f)
+                    } else {
+                        Color.Black.copy(alpha = 0.08f)
+                    },
+                )
+                Spacer(modifier = Modifier.height(14.dp))
                 Text(
-                    text = stringResource(R.string.siri_hero_try_it),
-                    style = MiuixTheme.textStyles.body1,
+                    text = character.characterName,
+                    style = MiuixTheme.textStyles.title2.copy(
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        letterSpacing = (-0.2).sp,
+                    ),
                     color = MiuixTheme.colorScheme.onSurface,
                 )
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = stringResource(R.string.chat_character_story_start),
+                    style = MiuixTheme.textStyles.footnote1,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                )
+            } else {
+                Text(
+                    text = stringResource(R.string.ui_how_can_i_help_you_e75391),
+                    style = MiuixTheme.textStyles.title2.copy(
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        letterSpacing = (-0.2).sp,
+                    ),
+                    color = MiuixTheme.colorScheme.onSurface,
+                )
+                Spacer(modifier = Modifier.height(26.dp))
             }
-        }
 
-        AnimatedVisibility(
-            visible = showSuggestions,
-            modifier = Modifier.align(Alignment.BottomCenter),
-            enter = fadeIn(
-                animationSpec = tween(durationMillis = 220)
-            ) + slideInVertically(
-                animationSpec = spring(
-                    dampingRatio = Spring.DampingRatioNoBouncy,
-                    stiffness = Spring.StiffnessMediumLow,
+            AnimatedVisibility(
+                visible = showSuggestions && !isCharacterConversation,
+                enter = fadeIn(
+                    animationSpec = tween(durationMillis = 220)
+                ) + slideInVertically(
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioNoBouncy,
+                        stiffness = Spring.StiffnessMediumLow,
+                    ),
+                    initialOffsetY = { it / 3 },
                 ),
-                initialOffsetY = { it / 3 },
-            ),
-            exit = fadeOut(
-                animationSpec = tween(durationMillis = 130)
-            ) + slideOutVertically(
-                animationSpec = tween(durationMillis = 180),
-                targetOffsetY = { it / 4 },
-            ),
-        ) {
-            // Q4-A：底部建议改为横排滚动 chips（宽 150dp），对齐旧版布局。
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 14.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                exit = fadeOut(
+                    animationSpec = tween(durationMillis = 130)
+                ) + slideOutVertically(
+                    animationSpec = tween(durationMillis = 180),
+                    targetOffsetY = { it / 4 },
+                ),
             ) {
-                suggestions.forEach { item ->
-                    SuggestionCard(
-                        item = item,
-                        onClick = { onSuggestionClick(item.prompt) },
-                        modifier = Modifier.width(150.dp),
-                    )
+                Column(
+                    modifier = Modifier.padding(horizontal = 20.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    suggestions.chunked(2).forEach { rowItems ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            rowItems.forEach { item ->
+                                SuggestionCard(
+                                    item = item,
+                                    onClick = { onSuggestionClick(item.prompt) },
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -2879,31 +1326,61 @@ private fun SuggestionCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Column(
-        modifier = modifier
-            .clip(RoundedCornerShape(12.dp))
-            .background(MiuixTheme.colorScheme.surface)
-            .border(
-                width = 0.5.dp,
-                color = MiuixTheme.colorScheme.outline.copy(alpha = 0.5f),
-                shape = RoundedCornerShape(12.dp),
+    val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
+    val isDark = MiuixTheme.colorScheme.surface.luminance() < 0.5f
+    val ink = MiuixTheme.colorScheme.onSurface.copy(alpha = 1f)
+    val fill = ink.copy(alpha = if (isDark) 0.055f else 0.028f)
+    val border = ink.copy(alpha = if (isDark) 0.10f else 0.065f)
+    val interactionSource = remember { MutableInteractionSource() }
+    val shapeModifier = if (isCoui) {
+        val shape = CouiShape(15.dp, 2.2f)
+        Modifier
+            .couiButtonFeedback(isDark, interactionSource, enabled = true)
+            .clip(shape)
+            .background(fill, shape)
+            .border(0.5.dp, border, shape)
+            .clickable(interactionSource = interactionSource, indication = null, onClick = onClick)
+    } else {
+        Modifier
+            .glassPress(interactionSource)
+            .squircleSurface(color = fill, cornerRadius = 15.dp)
+            .squircleBorder(width = 0.5.dp, color = border, cornerRadius = 15.dp)
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick,
             )
-            .clickable(onClick = onClick)
-            .padding(horizontal = 13.dp, vertical = 12.dp),
+    }
+    Row(
+        modifier = modifier
+            .then(shapeModifier)
+            .padding(horizontal = 12.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        // Q4-A：借鉴旧版两行文建议 chip（标题行 + 内容行）。
+        Box(
+            modifier = Modifier
+                .size(28.dp)
+                .clip(CircleShape)
+                .background(MiuixTheme.colorScheme.primary.copy(alpha = if (isDark) 0.16f else 0.10f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = item.icon,
+                contentDescription = null,
+                modifier = Modifier.size(15.dp),
+                tint = MiuixTheme.colorScheme.primary,
+            )
+        }
+        Spacer(modifier = Modifier.width(10.dp))
         Text(
             text = item.title,
-            style = MiuixTheme.textStyles.body2,
-            color = MiuixTheme.colorScheme.onSurface,
+            style = MiuixTheme.textStyles.body2.copy(
+                fontSize = 13.5.sp,
+                fontWeight = FontWeight.Medium,
+            ),
+            color = MiuixTheme.colorScheme.onSurface.copy(alpha = 0.88f),
             maxLines = 1,
-        )
-        Spacer(modifier = Modifier.height(3.dp))
-        Text(
-            text = item.prompt,
-            style = MiuixTheme.textStyles.footnote1,
-            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }
@@ -2913,33 +1390,3 @@ private data class SuggestionItem(
     val icon: ImageVector,
     val prompt: String,
 )
-
-internal fun shouldStopOrphanSpeechPlayback(
-    owner: String?,
-    messageEditActive: Boolean,
-    visibleCompletedAgentIds: Set<String>,
-): Boolean {
-    if (owner.isNullOrBlank()) return false
-    // 试听、语音模式和 Agent 朗读工具都不绑定某条回复，不能按“回复不在可见列表里”收掉。
-    if (owner == "tts-preview" || owner == io.github.mangi.eta.agent.voice.tts.AGENT_SPEECH_OWNER || owner.startsWith(VOICE_MODE_SPEECH_OWNER_PREFIX)) return false
-    return messageEditActive || owner !in visibleCompletedAgentIds
-}
-
-/** 最后一条消息静止时与输入框上沿的间距；跟底输出时正文也被裁在这条线上。 */
-private val ConversationComposerGap = 14.dp
-
-internal fun composerRestLinePx(heightPx: Float, occlusionPx: Float): Float =
-    (heightPx - occlusionPx).coerceAtLeast(0f)
-
-/** 把列表裁在输入框上沿加间隙处，子级 graphicsLayer 也遵守这条边界。 */
-internal class ComposerRestClip(private val occlusion: Dp) : Shape {
-    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
-        val bottom = with(density) { composerRestLinePx(size.height, occlusion.toPx()) }
-        return Outline.Rectangle(Rect(0f, 0f, size.width, bottom))
-    }
-
-    override fun equals(other: Any?): Boolean = other is ComposerRestClip && other.occlusion == occlusion
-
-    override fun hashCode(): Int = occlusion.hashCode()
-}
-

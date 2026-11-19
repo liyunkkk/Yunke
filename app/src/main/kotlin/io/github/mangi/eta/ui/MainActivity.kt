@@ -1,10 +1,8 @@
 package io.github.mangi.eta.ui
 
+import android.app.UiModeManager
 import android.content.Intent
-import android.os.Parcelable
-import android.os.Trace
 import android.os.Bundle
-import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
@@ -16,38 +14,40 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
+import io.github.mangi.eta.agent.runtime.AgentRuntimeService
 import io.github.mangi.eta.agent.voice.EtaAssistantOverlayService
+import io.github.mangi.eta.core.AndroidAgentLogger
+import io.github.mangi.eta.data.model.AppearanceThemeMode
 import io.github.mangi.eta.data.repository.AppearanceSettingsRepository
 import io.github.mangi.eta.ui.app.AgentAppRoot
 import io.github.mangi.eta.ui.app.AgentAppTheme
 import io.github.mangi.eta.ui.app.PredictiveBackController
+import io.github.mangi.eta.ui.app.installStartupSplash
+import java.util.Collections
+import java.util.IdentityHashMap
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
-    private var assistantConversationKey by mutableStateOf<String?>(null)
-    private var inboundShareUris by mutableStateOf<List<String>>(emptyList())
+    private var launchRequests by mutableStateOf(MainActivityLaunchRequests())
     private var appliedPredictiveBackEnabled = true
-    private var refreshRateWindowResumed = false
-    private var previousPreferredRefreshRate: Float? = null
-    private var requestedPreferredRefreshRate: Float? = null
-    private val refreshRateRequest = Runnable { applyPreferredRefreshRate() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        AndroidAgentLogger.info("Agent UI created: task=$taskId restored=${savedInstanceState != null}")
+        var contentReady = false
+        installStartupSplash { contentReady }
         enableEdgeToEdge()
-        @Suppress("DEPRECATION")
-        window.setSoftInputMode(
-            WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or
-                WindowManager.LayoutParams.SOFT_INPUT_STATE_UNCHANGED,
-        )
-        updateAssistantHandoff(intent)
-        consumeShareIntent(intent)
+        launchRequests = MainActivityLaunchRequests.restore(savedInstanceState, intent)
         lifecycleScope.launch {
             val initialAppearance = AppearanceSettingsRepository.settings()
             appliedPredictiveBackEnabled = initialAppearance.predictiveBackEnabled
             setContent {
                 val appearance by AppearanceSettingsRepository.settingsFlow()
                     .collectAsState(initial = initialAppearance)
+
+                LaunchedEffect(appearance.themeMode) {
+                    updateApplicationNightMode(appearance.themeMode)
+                }
 
                 LaunchedEffect(appearance.predictiveBackEnabled) {
                     val enabled = appearance.predictiveBackEnabled
@@ -62,135 +62,94 @@ class MainActivity : ComponentActivity() {
                 AgentAppTheme(
                     appearance = appearance,
                     applyInterfaceScale = true,
+                    provideGlassHost = true,
                     onResolvedDarkModeChange = ::updateSystemBars,
                 ) {
                     AgentAppRoot(
-                        assistantConversationKey = assistantConversationKey,
-                        inboundShareUris = inboundShareUris,
+                        assistantConversationKey = launchRequests.assistantConversationKey,
+                        requestedConversationId = launchRequests.conversationId,
+                        onRequestedConversationOpened = {
+                            launchRequests = launchRequests.copy(conversationId = null)
+                            intent?.action = null
+                        },
+                        requestedArchivedConversation = launchRequests.archivedConversation,
+                        onArchivedConversationOpened = {
+                            launchRequests = launchRequests.copy(archivedConversation = null)
+                            intent?.action = null
+                        },
+                        sharedContent = launchRequests.sharedContent,
+                        onSharedContentAccepted = {
+                            launchRequests = launchRequests.copy(sharedContent = null)
+                            intent?.action = null
+                        },
+                        openSpeechSettings = launchRequests.speechSettings,
+                        openTerminal = launchRequests.terminal,
+                        onTerminalOpened = {
+                            launchRequests = launchRequests.copy(terminal = false)
+                            intent?.action = null
+                        },
+                        onSpeechSettingsOpened = {
+                            launchRequests = launchRequests.copy(speechSettings = false)
+                            intent?.action = null
+                        },
                         onAssistantConversationOpened = { opened ->
-                            assistantConversationKey = null
+                            launchRequests = launchRequests.copy(assistantConversationKey = null)
+                            intent?.action = null
                             if (opened) {
                                 EtaAssistantOverlayService.notifyHandoffReady(this@MainActivity)
                             }
                         },
-                        onInboundShareConsumed = { inboundShareUris = emptyList() },
                     )
                 }
             }
+            contentReady = true
         }
     }
 
-    override fun onResume() {
-        super.onResume()
-        refreshRateWindowResumed = true
-        applyPreferredRefreshRate()
-        // Retry when the decor is attached; never leave a request queued after pause.
-        window.decorView.post(refreshRateRequest)
-        isForeground = true
+    override fun onStart() {
+        super.onStart()
+        startedInstances.add(this)
+        isInForeground = true
+        AgentRuntimeService.onEtaUiVisibilityChanged()
     }
 
-    override fun onPause() {
-        isForeground = false
-        refreshRateWindowResumed = false
-        window.decorView.removeCallbacks(refreshRateRequest)
-        val previous = previousPreferredRefreshRate
-        if (previous != null && window.attributes.preferredRefreshRate == requestedPreferredRefreshRate) {
-            val attributes = window.attributes
-            attributes.preferredRefreshRate = previous
-            window.attributes = attributes
-        }
-        previousPreferredRefreshRate = null
-        requestedPreferredRefreshRate = null
-        super.onPause()
+    override fun onStop() {
+        startedInstances.remove(this)
+        isInForeground = startedInstances.isNotEmpty() || isChangingConfigurations
+        AgentRuntimeService.onEtaUiVisibilityChanged()
+        super.onStop()
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        val fromLauncher = intent.action == Intent.ACTION_MAIN && intent.hasCategory(Intent.CATEGORY_LAUNCHER)
+        AndroidAgentLogger.info("Agent UI new intent: task=$taskId launcher=$fromLauncher")
         setIntent(intent)
-        updateAssistantHandoff(intent)
-        consumeShareIntent(intent)
+        launchRequests = launchRequests.accept(intent)
     }
 
-    private fun applyPreferredRefreshRate() {
-        if (!refreshRateWindowResumed || isFinishing || isDestroyed) return
-        val preferredRefreshRate = highestSupportedRefreshRate(
-            window.decorView.display?.supportedModes
-                ?.map { mode -> mode.refreshRate }
-                .orEmpty(),
+    override fun onDestroy() {
+        startedInstances.remove(this)
+        isInForeground = startedInstances.isNotEmpty() || isChangingConfigurations
+        AndroidAgentLogger.info(
+            "Agent UI destroyed: task=$taskId changing_configuration=$isChangingConfigurations finishing=$isFinishing",
         )
-        if (preferredRefreshRate <= 0f) return
-
-        val attributes = window.attributes
-        if (attributes.preferredRefreshRate == preferredRefreshRate) return
-        if (previousPreferredRefreshRate == null) {
-            previousPreferredRefreshRate = attributes.preferredRefreshRate
-        }
-        requestedPreferredRefreshRate = preferredRefreshRate
-        Trace.beginSection("Eta.refresh.request hz=$preferredRefreshRate")
-        try {
-            attributes.preferredRefreshRate = preferredRefreshRate
-            window.attributes = attributes
-        } finally {
-            Trace.endSection()
-        }
+        super.onDestroy()
     }
 
-    private fun consumeShareIntent(intent: Intent?) {
-        val uris = inboundUris(intent)
-        if (uris.isEmpty()) return
-        uris.forEach { uri ->
-            val flags = intent?.flags ?: 0
-            if (flags and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0) {
-                runCatching {
-                    contentResolver.takePersistableUriPermission(
-                        uri,
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION,
-                    )
-                }
-            }
-        }
-        inboundShareUris = uris.map { it.toString() }
-        intent?.removeExtra(Intent.EXTRA_STREAM)
-        intent?.data = null
+    override fun onSaveInstanceState(outState: Bundle) {
+        launchRequests.saveTo(outState)
+        super.onSaveInstanceState(outState)
     }
 
-    private fun inboundUris(intent: Intent?): List<android.net.Uri> {
-        if (intent == null) return emptyList()
-        val fromStream = when (intent.action) {
-            Intent.ACTION_SEND -> listOfNotNull(intent.shareUriExtra())
-            Intent.ACTION_SEND_MULTIPLE -> intent.shareUriListExtra()
-            else -> emptyList()
+    private fun updateApplicationNightMode(themeMode: AppearanceThemeMode) {
+        val mode = when (themeMode) {
+            AppearanceThemeMode.LIGHT -> UiModeManager.MODE_NIGHT_NO
+            AppearanceThemeMode.DARK -> UiModeManager.MODE_NIGHT_YES
+            // 应用级 AUTO 清除夜间模式覆盖，恢复跟随系统。
+            AppearanceThemeMode.SYSTEM -> UiModeManager.MODE_NIGHT_AUTO
         }
-        val fromData = intent.data?.takeIf {
-            intent.action == Intent.ACTION_VIEW || intent.action == Intent.ACTION_SEND
-        }
-        return (fromStream + listOfNotNull(fromData)).distinct()
-    }
-
-    private fun Intent.shareUriExtra(): android.net.Uri? {
-        return if (android.os.Build.VERSION.SDK_INT >= 33) {
-            getParcelableExtra(Intent.EXTRA_STREAM, android.net.Uri::class.java)
-        } else {
-            @Suppress("DEPRECATION")
-            getParcelableExtra(Intent.EXTRA_STREAM) as? android.net.Uri
-        }
-    }
-
-    @Suppress("DEPRECATION")
-    private fun Intent.shareUriListExtra(): List<android.net.Uri> {
-        val values: ArrayList<out Parcelable>? = if (android.os.Build.VERSION.SDK_INT >= 33) {
-            getParcelableArrayListExtra(Intent.EXTRA_STREAM, android.net.Uri::class.java)
-        } else {
-            getParcelableArrayListExtra<Parcelable>(Intent.EXTRA_STREAM)
-        }
-        return values.orEmpty().mapNotNull { it as? android.net.Uri }
-    }
-
-    private fun updateAssistantHandoff(intent: Intent?) {
-        if (intent?.action != EtaAssistantOverlayService.ACTION_OPEN_CONVERSATION) return
-        assistantConversationKey = intent.getStringExtra(
-            EtaAssistantOverlayService.EXTRA_CONVERSATION_KEY,
-        )?.takeIf(String::isNotBlank)
+        getSystemService(UiModeManager::class.java).setApplicationNightMode(mode)
     }
 
     private fun updateSystemBars(isDark: Boolean) {
@@ -215,7 +174,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-
     @Suppress("DEPRECATION")
     private fun recreateWithoutTransition() {
         overridePendingTransition(0, 0)
@@ -224,8 +182,19 @@ class MainActivity : ComponentActivity() {
     }
 
     companion object {
+        private val startedInstances = Collections.newSetFromMap(IdentityHashMap<MainActivity, Boolean>())
+
         @Volatile
-        var isForeground = false
+        internal var isInForeground: Boolean = false
             private set
+
+        const val ACTION_OPEN_TERMINAL = "io.github.mangi.eta.action.OPEN_TERMINAL"
+        /** 运行浮层的结果卡片回到本体：App 发起的 run 带会话 ID，直接打开该会话。 */
+        const val ACTION_OPEN_CONVERSATION_ID = "io.github.mangi.eta.action.OPEN_CONVERSATION_ID"
+        const val EXTRA_CONVERSATION_ID = "io.github.mangi.eta.extra.CONVERSATION_ID"
+        /** 系统助手等外部入口发起的 run 按来源与会话键归档，回到本体时打开对应的归档会话。 */
+        const val ACTION_OPEN_ARCHIVED_CONVERSATION = "io.github.mangi.eta.action.OPEN_ARCHIVED_CONVERSATION"
+        const val EXTRA_HANDOFF_SOURCE = "io.github.mangi.eta.extra.HANDOFF_SOURCE"
+        const val EXTRA_CONVERSATION_KEY = "io.github.mangi.eta.extra.CONVERSATION_KEY"
     }
 }

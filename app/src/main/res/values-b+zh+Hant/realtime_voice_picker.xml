@@ -1,8 +1,0 @@
-<resources>
-    <string name="realtime_choose_voice">選擇即時通話音色</string>
-    <string name="realtime_refresh_voices">重新整理官方音色清單</string>
-    <string name="realtime_refreshing">正在更新…</string>
-    <string name="realtime_catalog_builtin">內建即時音色清單，與朗讀獨立</string>
-    <string name="realtime_catalog_updated">已從官方公開清單更新內建支援的即時音色</string>
-    <string name="realtime_catalog_failed">更新失敗，保留原清單</string>
-</resources>

@@ -1,8 +1,5 @@
 package io.github.mangi.eta.agent.model
 
-import io.github.mangi.eta.agent.model.oauth.OpenAiCodexOAuth
-import io.github.mangi.eta.data.model.SessionGatewayRule
-import io.github.mangi.eta.data.model.ReasoningEffort
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -11,21 +8,20 @@ internal object ResponsesRequestBuilder {
         config: AgentModelClient.ModelConfig,
         messages: JSONArray,
         tools: JSONArray,
-        sessionId: String = "",
-        singleToolCall: Boolean = false,
-        localOnlyRecovery: Boolean = false,
+        purpose: ProviderRequestPurpose = ProviderRequestPurpose.CHAT,
     ): JSONObject {
-        val input = buildInput(messages, config, localOnlyRecovery)
-        val responseTools = buildTools(tools, config.hostedWebSearchEnabled)
+        val input = buildInput(messages)
+        val responseTools = buildTools(tools, config.usesHostedWebSearch)
         val instructions = OpenAiRequestMessages.responsesInstructions(messages)
             .ifBlank { config.systemPrompt }
         val request = JSONObject()
         mergeExtraBody(request, config.extraBodyJson)
         RequestBodyMerge.mergeCustomBody(request, config.customBody)
-        request.remove("eta_media_reasoning")
-        request.remove(ImageRequestParameters.CONFIG_KEY) // Local image settings never enter text protocols.
 
         // 这些字段决定协议正确性、隐私边界和 Eta 本轮行为，必须由运行时最终写入。
+        if (purpose == ProviderRequestPurpose.COMPACTION) {
+            listOf("messages", "system", "system_instruction").forEach(request::remove)
+        }
         request.put("model", config.model)
         request.put("instructions", instructions)
         request.put("input", input)
@@ -33,7 +29,7 @@ internal object ResponsesRequestBuilder {
         request.put("store", false)
         if (responseTools.length() > 0) {
             request.put("tools", responseTools)
-            request.put("tool_choice", "auto")
+            request.put("tool_choice", if (purpose == ProviderRequestPurpose.COMPACTION) "none" else "auto")
         } else {
             request.remove("tools")
             request.remove("tool_choice")
@@ -41,78 +37,16 @@ internal object ResponsesRequestBuilder {
         request.remove("previous_response_id")
         request.remove("reasoning")
         ProviderReasoning.applyResponsesRequest(request, config)
-        config.summaryOutputLimit?.let { request.put("max_output_tokens", it) }
-        if (OpenAiCodexOAuth.isCodexEndpoint(config.baseUrl)) {
-            request.put("include", JSONArray().put("reasoning.encrypted_content"))
-            request.remove("max_output_tokens")
-            val effort = when (config.effectiveReasoningEffort) {
-                ReasoningEffort.OFF, ReasoningEffort.DEFAULT -> "medium"
-                ReasoningEffort.MINIMAL -> "low"
-                ReasoningEffort.MAX -> "high"
-                else -> config.effectiveReasoningEffort.wireValue
-            }
-            request.put(
-                "reasoning",
-                JSONObject()
-                    .put("effort", effort)
-                    .put("summary", "auto"),
-            )
-            if (responseTools.length() > 0 && !request.has("parallel_tool_calls")) {
-                request.put("parallel_tool_calls", true)
-            }
-        }
-        // Apply after custom-body and Codex defaults: a correction must never request parallel calls.
-        if (singleToolCall && responseTools.length() > 0) request.put("parallel_tool_calls", false)
-        // 网关规则命中时写入会话身份；官方 Codex 端点始终带上，避免路径正则漏掉。
-        if (sessionId.isNotBlank()) {
-            val url = ProviderUrls.openAiResponsesUrl(config.baseUrl)
-            val rule = SessionGatewayRule(
-                modelPattern = config.sessionModelPattern,
-                pathPattern = config.sessionPathPattern,
-                keyField = config.sessionKeyField,
-            )
-            if (rule.matches(config.model, url) || OpenAiCodexOAuth.isCodexEndpoint(config.baseUrl)) {
-                request.put(rule.safeKeyField(), sessionId)
-            }
-        }
-        GptServiceTier.apply(request, config)
+        SubscriptionResponsesRequest.configure(request, config)
         return request
     }
 
-    private fun buildInput(messages: JSONArray, config: AgentModelClient.ModelConfig, localOnlyRecovery: Boolean): JSONArray = JSONArray().also { input ->
-        val legacyCalls = mutableSetOf<String>()
-        val needsReasoningReplay = config.model.contains("deepseek", ignoreCase = true) &&
-            config.effectiveReasoningEffort != ReasoningEffort.OFF
+    private fun buildInput(messages: JSONArray): JSONArray = JSONArray().also { input ->
         for (index in 0 until messages.length()) {
             val message = messages.optJSONObject(index) ?: continue
-            (if (localOnlyRecovery) null else ResponsesEphemeralState.outputItems(message))?.let { items ->
+            ResponsesEphemeralState.outputItems(message)?.let { items ->
                 for (itemIndex in 0 until items.length()) input.put(deepCopy(items.opt(itemIndex)))
                 continue
-            }
-            val reasoning = if (localOnlyRecovery) null else ResponsesReasoningState.items(message, config)
-            val calls = message.optJSONArray("tool_calls")
-            // Old checkpoints cannot recreate the provider's original reasoning. Keep their
-            // evidence as quoted history, not a fabricated valid thinking/tool-call exchange.
-            if (needsReasoningReplay && message.optString("role") == "assistant" &&
-                calls != null && calls.length() > 0 && reasoning == null
-            ) {
-                for (i in 0 until calls.length()) {
-                    calls.optJSONObject(i)?.optString("id")?.let(legacyCalls::add)
-                }
-                input.put(JSONObject().put("type", "message").put("role", "assistant").put(
-                    "content", message.optString("content").takeUnless { it == "null" }.orEmpty() +
-                        "\n[历史工具调用记录：原始推理数据不可恢复，仅供参考，不代表新的执行请求，不要自动重放]\n" + calls.toString(),
-                ))
-                continue
-            }
-            if (message.optString("role") == "tool" && message.optString("tool_call_id") in legacyCalls) {
-                input.put(JSONObject().put("type", "message").put("role", "assistant").put(
-                    "content", "[历史工具结果 " + message.optString("tool_call_id") + "]\n" + message.optString("content"),
-                ))
-                continue
-            }
-            if (message.optString("role") == "assistant" && reasoning != null) {
-                for (i in 0 until reasoning.length()) input.put(deepCopy(reasoning.getJSONObject(i)))
             }
             when (message.optString("role")) {
                 "tool" -> input.put(
@@ -174,22 +108,16 @@ internal object ResponsesRequestBuilder {
                             content.put(JSONObject().put("type", "input_image").put("image_url", url))
                         }
                     }
-                    "video_url", "input_video" -> {
-                        val url = part.optJSONObject("video_url")?.optString("url")
-                            ?: part.optString("video_url")
-                        if (url.isNotBlank()) {
-                            content.put(JSONObject().put("type", "input_video").put("video_url", url))
-                        }
-                    }
                 }
             }
         }
     }
 
-    internal fun buildTools(tools: JSONArray, hostedWebSearchEnabled: Boolean): JSONArray =
+    private fun buildTools(tools: JSONArray, hostedWebSearchEnabled: Boolean): JSONArray =
         JSONArray().also { result ->
             for (index in 0 until tools.length()) {
                 val function = tools.optJSONObject(index)?.optJSONObject("function") ?: continue
+                if (hostedWebSearchEnabled && function.optString("name") == "web_search") continue
                 result.put(
                     JSONObject()
                         .put("type", "function")

@@ -2,13 +2,86 @@ package io.github.mangi.eta.agent.runtime
 
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.data.model.ReasoningEffort
+import io.github.mangi.eta.data.model.ProviderAuthModes
+import io.github.mangi.eta.data.model.ModelReasoningCapabilities
+import io.github.mangi.eta.data.model.CustomHeader
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class AgentRuntimeRequestConfigResolverTest {
+    @Test
+    fun onlyEtaProcessesWithSupportedEntryCanDeclareSearchPresentation() {
+        val sources = listOf(AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE,
+            AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE, "external", "unknown")
+        for (source in sources) for (isEta in listOf(false, true)) {
+            val original = request(source, modelConfig("fixture", ReasoningEffort.DEFAULT)
+                .copy(supportsSearchSuggestions = true))
+            val constrained = AgentRuntimeRequestConfigResolver.constrainPresentation(original, isEta)
+            assertEquals(isEta && source in sources.take(2), constrained.config.supportsSearchSuggestions)
+        }
+    }
+
+    @Test
+    fun voiceConfigResolutionPreservesOnlyTheEntryPresentationDeclaration() {
+        val local = modelConfig("fixture", ReasoningEffort.DEFAULT)
+        val original = request(AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE,
+            local.copy(supportsSearchSuggestions = true))
+        assertTrue(AgentRuntimeRequestConfigResolver.applyRuntimeConfig(original, local)
+            .config.supportsSearchSuggestions)
+        assertFalse(AgentRuntimeRequestConfigResolver.applyRuntimeConfig(
+            original.copy(config = local), local.copy(supportsSearchSuggestions = true),
+        ).config.supportsSearchSuggestions)
+    }
+
+    @Test
+    fun oauthRequestUsesLocalConnectionAndPreservesSupportedTransientChoices() {
+        val local = modelConfig("", ReasoningEffort.DEFAULT).copy(
+            providerId = "account-provider",
+            authMode = ProviderAuthModes.OPENAI_CHATGPT,
+            baseUrl = "https://api.openai.com/v1",
+            customHeaders = listOf(CustomHeader("x-local", "fixture")),
+            reasoningCapabilities = ModelReasoningCapabilities(
+                supportedEfforts = listOf(ReasoningEffort.LOW, ReasoningEffort.HIGH), canDisable = true,
+            ),
+        )
+        val entry = local.copy(
+            apiKey = "fixture-untrusted", baseUrl = "https://untrusted.invalid",
+            customHeaders = listOf(CustomHeader("x-untrusted", "fixture")),
+            reasoningEffort = ReasoningEffort.HIGH,
+            terminalTools = true, deviceSensitiveReadTools = true,
+            autoCompactionEnabled = false,
+        )
+        val request = request("external", entry)
+        assertTrue(AgentRuntimeRequestConfigResolver.requiresRuntimeConfig(request))
+        val result = AgentRuntimeRequestConfigResolver.applyRuntimeConfig(request, local).config
+
+        assertEquals(local.baseUrl, result.baseUrl)
+        assertEquals("", result.apiKey)
+        assertEquals(local.customHeaders, result.customHeaders)
+        assertEquals(ReasoningEffort.HIGH, result.reasoningEffort)
+        assertTrue(result.terminalTools)
+        assertTrue(result.deviceSensitiveReadTools)
+        assertFalse(result.autoCompactionEnabled)
+    }
+
+    @Test
+    fun oauthRequestCannotChangeLocalAccountOrInjectUnsupportedReasoning() {
+        val local = modelConfig("", ReasoningEffort.DEFAULT).copy(
+            providerId = "account-provider", authMode = ProviderAuthModes.XAI_GROK,
+            reasoningCapabilities = ModelReasoningCapabilities(supportedEfforts = listOf(ReasoningEffort.LOW)),
+        )
+        val request = request("external", local.copy(reasoningEffort = ReasoningEffort.MAX))
+        assertEquals(ReasoningEffort.LOW,
+            AgentRuntimeRequestConfigResolver.applyRuntimeConfig(request, local).config.reasoningEffort)
+        assertThrows(IllegalArgumentException::class.java) {
+            AgentRuntimeRequestConfigResolver.applyRuntimeConfig(request, local.copy(providerId = "other-provider"))
+        }
+    }
+
     @Test
     fun etaVoiceRequestUsesRuntimeConfigAndUpdatesArchiveMetadata() {
         val runtimeConfig = modelConfig("runtime-key", ReasoningEffort.HIGH)
@@ -21,16 +94,38 @@ class AgentRuntimeRequestConfigResolverTest {
         val payload = AgentExternalArchivePayload.from(requireNotNull(resolved.handoff).payload)
 
         assertTrue(AgentRuntimeRequestConfigResolver.requiresRuntimeConfig(request))
-        assertSame(runtimeConfig, resolved.config)
+        assertEquals("runtime-key", resolved.config.apiKey)
         requireNotNull(payload)
         assertTrue(requireNotNull(payload.thinkingEnabled))
         assertEquals(ReasoningEffort.HIGH, payload.reasoningEffort)
     }
 
     @Test
+    fun etaVoiceRequestKeepsEntryToolSwitchesWhileTakingRuntimeModel() {
+        val entry = modelConfig("entry-key", ReasoningEffort.OFF).copy(
+            terminalTools = true,
+            deviceSensitiveReadTools = true,
+            deviceSensitiveActionTools = true,
+            browserTools = false,
+        )
+        val request = request(source = AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE, config = entry)
+
+        val resolved = AgentRuntimeRequestConfigResolver.applyRuntimeConfig(
+            request,
+            modelConfig("runtime-key", ReasoningEffort.HIGH),
+        ).config
+
+        assertEquals("runtime-key", resolved.apiKey)
+        assertTrue(resolved.terminalTools)
+        assertTrue(resolved.deviceSensitiveReadTools)
+        assertTrue(resolved.deviceSensitiveActionTools)
+        assertFalse(resolved.browserTools)
+    }
+
+    @Test
     fun externalAssistantRequestKeepsEntryConfig() {
         val entryConfig = modelConfig("entry-key", ReasoningEffort.OFF)
-        val request = request(source = "breeno", config = entryConfig)
+        val request = request(source = "external", config = entryConfig)
 
         val resolved = AgentRuntimeRequestConfigResolver.applyRuntimeConfig(
             request,

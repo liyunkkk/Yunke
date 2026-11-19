@@ -2,9 +2,7 @@ package io.github.mangi.eta.agent.skill
 
 import android.content.Context
 import android.content.res.AssetManager
-import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.data.db.EtaDatabase
-import io.github.mangi.eta.data.model.AssistantStorage
 import io.github.mangi.eta.data.db.SkillRegistryEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
@@ -15,10 +13,6 @@ import java.nio.file.Files
 import java.nio.file.LinkOption
 
 private const val BUILTIN_SKILL_MANIFEST_ASSET = "builtin_skills/manifest.json"
-/** 无锁文件快照的孤儿判定窗口：创建中的快照还没写 .lease，不能立刻当垃圾。 */
-private const val ORPHAN_RUN_VIEW_GRACE_MS = 10 * 60 * 1000L
-/** 单个助手允许保留的技能运行快照数；每份含全套技能副本，不能无限堆积。 */
-private const val MAX_RUN_VIEWS = 8
 internal const val BUILTIN_SKILL_SOURCE = "builtin"
 internal const val USER_SKILL_SOURCE = "user"
 private const val BUILTIN_SOURCE = BUILTIN_SKILL_SOURCE
@@ -220,7 +214,7 @@ private class BuiltinSkillAssetStore(
 
 class SkillIndexService(
     private val context: Context,
-    internal val skillsRoot: File,
+    private val skillsRoot: File,
 ) {
     private val indexLock = Any()
     private val registryStore = SkillRegistryStore(context.applicationContext)
@@ -264,12 +258,12 @@ class SkillIndexService(
         }
 
     fun listInstalledSkills(): List<SkillIndexEntry> =
-        listSkillsForManagement().filter { it.installed }
+        listSkillsForManagement().filter { it.installed && it.enabled }
 
     fun findInstalledSkill(identifier: String): SkillIndexEntry? {
         val normalized = SkillParser.normalizeSkillLookup(identifier)
         if (normalized.isBlank()) return null
-        val entries = listSkillsForManagement().filter { it.installed }
+        val entries = listSkillsForManagement().filter { it.installed && it.enabled }
         return entries.firstOrNull { SkillParser.normalizeSkillLookup(it.id) == normalized }
             ?: entries.firstOrNull { SkillParser.normalizeSkillLookup(it.name) == normalized }
             ?: entries.firstOrNull { SkillParser.normalizeSkillLookup(it.skillFilePath) == normalized }
@@ -489,9 +483,7 @@ class SkillIndexService(
         val canonicalRoot = skillsRoot.canonicalFile.toPath()
         return skillsRoot.walkTopDown()
             .onEnter { dir ->
-                // `.assistant` / `.visible` 是当前助手的发布拷贝，不能当成又一份已安装 Skill。
-                (dir == skillsRoot || !dir.name.startsWith(".")) &&
-                    !shouldSkipSkillCopy(dir) &&
+                dir.name != ".git" &&
                     !Files.isSymbolicLink(dir.toPath()) &&
                     runCatching { dir.canonicalFile.toPath().startsWith(canonicalRoot) }.getOrDefault(false)
             }
@@ -502,13 +494,6 @@ class SkillIndexService(
                 buildInstalledEntry(skillFile.parentFile ?: return@mapNotNull null, registry, builtinAssets)
             }
             .distinctBy { it.rootPath }
-            .groupBy { it.id }
-            .values
-            .map { copies ->
-                copies.firstOrNull { copy ->
-                    File(copy.rootPath).parentFile?.canonicalFile == skillsRoot.canonicalFile
-                } ?: copies.first()
-            }
             .toList()
     }
 
@@ -596,10 +581,7 @@ class SkillLoader(private val skillsRoot: File) {
     private val resourceReader = SkillResourceReader(skillsRoot)
 
     fun load(entry: SkillIndexEntry, triggerReason: String): ResolvedSkillContext? =
-        SkillMutationLock.withLock(
-            skillsRoot = skillsRoot,
-            recoveryHandler = { },
-        ) {
+        SkillMutationLock.withLock(skillsRoot) {
             loadAfterRecovery(entry, triggerReason)
         }
 
@@ -635,367 +617,39 @@ class SkillLoader(private val skillsRoot: File) {
 }
 
 // =====================================================================================
+// SkillCompatibilityChecker — 兼容性检查
+// =====================================================================================
+
+object SkillCompatibilityChecker {
+    fun evaluate(entry: SkillIndexEntry): SkillCompatibilityResult {
+        val raw = buildString {
+            append(entry.compatibility.orEmpty())
+            if (entry.metadata.isNotEmpty()) {
+                append(' ')
+                append(entry.metadata.values.joinToString(" "))
+            }
+            append(' ')
+            append(entry.description)
+        }.lowercase()
+        return when {
+            raw.contains("apple-") || raw.contains("homekit") || raw.contains("healthkit") ->
+                SkillCompatibilityResult(available = false, reason = "不支持 Apple 专属运行时")
+            raw.contains("ios") && !raw.contains("android") ->
+                SkillCompatibilityResult(available = false, reason = "该 Skill 标注为 iOS 专属")
+            else -> SkillCompatibilityResult(available = true)
+        }
+    }
+}
+
+// =====================================================================================
 // SkillRuntime — 工厂入口
 // =====================================================================================
 
-internal const val ASSISTANT_SKILL_DIR = ".assistant"
-internal const val VISIBLE_SKILL_DIR = ".visible"
-
-private val skippedSkillCopyNames = setOf(
-    "__pycache__",
-    ".git",
-)
-
-private fun shouldSkipSkillCopy(file: File): Boolean {
-    val name = file.name
-    return name in skippedSkillCopyNames ||
-        name.endsWith(".pyc") ||
-        name.endsWith(".pyo")
-}
-
 object SkillRuntime {
-    private val runLeases = java.util.concurrent.ConcurrentHashMap<String, Pair<java.io.RandomAccessFile, java.nio.channels.FileLock>>()
-
     @Volatile
     private var sharedIndexService: SkillIndexService? = null
 
     fun skillsRoot(context: Context): File = File(context.filesDir, "skills")
-
-    fun assistantSkillsDirectory(context: Context, assistantId: String): File =
-        File(skillsRoot(context), "$ASSISTANT_SKILL_DIR/${AssistantStorage.id(assistantId)}")
-
-    fun visibleSkillsDirectory(context: Context): File =
-        visibleSkillsDirectory(context, io.github.mangi.eta.data.repository.AssistantRepository.active().id)
-
-    fun visibleSkillsDirectory(context: Context, assistantId: String): File =
-        File(skillsRoot(context), "$VISIBLE_SKILL_DIR/${AssistantStorage.id(assistantId)}/skills")
-
-    /** Only UI/user terminals use this assistant-owned view. Agent runs have separate immutable views. */
-    fun publishVisibleSkills(context: Context, assistantId: String, entries: List<SkillIndexEntry>): List<SkillIndexEntry> =
-        SkillMutationLock.withLock(skillsRoot(context)) {
-            val root = File(skillsRoot(context), "$VISIBLE_SKILL_DIR/${AssistantStorage.id(assistantId)}")
-            val result = publishSkillView(context, assistantId, entries, root)
-            revokeRunSkills(context, assistantId, entries.map { it.id }.toSet())
-            // 顺带回收该助手的历史快照。只在 createRunSkills 里清理的话，用户只要
-            // 不开新任务，崩溃留下的孤儿快照就永远留在磁盘上（每份含全套技能副本）。
-            // 切换助手/打开对话本来就会走到这里，是最自然的清理时机。
-            runCatching {
-                val runs = File(assistantSkillsDirectory(context, assistantId), ".runs")
-                if (runs.isDirectory) {
-                    cleanupAbandonedRunViews(context, runs)
-                    enforceRunViewLimit(context, runs)
-                }
-            }
-            result
-        }
-
-    fun bindSkillsToAssistant(context: Context, assistantId: String, entries: List<SkillIndexEntry>): List<SkillIndexEntry> =
-        publishVisibleSkills(context, assistantId, entries)
-
-    fun createRunSkills(context: Context, assistantId: String, entries: List<SkillIndexEntry>): Pair<File, List<SkillIndexEntry>> =
-        SkillMutationLock.withLock(skillsRoot(context)) {
-            val runs = File(assistantSkillsDirectory(context, assistantId), ".runs")
-            check(runs.mkdirs() || runs.isDirectory)
-            cleanupAbandonedRunViews(context, runs)
-            // 清理后仍超过上限，按最旧优先再收一批；技能副本动辄数十兆，
-            // 上限太松会长期占空间。仍然失败的保留，不阻断本次任务。
-            enforceRunViewLimit(context, runs)
-            check(runs.listFiles().orEmpty().size < MAX_RUN_VIEWS) {
-                "技能运行快照已达上限，请先清理已结束任务的快照"
-            }
-            val root = File(runs, java.util.UUID.randomUUID().toString())
-            check(root.mkdirs())
-            val leaseFile = java.io.RandomAccessFile(File(root, ".lease"), "rw")
-            try {
-                runLeases[root.canonicalPath] = leaseFile to leaseFile.channel.lock()
-            } catch (error: Throwable) { leaseFile.close(); throw error }
-            try {
-                val bound = publishSkillView(context, assistantId, entries, root)
-                File(root, "skills") to bound
-            } catch (error: Throwable) {
-                closeRunLease(root)
-                deleteSkillPathWithoutFollowingLinks(skillsRoot(context), root)
-                throw error
-            }
-        }
-
-    private fun closeRunLease(root: File) {
-        runLeases.remove(root.canonicalPath)?.let { (file, lock) ->
-            try { lock.release() } finally { file.close() }
-        }
-    }
-
-    /**
-     * 回收已结束任务的技能快照。绝不回收活动租约或 daemon 保留的视图。
-     *
-     * 两类会被回收：
-     * 1. 有 `.lease` 且能拿到排他锁 —— 进程正常退出，锁已释放；
-     * 2. 没有 `.lease` 的孤儿 —— 崩溃/被杀时锁文件可能没写成或随进程消失，
-     *    旧实现直接 `return@forEach` 跳过，这些快照就永久残留（每份含全套技能副本）。
-     *    现在改为按目录年龄回收，避免误删正在创建的快照。
-     *
-     * 失败一律只记告警：这是后台清理，不该让任何调用方失败。
-     */
-    private fun cleanupAbandonedRunViews(context: Context, runs: File) {
-        val now = System.currentTimeMillis()
-        runs.listFiles().orEmpty().forEach { root ->
-            if (!root.isDirectory) return@forEach
-            if (File(root, ".retained").exists()) return@forEach
-            if (runLeases.containsKey(root.canonicalPath)) return@forEach
-            val lease = File(root, ".lease")
-            if (!Files.isSymbolicLink(lease.toPath()) && lease.isFile) {
-                runCatching {
-                    java.io.RandomAccessFile(lease, "rw").use { file ->
-                        file.channel.tryLock()?.use { collectAbandonedView(context, root) }
-                    }
-                }
-                return@forEach
-            }
-            // 无锁文件：只有足够老的目录才认定是孤儿，给创建中的快照留出窗口。
-            if (now - root.lastModified() < ORPHAN_RUN_VIEW_GRACE_MS) return@forEach
-            collectAbandonedView(context, root)
-        }
-    }
-
-    /**
-     * 未释放快照超过上限时，从最旧的开始回收。
-     *
-     * 只处理既没有活动租约、也没有 daemon 保留标记的目录；仍然失败的留到下次。
-     */
-    private fun enforceRunViewLimit(context: Context, runs: File) {
-        val survivors = runs.listFiles().orEmpty().filter { it.isDirectory }
-        if (survivors.size < MAX_RUN_VIEWS) return
-        val candidates = survivors
-            .filterNot { File(it, ".retained").exists() }
-            .filterNot { runLeases.containsKey(it.canonicalPath) }
-            .sortedBy { it.lastModified() }
-        var excess = survivors.size - MAX_RUN_VIEWS + 1
-        for (candidate in candidates) {
-            if (excess <= 0) break
-            collectAbandonedView(context, candidate)
-            excess -= 1
-        }
-    }
-
-    private fun collectAbandonedView(context: Context, root: File) {
-        if (!deleteSkillPathWithoutFollowingLinks(skillsRoot(context), root)) {
-            AndroidAgentLogger.warnThrottled("skill-abandoned-cleanup", message = {
-                "未能回收孤儿技能快照，已跳过：" + root.name
-            })
-        }
-    }
-
-    /**
-     * Revocation hides code, never deletes the assistant's writable data.
-     *
-     * 撤销只是「把已授权的快照收窄」，不是事务：某个副本删不掉（并发清理、目录已消失、
-     * 短暂占用）不该让整个绑定流程失败。历史上这里用 check() 抛 IllegalStateException，
-     * 而调用方在 IO 线程上没有任何捕获，直接把进程打死 —— 打开别的助手的对话就会崩。
-     * 现在改为尽力删除：失败的项留在下次绑定或任务结束时再清，最多写一条告警。
-     */
-    private fun revokeRunSkills(context: Context, assistantId: String, enabled: Set<String>) {
-        val runs = File(assistantSkillsDirectory(context, assistantId), ".runs")
-        runs.listFiles().orEmpty().forEach { run ->
-            File(run, "skills").listFiles().orEmpty().filter { it.name !in enabled }.forEach { target ->
-                if (!deleteSkillPathWithoutFollowingLinks(skillsRoot(context), target)) {
-                    AndroidAgentLogger.warnThrottled("skill-revoke-delete", message = {
-                        "技能撤销时未能删除快照副本，已跳过：" + target.name
-                    })
-                }
-            }
-        }
-    }
-
-    fun pruneRunSkills(context: Context, root: File, allowed: Set<String>) =
-        SkillMutationLock.withLock(skillsRoot(context)) {
-            root.listFiles().orEmpty().filter { it.name !in allowed }.forEach { target ->
-                if (!deleteSkillPathWithoutFollowingLinks(skillsRoot(context), target)) {
-                    AndroidAgentLogger.warnThrottled("skill-prune-delete", message = {
-                        "技能快照裁剪未能删除副本，已跳过：" + target.name
-                    })
-                }
-            }
-        }
-
-    private fun publishSkillView(context: Context, assistantId: String, entries: List<SkillIndexEntry>, view: File): List<SkillIndexEntry> {
-        require(entries.size <= 128) { "单次技能快照条目超过限制" }
-        var publishedBytes = 0L
-        val assistantRoot = assistantSkillsDirectory(context, assistantId)
-        require(!Files.isSymbolicLink(assistantRoot.toPath())) { "助手技能根目录不能是符号链接" }
-        val dataRoot = File(assistantRoot, ".data")
-        require(!Files.isSymbolicLink(dataRoot.toPath())) { "助手技能数据根目录不能是符号链接" }
-        check(dataRoot.mkdirs() || dataRoot.isDirectory)
-        check(view.mkdirs() || view.isDirectory)
-        // Host-only pointer. Linux mounts individual authorized data folders, not this whole root.
-        val dataLink = File(view, "skill-data")
-        if (!Files.exists(dataLink.toPath(), LinkOption.NOFOLLOW_LINKS)) Files.createSymbolicLink(dataLink.toPath(), dataRoot.toPath())
-        require(dataLink.canonicalFile == dataRoot.canonicalFile) { "技能数据目录归属不一致" }
-        val destRoot = File(view, "skills")
-        check(destRoot.mkdirs() || destRoot.isDirectory)
-        val keep = entries.map { it.id }.toSet()
-        destRoot.listFiles().orEmpty().filter { it.name !in keep }.forEach { stale ->
-            // 发布新快照时清掉旧副本；删不掉不影响本次发布，下次再清。
-            if (!deleteSkillPathWithoutFollowingLinks(skillsRoot(context), stale)) {
-                AndroidAgentLogger.warnThrottled("skill-publish-cleanup", message = {
-                    "技能快照发布时未能清理旧副本，已跳过：" + stale.name
-                })
-            }
-        }
-        return entries.map { entry ->
-            require(entry.id.matches(Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,199}"))) { "技能 ID 无效" }
-            val privateData = File(dataRoot, entry.id)
-            require(!Files.isSymbolicLink(privateData.toPath())) { "技能数据目录不能是符号链接" }
-            if (!privateData.exists()) {
-                val legacy = File(assistantRoot, "${entry.id}/data")
-                if (legacy.isDirectory && !Files.isSymbolicLink(legacy.toPath())) copySkillTree(legacy, privateData)
-                else check(privateData.mkdirs())
-            }
-            val dest = File(destRoot, entry.id)
-            publishedBytes += syncSkillPackage(File(entry.rootPath), dest)
-            require(publishedBytes <= 256L * 1024 * 1024) { "技能快照超过 256 MiB" }
-            entry.copy(rootPath = dest.canonicalPath, skillFilePath = File(dest, "SKILL.md").canonicalPath, enabled = true)
-        }
-    }
-
-    /** Ordinary runs release their code snapshot; daemon-backed views must remain until stop. */
-    fun releaseRunSkills(context: Context, root: File, retain: Boolean = false) = SkillMutationLock.withLock(skillsRoot(context)) {
-        val view = root.parentFile!!
-        if (retain && view.isDirectory) File(view, ".retained").writeText("daemon")
-        closeRunLease(view)
-        if (!retain && !deleteSkillPathWithoutFollowingLinks(skillsRoot(context), view)) {
-            // 快照已 closeRunLease，剩余目录留待下次回收；这里失败不影响任务结束。
-            AndroidAgentLogger.warnThrottled("skill-release-delete", message = {
-                "任务结束时未能删除技能快照，已跳过：" + view.name
-            })
-        }
-    }
-
-    fun copyAssistantSkills(context: Context, fromId: String, toId: String) {
-        val root = skillsRoot(context)
-        val source = File(root, "$ASSISTANT_SKILL_DIR/${AssistantStorage.id(fromId)}")
-        val dest = File(root, "$ASSISTANT_SKILL_DIR/${AssistantStorage.id(toId)}")
-        if (!source.isDirectory) return
-        dest.parentFile?.mkdirs()
-        dest.deleteRecursively()
-        check(dest.mkdirs() || dest.isDirectory)
-        source.listFiles().orEmpty().filter { it.name != ".runs" }.forEach { copySkillTree(it, File(dest, it.name)) }
-    }
-
-    fun deleteAssistantSkills(context: Context, assistantId: String) {
-        SkillMutationLock.withLock(skillsRoot(context)) {
-            check(deleteSkillPathWithoutFollowingLinks(skillsRoot(context), assistantSkillsDirectory(context, assistantId)))
-            check(deleteSkillPathWithoutFollowingLinks(skillsRoot(context), File(skillsRoot(context), "$VISIBLE_SKILL_DIR/${AssistantStorage.id(assistantId)}")))
-        }
-    }
-
-    fun exportUserSkills(context: Context): Map<String, ByteArray> {
-        val root = skillsRoot(context)
-        if (!root.isDirectory) return emptyMap()
-        require(!Files.isSymbolicLink(root.toPath())) { "技能根目录不能是符号链接" }
-        val skip = setOf(ASSISTANT_SKILL_DIR, VISIBLE_SKILL_DIR, ".eta-skill-installer")
-        val budget = io.github.mangi.eta.data.repository.BackupBlobBudget()
-        return budget.readTree(root) { file ->
-            shouldSkipSkillCopy(file) ||
-                (file.parentFile == root && (file.name in skip || file.name.startsWith(".") || !file.isDirectory))
-        }
-    }
-
-    fun importUserSkills(context: Context, files: Map<String, ByteArray>) {
-        val root = skillsRoot(context)
-        val skip = setOf(ASSISTANT_SKILL_DIR, VISIBLE_SKILL_DIR, ".eta-skill-installer")
-        // Validate the entire map before deleting anything. Never silently drop damaged entries.
-        val targets = files.map { (relative, bytes) ->
-            val normalized = io.github.mangi.eta.data.repository.BackupArchiveSafety.relativePath(relative)
-            val first = normalized.substringBefore('/')
-            require(first !in skip && !first.startsWith(".")) { "技能备份包含受保护目录" }
-            io.github.mangi.eta.data.repository.BackupArchiveSafety.target(root, normalized) to bytes
-        }
-        check(root.mkdirs() || root.isDirectory) { "无法创建技能目录" }
-        root.listFiles().orEmpty()
-            .filter { it.isDirectory && it.name !in skip && !it.name.startsWith(".") }
-            .forEach { check(it.deleteRecursively()) { "无法清理旧技能" } }
-        targets.forEach { (target, bytes) ->
-            check(target.parentFile!!.mkdirs() || target.parentFile!!.isDirectory) { "无法创建技能目录" }
-            target.writeBytes(bytes)
-        }
-    }
-
-    private fun syncSkillPackage(source: File, dest: File): Long {
-        require(source.isDirectory && !Files.isSymbolicLink(source.toPath())) { "技能源目录无效" }
-        val staging = File(dest.parentFile, ".stage-${java.util.UUID.randomUUID()}")
-        val old = File(dest.parentFile, ".old-${java.util.UUID.randomUUID()}")
-        check(staging.mkdirs())
-        try {
-            var bytes = 0L
-            var files = 0
-            source.walkTopDown().onEnter { dir ->
-                when {
-                    dir == source -> true
-                    shouldSkipSkillCopy(dir) -> false
-                    dir.name == "data" && dir.parentFile == source -> false
-                    !dir.canRead() -> false
-                    else -> true
-                }
-            }.forEach { file ->
-                if (file == source || shouldSkipSkillCopy(file) || file.relativeTo(source).path.substringBefore(File.separator) == "data") return@forEach
-                require(++files <= 4096 && !Files.isSymbolicLink(file.toPath())) { "技能包条目过多或包含符号链接" }
-                if (file.isFile) bytes += file.length()
-                require(bytes <= 16L * 1024 * 1024) { "技能包超过 16 MiB" }
-                val target = File(staging, file.relativeTo(source).path)
-                if (file.isDirectory) check(target.mkdirs() || target.isDirectory)
-                else {
-                    require(file.isFile) { "技能包包含特殊文件" }
-                    if (!file.canRead()) {
-                        if (shouldSkipSkillCopy(file)) return@forEach
-                        error("技能文件不可读：${file.name}")
-                    }
-                    check(target.parentFile!!.mkdirs() || target.parentFile!!.isDirectory)
-                    try {
-                        file.copyTo(target)
-                    } catch (error: java.io.IOException) {
-                        if (shouldSkipSkillCopy(file)) return@forEach
-                        throw error
-                    }
-                }
-            }
-            check(File(staging, "SKILL.md").isFile) { "技能正文缺失" }
-            val dataDir = File(staging, "data")
-            check(dataDir.mkdirs() || dataDir.isDirectory)
-            if (dest.exists()) moveSkillDirectoryAtomically(dest, old)
-            try { moveSkillDirectoryAtomically(staging, dest) }
-            catch (error: Throwable) {
-                if (old.exists()) moveSkillDirectoryAtomically(old, dest)
-                throw error
-            }
-            return bytes
-        } finally {
-            staging.deleteRecursively()
-            if (dest.exists()) old.deleteRecursively()
-        }
-    }
-
-    private fun copySkillTree(source: File, dest: File) {
-        if (shouldSkipSkillCopy(source)) return
-        require(!Files.isSymbolicLink(source.toPath())) { "技能复制不接受符号链接" }
-        if (source.isDirectory) {
-            if (!source.canRead()) return
-            check(dest.mkdirs() || dest.isDirectory)
-            source.listFiles().orEmpty().forEach { copySkillTree(it, File(dest, it.name)) }
-        } else {
-            require(source.isFile) { "技能文件无效" }
-            if (!source.canRead()) {
-                if (shouldSkipSkillCopy(source)) return
-                error("技能文件不可读：${source.name}")
-            }
-            check(dest.parentFile!!.mkdirs() || dest.parentFile!!.isDirectory)
-            try {
-                source.copyTo(dest, overwrite = true)
-            } catch (error: java.io.IOException) {
-                if (shouldSkipSkillCopy(source)) return
-                throw error
-            }
-        }
-    }
 
     fun createIndexService(context: Context): SkillIndexService {
         sharedIndexService?.let { return it }

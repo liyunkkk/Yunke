@@ -3,23 +3,15 @@ package io.github.mangi.eta.ui.screens.terminal
 import android.content.Context
 import android.text.format.Formatter
 import androidx.annotation.StringRes
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Description
-import androidx.compose.material.icons.rounded.Folder
-import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -39,7 +31,6 @@ import io.github.mangi.eta.agent.terminal.DebianInstallResult
 import io.github.mangi.eta.agent.terminal.DebianInstallStage
 import io.github.mangi.eta.agent.terminal.LinuxApkAnalysisInstaller
 import io.github.mangi.eta.agent.terminal.LinuxDistribution
-import io.github.mangi.eta.agent.terminal.LinuxEnvironmentPaths
 import io.github.mangi.eta.agent.terminal.LinuxExecutionBackend
 import io.github.mangi.eta.agent.terminal.LinuxPackageProfile
 import io.github.mangi.eta.agent.terminal.LinuxPackageProfileInstaller
@@ -47,12 +38,21 @@ import io.github.mangi.eta.agent.terminal.LinuxPackageProfiles
 import io.github.mangi.eta.agent.terminal.PackageProfileInstallProgress
 import io.github.mangi.eta.agent.terminal.PackageProfileInstallResult
 import io.github.mangi.eta.agent.terminal.PackageProfileInstallStage
+import com.itos.coui.layout.CouiPageDefaults
+import com.itos.coui.layout.Divider
+import com.itos.coui.layout.Group
+import com.itos.coui.text.CouiTextKind
+import com.itos.coui.text.Text as CouiText
+import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.data.repository.LinuxEnvironmentSettingsRepository
+import io.github.mangi.eta.ui.app.LocalUiStyle
 import io.github.mangi.eta.ui.app.launchForegroundExecution
 import io.github.mangi.eta.ui.app.rememberDeviceCapabilities
 import io.github.mangi.eta.ui.app.rememberExecutionNotificationRequest
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
-import io.github.mangi.eta.ui.components.PreferenceIcon
+import io.github.mangi.eta.ui.components.coui.CouiButton
+import io.github.mangi.eta.ui.components.coui.CouiLazyScaffoldPage
+import io.github.mangi.eta.ui.components.coui.CouiPreference
 import io.github.mangi.eta.ui.navigation.AppRoute
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -60,9 +60,8 @@ import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.SmallTitle
-import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.TextButton
-import io.github.mangi.eta.ui.components.ArrowPreference
+import top.yukonga.miuix.kmp.preference.ArrowPreference
 
 private enum class InstallTarget {
     BASE,
@@ -160,12 +159,6 @@ internal fun LinuxEnvironmentScreen(
         mutableStateOf(apkAnalysisInstaller.isReady())
     }
     var apkAnalysisProgress by remember { mutableStateOf<ApkAnalysisInstallProgress?>(null) }
-    LaunchedEffect(selectedDistribution, backend, installer, debianInstaller) {
-        status = installer.status()
-        debianStatus = debianInstaller.status()
-        profileReady = packageProfileUis.associate { it.target to profileInstallers.getValue(it.target).isReady() }
-        apkAnalysisReady = apkAnalysisInstaller.isReady()
-    }
     val selectedBaseReady = when (selectedDistribution) {
         LinuxDistribution.ALPINE -> status.state != AlpineEnvironmentState.NOT_INSTALLED
         LinuxDistribution.DEBIAN -> debianStatus.state != DebianEnvironmentState.NOT_INSTALLED
@@ -248,10 +241,8 @@ internal fun LinuxEnvironmentScreen(
         }
     }
 
-    MiuixScaffoldPage(
-        title = stringResource(R.string.ui_linux_tool_environment_314d22),
-        onBack = onBack,
-    ) {
+    val uiStyle = LocalUiStyle.current
+    val listContent: androidx.compose.foundation.lazy.LazyListScope.() -> Unit = {
         item(key = "status-card") {
             val version = when (selectedDistribution) {
                 LinuxDistribution.ALPINE -> status.version
@@ -298,7 +289,11 @@ internal fun LinuxEnvironmentScreen(
                 },
             )
         }
-        item(key = "configuration-title") { SmallTitle(stringResource(R.string.linux_environment_configuration)) }
+        item(key = "configuration-title") {
+            if (uiStyle != AppearanceUiStyle.COUI) {
+                SmallTitle(stringResource(R.string.linux_environment_configuration))
+            }
+        }
         item(key = "configuration-card") {
             LinuxEnvironmentConfiguration(
                 distribution = selectedDistribution,
@@ -323,41 +318,70 @@ internal fun LinuxEnvironmentScreen(
                 },
             )
         }
-        item(key = "files-title") { SmallTitle(stringResource(R.string.linux_environment_files)) }
-        item(key = "files-card") {
-            Card(modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
-                ArrowPreference(
-                    title = stringResource(R.string.capability_workspace),
-                    summary = stringResource(R.string.capability_workspace_summary),
-                    startAction = { PreferenceIcon(Icons.Rounded.Folder) },
-                    onClick = { onNavigate(AppRoute.Workspace) },
-                )
-                if (selectedBaseReady) {
-                    ArrowPreference(
-                        title = stringResource(R.string.shared_folders_entry_title),
-                        summary = stringResource(R.string.linux_environment_shared_folders_summary),
-                        startAction = { PreferenceIcon(Icons.Rounded.FolderOpen) },
-                        onClick = { onNavigate(AppRoute.SharedFolders) },
-                    )
-                    ArrowPreference(
-                        title = stringResource(R.string.linux_files_entry_title),
-                        summary = stringResource(R.string.linux_files_entry_summary),
-                        startAction = { PreferenceIcon(Icons.Rounded.Description) },
-                        onClick = { onNavigate(AppRoute.LinuxFiles(selectedDistribution.wireName)) },
-                    )
-                }
+        item(key = "files-title") {
+            if (uiStyle != AppearanceUiStyle.COUI) {
+                SmallTitle(stringResource(R.string.linux_environment_files))
             }
         }
-
-        if (selectedToolsReady) {
-            item(key = "optional-tools-title") { SmallTitle(stringResource(R.string.ui_optional_tools_3097d6)) }
-            item(key = "optional-tools-card") {
+        item(key = "files-card") {
+            if (uiStyle == AppearanceUiStyle.COUI) {
+                Group(title = stringResource(R.string.linux_environment_files)) {
+                    CouiPreference(
+                        title = stringResource(R.string.capability_workspace),
+                        summary = stringResource(R.string.capability_workspace_summary),
+                        onClick = { onNavigate(AppRoute.Workspace) },
+                    )
+                    if (selectedBaseReady) {
+                        Divider()
+                        CouiPreference(
+                            title = stringResource(R.string.shared_folders_entry_title),
+                            summary = stringResource(R.string.linux_environment_shared_folders_summary),
+                            onClick = { onNavigate(AppRoute.SharedFolders) },
+                        )
+                        Divider()
+                        CouiPreference(
+                            title = stringResource(R.string.linux_files_entry_title),
+                            summary = stringResource(R.string.linux_files_entry_summary),
+                            onClick = { onNavigate(AppRoute.LinuxFiles(selectedDistribution.wireName)) },
+                        )
+                    }
+                }
+            } else {
                 Card(
                     modifier = Modifier
                         .padding(horizontal = 12.dp)
                         .padding(bottom = 12.dp),
                 ) {
-                    packageProfileUis.forEach { profileUi ->
+                    ArrowPreference(
+                        title = stringResource(R.string.capability_workspace),
+                        summary = stringResource(R.string.capability_workspace_summary),
+                        onClick = { onNavigate(AppRoute.Workspace) },
+                    )
+                    if (selectedBaseReady) {
+                        ArrowPreference(
+                            title = stringResource(R.string.shared_folders_entry_title),
+                            summary = stringResource(R.string.linux_environment_shared_folders_summary),
+                            onClick = { onNavigate(AppRoute.SharedFolders) },
+                        )
+                        ArrowPreference(
+                            title = stringResource(R.string.linux_files_entry_title),
+                            summary = stringResource(R.string.linux_files_entry_summary),
+                            onClick = { onNavigate(AppRoute.LinuxFiles(selectedDistribution.wireName)) },
+                        )
+                    }
+                }
+            }
+        }
+
+        if (selectedToolsReady) {
+            item(key = "optional-tools-title") {
+                if (uiStyle != AppearanceUiStyle.COUI) {
+                    SmallTitle(stringResource(R.string.ui_optional_tools_3097d6), modifier = Modifier.animateItem())
+                }
+            }
+            item(key = "optional-tools-card") {
+                val optionalItemsContent: @Composable () -> Unit = {
+                    packageProfileUis.forEachIndexed { _, profileUi ->
                         val ready = profileReady[profileUi.target] == true
                         val summaryRes = if (selectedDistribution == LinuxDistribution.DEBIAN) {
                             profileUi.debianSummaryRes
@@ -369,96 +393,169 @@ internal fun LinuxEnvironmentScreen(
                         } else {
                             profileUi.readyRes
                         }
-                        BasicComponent(
-                            title = stringResource(profileUi.titleRes),
-                            summary = if (busyTarget == profileUi.target) {
-                                profileProgressSummary ?: stringResource(summaryRes)
-                            } else if (ready) {
-                                stringResource(readyRes)
-                            } else {
-                                stringResource(summaryRes)
-                            },
-                            bottomAction = {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    TextButton(
-                                        text = when {
-                                            ready -> stringResource(R.string.linux_installed)
-                                            busyTarget == profileUi.target -> stringResource(R.string.linux_installing)
-                                            else -> stringResource(R.string.linux_install)
-                                        },
-                                        enabled = !requiresRoot && busyTarget == null && !ready,
-                                        colors = ButtonDefaults.textButtonColorsPrimary(),
-                                        onClick = {
-                                            if (busyTarget != null || ready) return@TextButton
-                                            busyTarget = profileUi.target
-                                            resultMessage = null
-                                            val profileTitle = context.getString(profileUi.titleRes)
-                                            launchInstallation {
-                                                val profileInstaller = profileInstallers.getValue(profileUi.target)
-                                                val result = profileInstaller.install { update ->
-                                                    withContext(Dispatchers.Main.immediate) {
-                                                        profileProgressSummary = update.summary(context, profileTitle)
-                                                    }
-                                                }
-                                                profileReady = profileReady +
-                                                    (profileUi.target to profileInstaller.isReady())
-                                                profileProgressSummary = null
-                                                busyTarget = null
-                                                resultMessage = result.toMessage(context, profileTitle)
-                                            }
-                                        },
-                                    )
+                        val rowTitle = stringResource(profileUi.titleRes)
+                        val rowSummary = if (busyTarget == profileUi.target) {
+                            profileProgressSummary ?: stringResource(summaryRes)
+                        } else if (ready) {
+                            stringResource(readyRes)
+                        } else {
+                            stringResource(summaryRes)
+                        }
+                        val primaryText = when {
+                            ready -> stringResource(R.string.linux_installed)
+                            busyTarget == profileUi.target -> stringResource(R.string.linux_installing)
+                            else -> stringResource(R.string.linux_install)
+                        }
+                        val primaryEnabled = !requiresRoot && busyTarget == null && !ready
+                        val onPrimaryClick: () -> Unit = {
+                            if (busyTarget == null && !ready) {
+                                busyTarget = profileUi.target
+                                resultMessage = null
+                                val profileTitle = context.getString(profileUi.titleRes)
+                                launchInstallation {
+                                    val profileInstaller = profileInstallers.getValue(profileUi.target)
+                                    val result = profileInstaller.install { update ->
+                                        withContext(Dispatchers.Main.immediate) {
+                                            profileProgressSummary = update.summary(context, profileTitle)
+                                        }
+                                    }
+                                    profileReady = profileReady +
+                                        (profileUi.target to profileInstaller.isReady())
+                                    profileProgressSummary = null
+                                    busyTarget = null
+                                    resultMessage = result.toMessage(context, profileTitle)
                                 }
+                            }
+                        }
+                        if (uiStyle == AppearanceUiStyle.COUI) {
+                            CouiPreference(
+                                title = rowTitle,
+                                summary = rowSummary,
+                                showChevron = false,
+                                trailing = {
+                                    CouiButton(
+                                        text = primaryText,
+                                        enabled = primaryEnabled,
+                                        minHeight = 32.dp,
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                        onClick = onPrimaryClick,
+                                    )
+                                },
+                            )
+                            Divider()
+                        } else {
+                            BasicComponent(
+                                title = rowTitle,
+                                summary = rowSummary,
+                                endActions = {
+                                    TextButton(
+                                        text = primaryText,
+                                        enabled = primaryEnabled,
+                                        minWidth = 0.dp,
+                                        minHeight = 32.dp,
+                                        insideMargin = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                        onClick = onPrimaryClick,
+                                    )
+                                },
+                            )
+                        }
+                    }
+
+                    val apkSummary = apkAnalysisProgress?.summary(context) ?: if (apkAnalysisReady) {
+                        context.getString(R.string.linux_apk_tools_ready)
+                    } else {
+                        context.getString(R.string.linux_apk_tools_summary)
+                    }
+                    val apkButtonText = when {
+                        apkAnalysisReady -> context.getString(R.string.linux_installed)
+                        busyTarget == InstallTarget.APK_ANALYSIS -> context.getString(R.string.linux_installing)
+                        else -> context.getString(R.string.linux_install)
+                    }
+                    val apkEnabled = busyTarget == null && !requiresRoot && !apkAnalysisReady
+                    val onApkInstall: () -> Unit = {
+                        if (busyTarget == null && !apkAnalysisReady) {
+                            busyTarget = InstallTarget.APK_ANALYSIS
+                            resultMessage = null
+                            launchInstallation {
+                                val result = apkAnalysisInstaller.install { update ->
+                                    withContext(Dispatchers.Main.immediate) {
+                                        apkAnalysisProgress = update
+                                    }
+                                }
+                                apkAnalysisReady = apkAnalysisInstaller.isReady()
+                                apkAnalysisProgress = null
+                                busyTarget = null
+                                resultMessage = result.toMessage(context)
+                            }
+                        }
+                    }
+                    if (uiStyle == AppearanceUiStyle.COUI) {
+                        CouiPreference(
+                            title = stringResource(R.string.ui_apk_analysis_95ad17),
+                            summary = apkSummary,
+                            showChevron = false,
+                            trailing = {
+                                CouiButton(
+                                    text = apkButtonText,
+                                    enabled = apkEnabled,
+                                    minHeight = 32.dp,
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                    onClick = onApkInstall,
+                                )
+                            },
+                        )
+                    } else {
+                        BasicComponent(
+                            title = stringResource(R.string.ui_apk_analysis_95ad17),
+                            summary = apkSummary,
+                            endActions = {
+                                TextButton(
+                                    text = apkButtonText,
+                                    enabled = apkEnabled,
+                                    minWidth = 0.dp,
+                                    minHeight = 32.dp,
+                                    insideMargin = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                    onClick = onApkInstall,
+                                )
                             },
                         )
                     }
-                    BasicComponent(
-                        title = stringResource(R.string.ui_apk_analysis_95ad17),
-                        summary = apkAnalysisProgress?.summary(context) ?: if (apkAnalysisReady) {
-                            context.getString(R.string.linux_apk_tools_ready)
-                        } else {
-                            context.getString(R.string.linux_apk_tools_summary)
-                        },
-                        bottomAction = {
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                TextButton(
-                                    text = when {
-                                        apkAnalysisReady -> context.getString(R.string.linux_installed)
-                                        busyTarget == InstallTarget.APK_ANALYSIS -> context.getString(R.string.linux_installing)
-                                        else -> context.getString(R.string.linux_install)
-                                    },
-                                    enabled = busyTarget == null && !requiresRoot && !apkAnalysisReady,
-                                    colors = ButtonDefaults.textButtonColorsPrimary(),
-                                    onClick = {
-                                        if (busyTarget != null || apkAnalysisReady) return@TextButton
-                                        busyTarget = InstallTarget.APK_ANALYSIS
-                                        resultMessage = null
-                                        launchInstallation {
-                                            val result = apkAnalysisInstaller.install { update ->
-                                                withContext(Dispatchers.Main.immediate) {
-                                                    apkAnalysisProgress = update
-                                                }
-                                            }
-                                            apkAnalysisReady = apkAnalysisInstaller.isReady()
-                                            apkAnalysisProgress = null
-                                            busyTarget = null
-                                            resultMessage = result.toMessage(context)
-                                        }
-                                    },
-                                )
-                            }
-                        },
-                    )
+                }
+                if (uiStyle == AppearanceUiStyle.COUI) {
+                    Group(
+                        modifier = Modifier.animateItem(),
+                        title = stringResource(R.string.ui_optional_tools_3097d6),
+                    ) {
+                        optionalItemsContent()
+                    }
+                } else {
+                    Card(
+                        modifier = Modifier
+                            .animateItem()
+                            .padding(horizontal = 12.dp)
+                            .padding(bottom = 12.dp),
+                    ) {
+                        optionalItemsContent()
+                    }
                 }
             }
+        }
+    }
+
+    when (uiStyle) {
+        AppearanceUiStyle.COUI -> {
+            CouiLazyScaffoldPage(
+                title = stringResource(R.string.ui_linux_tool_environment_314d22),
+                onBack = onBack,
+                content = listContent,
+            )
+        }
+        AppearanceUiStyle.MIUIX -> {
+            MiuixScaffoldPage(
+                title = stringResource(R.string.ui_linux_tool_environment_314d22),
+                onBack = onBack,
+                content = listContent,
+            )
         }
     }
 }

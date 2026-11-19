@@ -2,8 +2,8 @@ package io.github.mangi.eta.agent.runtime
 
 import android.content.SharedPreferences
 import io.github.mangi.eta.agent.model.AgentModelClient
+import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.data.model.CustomBody
-import io.github.mangi.eta.data.model.ModelReasoningCapabilities
 import io.github.mangi.eta.data.model.ReasoningEffort
 import java.lang.reflect.Proxy
 import kotlinx.serialization.json.JsonObject
@@ -15,26 +15,15 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AgentRuntimePolicyTest {
-    @Test fun resumeStripsThinkingOverridesEvenWhenUiAlreadySaysOff() {
-        val source = modelConfig(terminalTools = true, browserTools = true, thinking = false).copy(
-            reasoningEffort = ReasoningEffort.OFF,
-            extraBodyJson = """{"thinking":{"type":"enabled"},"temperature":0.2}""",
-            customBody = listOf(CustomBody("reasoning_effort", JsonPrimitive("high"))),
-        )
-        val result = AgentRuntimePolicy.withoutOptionalThinking(source)
-        assertFalse(JSONObject(result.extraBodyJson).has("thinking"))
-        assertEquals(0.2, JSONObject(result.extraBodyJson).getDouble("temperature"), 0.0)
-        assertTrue(result.customBody.isEmpty())
-        assertEquals(ReasoningEffort.OFF, result.reasoningEffort)
-    }
-
     @Test
     fun unavailablePreferencesFailClosed() {
         assertEquals(
             AgentRuntimePolicy.Permissions(
                 terminalTools = false,
                 browserTools = false,
-                thinking = false,
+                autoCompaction = false,
+                subagentTools = false,
+                virtualDisplay = false,
             ),
             AgentRuntimePolicy.permissions(null),
         )
@@ -51,7 +40,8 @@ class AgentRuntimePolicyTest {
                 deviceDirectTools = true,
                 deviceSensitiveReadTools = true,
                 deviceSensitiveActionTools = true,
-                thinking = true,
+                subagentTools = true,
+                virtualDisplay = true,
             ),
             AgentRuntimePolicy.permissions(preferences),
         )
@@ -65,10 +55,26 @@ class AgentRuntimePolicyTest {
             AgentRuntimePolicy.Permissions(
                 terminalTools = false,
                 browserTools = false,
-                thinking = false,
+                autoCompaction = false,
+                subagentTools = false,
+                virtualDisplay = false,
             ),
             AgentRuntimePolicy.permissions(preferences),
         )
+    }
+
+    @Test
+    fun automaticCompactionRequiresBothLocalSettingAndRequestSelection() {
+        for (localEnabled in listOf(false, true)) {
+            val preferences = booleanPreferences { key, default ->
+                if (key == Prefs.Keys.AGENT_AUTO_COMPACTION_ENABLED) localEnabled else default
+            }
+            val permissions = AgentRuntimePolicy.permissions(preferences)
+            for (requested in listOf(false, true)) {
+                val config = modelConfig(false, false, false).copy(autoCompactionEnabled = requested)
+                assertEquals(localEnabled && requested, AgentRuntimePolicy.constrain(config, permissions).autoCompactionEnabled)
+            }
+        }
     }
 
     @Test
@@ -82,21 +88,42 @@ class AgentRuntimePolicyTest {
                 deviceDirectTools = true,
                 deviceSensitiveReadTools = true,
                 deviceSensitiveActionTools = true,
+                subagentTools = true,
             ),
             permissions = AgentRuntimePolicy.Permissions(
                 terminalTools = false,
                 browserTools = false,
-                thinking = false,
+                subagentTools = false,
             ),
         )
 
         assertFalse(constrained.terminalTools)
         assertFalse(constrained.browserTools)
-        assertFalse(constrained.thinkingEnabled)
-        assertEquals(ReasoningEffort.OFF, constrained.reasoningEffort)
+        assertTrue(constrained.thinkingEnabled)
+        assertEquals(ReasoningEffort.DEFAULT, constrained.reasoningEffort)
         assertFalse(constrained.deviceDirectTools)
         assertFalse(constrained.deviceSensitiveReadTools)
         assertFalse(constrained.deviceSensitiveActionTools)
+        assertFalse(constrained.subagentTools)
+    }
+
+    @Test
+    fun explicitReasoningInRequestIsNotSuppressedWhenDefaultThinkingPreferenceIsOff() {
+        val preferences = booleanPreferences { key, default ->
+            if (key == Prefs.Keys.AGENT_THINKING_ENABLED) false else default
+        }
+        val permissions = AgentRuntimePolicy.permissions(preferences)
+        val constrained = AgentRuntimePolicy.constrain(
+            config = modelConfig(
+                terminalTools = false,
+                browserTools = false,
+                thinking = true,
+            ).copy(reasoningEffort = ReasoningEffort.HIGH),
+            permissions = permissions,
+        )
+
+        assertTrue(constrained.thinkingEnabled)
+        assertEquals(ReasoningEffort.HIGH, constrained.reasoningEffort)
     }
 
     @Test
@@ -106,17 +133,18 @@ class AgentRuntimePolicyTest {
                 terminalTools = false,
                 browserTools = true,
                 thinking = false,
-            ),
+            ).copy(subagentTools = false),
             permissions = AgentRuntimePolicy.Permissions(
                 terminalTools = true,
                 browserTools = true,
-                thinking = true,
+                subagentTools = true,
             ),
         )
 
         assertFalse(constrained.terminalTools)
         assertTrue(constrained.browserTools)
         assertFalse(constrained.thinkingEnabled)
+        assertFalse(constrained.subagentTools)
     }
 
     @Test
@@ -125,9 +153,9 @@ class AgentRuntimePolicyTest {
             config = modelConfig(
                 terminalTools = false,
                 browserTools = false,
-                thinking = true,
+                thinking = false,
             ).copy(
-                extraBodyJson = """{"thinking":{"budget_tokens":4096},"temperature":0.2}""",
+                extraBodyJson = """{"thinking":{"budget_tokens":4096},"temperature":0.2,"generation_config":{"thinking_level":"high","thinking_summaries":"auto","max_output_tokens":4096}}""",
                 customBody = listOf(
                     CustomBody("reasoning_effort", JsonPrimitive("high")),
                     CustomBody(
@@ -144,7 +172,6 @@ class AgentRuntimePolicyTest {
             permissions = AgentRuntimePolicy.Permissions(
                 terminalTools = false,
                 browserTools = false,
-                thinking = false,
             ),
         )
 
@@ -152,88 +179,14 @@ class AgentRuntimePolicyTest {
         val extra = JSONObject(constrained.extraBodyJson)
         assertFalse(extra.has("thinking"))
         assertEquals(0.2, extra.getDouble("temperature"), 0.0)
+        val generation = extra.getJSONObject("generation_config")
+        assertFalse(generation.has("thinking_level"))
+        assertFalse(generation.has("thinking_summaries"))
+        assertEquals(4096, generation.getInt("max_output_tokens"))
         assertEquals(listOf("metadata"), constrained.customBody.map { it.key })
         val metadata = constrained.customBody.single().value as JsonObject
         assertFalse("enable_thinking" in metadata)
         assertEquals(JsonPrimitive("kept"), metadata["safe"])
-    }
-
-
-    @Test
-    fun withoutOptionalThinkingDisablesReasoningButKeepsTools() {
-        val constrained = AgentRuntimePolicy.withoutOptionalThinking(
-            modelConfig(terminalTools = true, browserTools = true, thinking = true).copy(
-                deviceDirectTools = true,
-                reasoningEffort = ReasoningEffort.HIGH,
-            ),
-        )
-        assertTrue(constrained.terminalTools)
-        assertTrue(constrained.browserTools)
-        assertTrue(constrained.deviceDirectTools)
-        assertFalse(constrained.thinkingEnabled)
-        assertEquals(ReasoningEffort.OFF, constrained.reasoningEffort)
-    }
-
-    @Test
-    fun compressionUsesOffWhenReasoningCanBeDisabled() {
-        val constrained = AgentRuntimePolicy.forCompression(
-            modelConfig(terminalTools = true, browserTools = true, thinking = true).copy(
-                reasoningEffort = ReasoningEffort.HIGH,
-                reasoningCapabilities = ModelReasoningCapabilities(
-                    supportedEfforts = listOf(ReasoningEffort.LOW, ReasoningEffort.MEDIUM, ReasoningEffort.HIGH),
-                    canDisable = true,
-                    mandatory = false,
-                ),
-            ),
-        )
-        assertFalse(constrained.thinkingEnabled)
-        assertEquals(ReasoningEffort.OFF, constrained.reasoningEffort)
-        assertTrue(constrained.terminalTools)
-    }
-
-    @Test
-    fun compressionUsesLowestMandatoryEffortInsteadOfChatPreference() {
-        val constrained = AgentRuntimePolicy.forCompression(
-            modelConfig(terminalTools = true, browserTools = false, thinking = true).copy(
-                reasoningEffort = ReasoningEffort.MAX,
-                reasoningCapabilities = ModelReasoningCapabilities(
-                    supportedEfforts = listOf(ReasoningEffort.LOW, ReasoningEffort.MEDIUM, ReasoningEffort.HIGH, ReasoningEffort.MAX),
-                    canDisable = false,
-                    mandatory = true,
-                ),
-            ),
-        )
-        assertTrue(constrained.thinkingEnabled)
-        assertEquals(ReasoningEffort.MINIMAL, constrained.reasoningEffort)
-        assertEquals(
-            listOf(
-                ReasoningEffort.MINIMAL,
-                ReasoningEffort.LOW,
-                ReasoningEffort.MEDIUM,
-                ReasoningEffort.HIGH,
-                ReasoningEffort.XHIGH,
-                ReasoningEffort.MAX,
-            ),
-            AgentRuntimePolicy.compressionEffortLadder(
-                modelConfig(terminalTools = true, browserTools = false, thinking = true).copy(
-                    reasoningCapabilities = ModelReasoningCapabilities(
-                        supportedEfforts = listOf(ReasoningEffort.LOW, ReasoningEffort.HIGH),
-                        canDisable = false,
-                        mandatory = true,
-                    ),
-                ),
-            ),
-        )
-    }
-
-    @Test
-    fun withoutOptionalThinkingKeepsMandatoryReasoning() {
-        val source = modelConfig(terminalTools = true, browserTools = false, thinking = true).copy(
-            reasoningEffort = ReasoningEffort.MEDIUM,
-            reasoningCapabilities = ModelReasoningCapabilities(mandatory = true),
-        )
-        val constrained = AgentRuntimePolicy.withoutOptionalThinking(source)
-        assertEquals(source, constrained)
     }
 
     private fun modelConfig(

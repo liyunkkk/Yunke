@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.web.ConfigurableWebBackends
 import io.github.mangi.eta.agent.web.WebHttpTransport
 import io.github.mangi.eta.data.model.WebToolBackend
@@ -37,7 +38,6 @@ internal class WebToolsSettingsStore(
         private set
 
     init {
-        WebToolsSettingsRepository.init(context)
         scope.launch {
             try {
                 settings = WebToolsSettingsRepository.settings()
@@ -45,13 +45,13 @@ internal class WebToolsSettingsStore(
                 try {
                     credentials = WebToolsSettingsRepository.credentials(context)
                 } catch (_: WebToolsCredentialsUnavailable) {
-                    message = "网页工具凭据解密失败，请重新填写后保存"
+                    message = context.getString(R.string.web_tools_credentials_lost)
                     messageIsError = true
                 }
                 loaded = true
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
-                message = "网页工具设置加载失败"
+                message = context.getString(R.string.web_tools_load_failed)
                 messageIsError = true
             }
         }
@@ -79,17 +79,19 @@ internal class WebToolsSettingsStore(
                 validateWebToolsSettings(config, secrets, latestProviderDeepSeek)
                 WebToolsSettingsRepository.saveCredentials(context, secrets)
                 WebToolsSettingsRepository.save(config)
-                message = if (settings === config && credentials === secrets) {
-                    "已保存"
-                } else {
-                    "已保存，当前界面还有未保存的修改"
-                }
+                message = context.getString(
+                    if (settings === config && credentials === secrets) {
+                        R.string.speech_saved
+                    } else {
+                        R.string.speech_saved_with_pending
+                    },
+                )
                 messageIsError = false
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
                 val reason = (error as? WebToolsValidationFailure)?.userMessage
-                    ?: "请重试"
-                message = "保存失败：$reason"
+                    ?: context.getString(R.string.speech_save_retry)
+                message = context.getString(R.string.speech_save_failed, reason)
                 messageIsError = true
             } finally {
                 saving = false

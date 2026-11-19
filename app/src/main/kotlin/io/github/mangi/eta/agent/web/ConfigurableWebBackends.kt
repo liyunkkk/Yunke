@@ -321,7 +321,6 @@ internal object ConfigurableWebBackends {
             if (name.isEmpty()) {
                 throw WebRequestException("INVALID_ARGUMENT", "自定义请求头名称不能为空")
             }
-            WebHttpTransport.validateHeader(name, value)
             result[name] = value
         }
         val trimmedKey = apiKey.trim()

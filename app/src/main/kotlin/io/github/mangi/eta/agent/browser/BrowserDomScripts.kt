@@ -261,14 +261,8 @@ internal object BrowserDomScripts {
           function emitMarkdown(node, depth, state) {
             if (!node || state.truncated || depth > 60 || !consumeNode(state)) return;
             if (node.nodeType === Node.TEXT_NODE) {
-              var rawText = String(node.nodeValue || ' ').replace(/[\t\r\n ]+/g, ' ');
-              var text = rawText.trim();
-              if (!text) return;
-              if (/^\s/.test(rawText) && state.parts.length && !/\s$/.test(state.parts[state.parts.length - 1])) {
-                emit(state, ' ');
-              }
-              emit(state, markdownEscape(text));
-              if (/\s$/.test(rawText)) emit(state, ' ');
+              var text = cleanInline(node.nodeValue, 2000);
+              if (text) emit(state, markdownEscape(text) + ' ');
               return;
             }
             if (node.nodeType !== Node.ELEMENT_NODE || !visible(node)) return;
@@ -536,97 +530,6 @@ internal object BrowserDomScripts {
           if (visible(matches[index])) { target = matches[index]; break; }
         }
         return { found: !!target, visible: !!target, enabled: target ? enabled(target) : false };
-        """.trimIndent()
-
-
-    fun hover(selector: String?, x: Int?, y: Int?): String =
-        targeted(selector, x, y) +
-            """
-            target.scrollIntoView({ block: 'center', inline: 'center' });
-            var rect = target.getBoundingClientRect();
-            var cx = rect.left + rect.width / 2;
-            var cy = rect.top + rect.height / 2;
-            ['mousemove','mouseover','mouseenter'].forEach(function(kind) {
-              target.dispatchEvent(new MouseEvent(kind, { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
-            });
-            return { matched_element: describe(target), hovered: true };
-            """.trimIndent()
-
-    fun collectItems(selector: String): String =
-        """
-        var nodes = document.querySelectorAll(${JSONObject.quote(selector)});
-        var items = [];
-        for (var index = 0; index < nodes.length && items.length < 80; index++) {
-          var node = nodes[index];
-          if (!visible(node)) continue;
-          var text = visibleText(node, 400, 200, Date.now() + 80);
-          if (!text) continue;
-          items.push({
-            selector: selectorFor(node),
-            tag: boundedString((node.tagName || '').toLowerCase(), 32),
-            text: text
-          });
-        }
-        return { item_count: items.length, items: items };
-        """.trimIndent()
-
-    fun bodySignature(): String =
-        """
-        return {
-          ready_state: document.readyState || '',
-          body_length: (document.body && document.body.innerHTML) ? document.body.innerHTML.length : 0
-        };
-        """.trimIndent()
-
-    fun backbone(maxDepth: Int): String {
-        val depth = maxDepth.coerceIn(1, 8)
-        return """
-        var MAX_DEPTH = $depth;
-        var MAX_NODES = 80;
-        var SKIP = { SCRIPT:1, STYLE:1, NOSCRIPT:1, META:1, LINK:1, TEMPLATE:1, BR:1, HR:1 };
-        var count = 0;
-        var deadline = Date.now() + 400;
-        function nodeInfo(el) {
-          var rect = el.getBoundingClientRect();
-          var info = {
-            tag: boundedString((el.tagName || '').toLowerCase(), 32),
-            selector: selectorFor(el),
-            text: visibleText(el, 80, 80, deadline),
-            role: cleanInline(el.getAttribute('role'), 32) || null,
-            href: absoluteUrl(el.getAttribute('href')),
-            children: []
-          };
-          if (el.id) info.id = cleanInline(el.id, 64);
-          info.rect = { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height) };
-          return info;
-        }
-        function walk(el, depth) {
-          if (!el || count >= MAX_NODES || Date.now() > deadline) return null;
-          var tag = String(el.tagName || '').toUpperCase();
-          if (SKIP[tag]) return null;
-          if (!visible(el)) return null;
-          count++;
-          var info = nodeInfo(el);
-          if (depth < MAX_DEPTH) {
-            var children = el.children || [];
-            for (var i = 0; i < children.length && info.children.length < 12 && count < MAX_NODES; i++) {
-              var child = walk(children[i], depth + 1);
-              if (child) info.children.push(child);
-            }
-          }
-          if (info.children.length === 0) delete info.children;
-          return info;
-        }
-        var root = walk(document.body || document.documentElement, 1);
-        return { backbone: root ? [root] : [], nodeCount: count, depth: MAX_DEPTH };
-        """.trimIndent()
-    }
-
-    fun scrollByViewport(): String =
-        """
-        var before = window.scrollY || 0;
-        window.scrollBy(0, window.innerHeight || 600);
-        return { before: before, after: window.scrollY || 0, viewport_height: window.innerHeight || 0 };
         """.trimIndent()
 
     private fun targeted(selector: String?, x: Int?, y: Int?): String {

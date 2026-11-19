@@ -223,8 +223,6 @@ internal inline fun fileToolOperation(tool: String, block: () -> JSONObject): St
     JSONObject().put("ok", false).put("tool", tool).put("code", "FILE_ACCESS_DENIED").put("message", "文件访问未授权").toString()
 } catch (_: SecurityException) {
     JSONObject().put("ok", false).put("tool", tool).put("code", "FILE_ACCESS_DENIED").put("message", "文件访问未授权").toString()
-} catch (_: org.json.JSONException) {
-    JSONObject().put("ok", false).put("tool", tool).put("code", "INVALID_ARGUMENT").put("message", "文件工具参数无效").toString()
 } catch (_: IllegalArgumentException) {
     JSONObject().put("ok", false).put("tool", tool).put("code", "INVALID_ARGUMENT").put("message", "文件工具参数无效").toString()
 } catch (_: IOException) {

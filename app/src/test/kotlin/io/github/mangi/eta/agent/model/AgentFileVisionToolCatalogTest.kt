@@ -12,8 +12,6 @@ class AgentFileVisionToolCatalogTest {
         assertTrue("read_image" in names(terminalTools = true, sensitiveReads = false))
         assertTrue(readImageDescription().contains("同一轮最多调用一次"))
         assertTrue(readImageDescription().contains("下一轮读取下一张"))
-        assertTrue(readImageDescription().contains("视频"))
-        assertTrue(readImageDescription().contains("/workspace"))
     }
 
     private fun readImageDescription(): String {

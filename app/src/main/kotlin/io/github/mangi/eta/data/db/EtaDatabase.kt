@@ -6,15 +6,14 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
-import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [
+        AgentTextChunkEntity::class,
         ConversationEntity::class,
         ConversationContextCheckpointEntity::class,
         ConversationMessageEntity::class,
         ConversationStateEntity::class,
-        ConversationFolderEntity::class,
         ProviderEntity::class,
         ProviderModelEntity::class,
         RuntimeResultEntity::class,
@@ -24,10 +23,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         RuntimeInFlightEventEntity::class,
         SkillRegistryEntity::class,
         McpServerEntity::class,
-        SubAgentRunEntity::class,
-        ConversationTodoEntity::class,
+        CharacterEntity::class,
+        UserPersonaEntity::class,
     ],
-    version = 36,
+    version = 28,
     exportSchema = false,
 )
 internal abstract class EtaDatabase : RoomDatabase() {
@@ -36,8 +35,7 @@ internal abstract class EtaDatabase : RoomDatabase() {
     abstract fun runtimeRunDao(): RuntimeRunDao
     abstract fun skillDao(): SkillDao
     abstract fun mcpServerDao(): McpServerDao
-    abstract fun subAgentRunDao(): SubAgentRunDao
-    abstract fun conversationTodoDao(): ConversationTodoDao
+    abstract fun characterDao(): CharacterDao
 
     companion object {
         @Volatile
@@ -73,15 +71,11 @@ internal abstract class EtaDatabase : RoomDatabase() {
                         MIGRATION_25_26,
                         MIGRATION_26_27,
                         MIGRATION_27_28,
-                        MIGRATION_28_29,
-                        MIGRATION_29_30,
-                        MIGRATION_30_31,
-                        MIGRATION_31_32,
-                        MIGRATION_32_33,
-                        MIGRATION_33_34,
-                        MIGRATION_34_35,
-                        MIGRATION_35_36,
                     )
+                    .addCallback(object : Callback() {
+                        override fun onCreate(db: androidx.sqlite.db.SupportSQLiteDatabase) { createTextChunkCleanup(db) }
+                        override fun onOpen(db: androidx.sqlite.db.SupportSQLiteDatabase) { createTextChunkCleanup(db) }
+                    })
                     .fallbackToDestructiveMigration(dropAllTables = true)
                     .build()
                     .also { instance = it }
@@ -95,8 +89,87 @@ internal abstract class EtaDatabase : RoomDatabase() {
             }
         }
 
-        internal val MIGRATION_28_29 = Migration(28, 29) { database ->
-            database.execSQL("ALTER TABLE conversation_context_checkpoints ADD COLUMN cloud_usage_json TEXT NOT NULL DEFAULT ''")
+        internal val MIGRATION_19_20 = Migration(19, 20) { database ->
+            database.execSQL("ALTER TABLE conversation_context_checkpoints ADD COLUMN journal_json TEXT NOT NULL DEFAULT ''")
+            database.execSQL("ALTER TABLE runtime_inflight_runs ADD COLUMN transcript_json TEXT NOT NULL DEFAULT '[]'")
+            database.execSQL("CREATE TABLE IF NOT EXISTS agent_text_chunks (" +
+                "owner_table TEXT NOT NULL, owner_id TEXT NOT NULL, field TEXT NOT NULL, " +
+                "chunk_index INTEGER NOT NULL, content TEXT NOT NULL, " +
+                "PRIMARY KEY(owner_table, owner_id, field, chunk_index))")
+            database.execSQL("UPDATE conversation_context_checkpoints SET journal_json = history_json")
+            HistoryPayloadMigration.migrate(database)
+            createTextChunkCleanup(database)
+        }
+
+        internal val MIGRATION_20_21 = Migration(20, 21) { database ->
+            database.execSQL("ALTER TABLE conversations ADD COLUMN roleplay_json TEXT NOT NULL DEFAULT ''")
+            database.execSQL("ALTER TABLE conversations ADD COLUMN revisions_json TEXT NOT NULL DEFAULT ''")
+            listOf("runtime_results", "runtime_archive_runs", "runtime_inflight_runs").forEach { table ->
+                database.execSQL("ALTER TABLE $table ADD COLUMN rewrite_target_message_id TEXT")
+            }
+            database.execSQL("CREATE TABLE IF NOT EXISTS roleplay_characters (" +
+                "id TEXT NOT NULL PRIMARY KEY, name TEXT NOT NULL, card_json TEXT NOT NULL, " +
+                "avatar_path TEXT, archived INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)")
+            database.execSQL("CREATE TABLE IF NOT EXISTS roleplay_user_persona (" +
+                "id TEXT NOT NULL PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL)")
+            createTextChunkCleanup(database)
+        }
+
+        internal val MIGRATION_21_22 = Migration(21, 22) { database ->
+            database.execSQL("ALTER TABLE conversations ADD COLUMN model_id TEXT")
+        }
+
+        internal val MIGRATION_22_23 = Migration(22, 23) { database ->
+            database.execSQL("ALTER TABLE model_providers ADD COLUMN auth_mode TEXT NOT NULL DEFAULT 'api_key'")
+        }
+
+        internal val MIGRATION_23_24 = Migration(23, 24) { database ->
+            database.execSQL("ALTER TABLE conversations ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0")
+        }
+
+        internal val MIGRATION_24_25 = Migration(24, 25) { database ->
+            database.execSQL("ALTER TABLE conversation_messages ADD COLUMN step_count INTEGER")
+            database.execSQL("ALTER TABLE conversation_messages ADD COLUMN llm_ms INTEGER")
+            database.execSQL("ALTER TABLE conversation_messages ADD COLUMN tool_ms INTEGER")
+            database.execSQL("ALTER TABLE conversation_messages ADD COLUMN ttft_ms INTEGER")
+            database.execSQL("ALTER TABLE conversation_messages ADD COLUMN ttft_steps INTEGER")
+            database.execSQL("ALTER TABLE conversation_messages ADD COLUMN decode_ms INTEGER")
+            database.execSQL("ALTER TABLE conversation_messages ADD COLUMN decode_tokens INTEGER")
+        }
+
+        internal val MIGRATION_25_26 = Migration(25, 26) { database ->
+            database.execSQL("ALTER TABLE conversation_messages ADD COLUMN cache_write_tokens INTEGER")
+            database.execSQL("ALTER TABLE conversation_messages ADD COLUMN compaction_archive_id TEXT")
+        }
+
+        internal val MIGRATION_26_27 = Migration(26, 27) { database ->
+            database.execSQL("ALTER TABLE mcp_servers ADD COLUMN tools_truncation_reason TEXT")
+        }
+
+        internal val MIGRATION_27_28 = Migration(27, 28) { database ->
+            database.execSQL("ALTER TABLE model_providers ADD COLUMN vertex_project TEXT NOT NULL DEFAULT ''")
+            database.execSQL("ALTER TABLE model_providers ADD COLUMN vertex_location TEXT NOT NULL DEFAULT 'global'")
+        }
+
+        private fun createTextChunkCleanup(database: androidx.sqlite.db.SupportSQLiteDatabase) {
+            mapOf("runtime_results" to "run_id", "runtime_archive_runs" to "archive_run_id",
+                "runtime_inflight_runs" to "run_id", "conversation_context_checkpoints" to "conversation_id",
+                "conversation_messages" to "id", "conversations" to "id",
+                "mcp_servers" to "id")
+                .plus(if (database.version >= 21 || database.query(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'roleplay_characters'"
+                ).use { it.moveToFirst() }) mapOf("roleplay_characters" to "id", "roleplay_user_persona" to "id") else emptyMap())
+                .forEach { (table, key) ->
+                    database.execSQL("CREATE TRIGGER IF NOT EXISTS ${table}_text_cleanup AFTER DELETE ON $table " +
+                        "BEGIN DELETE FROM agent_text_chunks WHERE owner_table = '$table' AND owner_id = OLD.$key; END")
+                }
+        }
+
+        internal val MIGRATION_18_19 = Migration(18, 19) { database ->
+            listOf("runtime_results", "runtime_archive_runs", "runtime_inflight_runs").forEach { table ->
+                database.execSQL("ALTER TABLE $table ADD COLUMN context_snapshot_json TEXT NOT NULL DEFAULT ''")
+                database.execSQL("ALTER TABLE $table ADD COLUMN operation TEXT NOT NULL DEFAULT 'chat'")
+            }
         }
 
         internal val MIGRATION_6_7 = Migration(6, 7) { database ->
@@ -129,240 +202,6 @@ internal abstract class EtaDatabase : RoomDatabase() {
 
         internal val MIGRATION_17_18 = Migration(17, 18) { database ->
             database.execSQL("ALTER TABLE mcp_servers ADD COLUMN tools_expire_at INTEGER")
-        }
-
-        internal val MIGRATION_18_19 = Migration(18, 19) { database ->
-            database.execSQL(
-                "ALTER TABLE provider_models ADD COLUMN preferred_reasoning_effort TEXT"
-            )
-        }
-
-        internal val MIGRATION_19_20 = Migration(19, 20) { database ->
-            database.execSQL(
-                "ALTER TABLE conversations ADD COLUMN folder_id TEXT NOT NULL DEFAULT ''"
-            )
-            database.execSQL(
-                "ALTER TABLE conversations ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0"
-            )
-            database.execSQL(
-                "CREATE TABLE IF NOT EXISTS conversation_folders (" +
-                    "id TEXT NOT NULL, " +
-                    "name TEXT NOT NULL, " +
-                    "sort_index INTEGER NOT NULL, " +
-                    "created_at INTEGER NOT NULL, " +
-                    "PRIMARY KEY(id))"
-            )
-        }
-
-        internal val MIGRATION_20_21 = Migration(20, 21) { database ->
-            database.execSQL(
-                "ALTER TABLE conversations ADD COLUMN provider_id TEXT NOT NULL DEFAULT ''"
-            )
-            database.execSQL(
-                "ALTER TABLE conversations ADD COLUMN model_id TEXT NOT NULL DEFAULT ''"
-            )
-        }
-
-        internal val MIGRATION_21_22 = Migration(21, 22) { database ->
-            rebuildModelProvidersWithBalanceOption(database)
-        }
-
-        internal val MIGRATION_23_24 = Migration(23, 24) { database ->
-            database.execSQL("ALTER TABLE provider_models ADD COLUMN vision_override INTEGER")
-            // Older versions mixed user choices and remote metadata in attachment.
-            // Preserve existing explicit values; resetting automatic clears only the new override.
-            database.execSQL("UPDATE provider_models SET vision_override = attachment WHERE attachment IS NOT NULL")
-        }
-
-        internal val MIGRATION_24_25 = Migration(24, 25) { database ->
-            if (!tableHasColumn(database, "model_providers", "auth_mode")) {
-                database.execSQL(
-                    "ALTER TABLE model_providers ADD COLUMN auth_mode TEXT NOT NULL DEFAULT 'api_key'",
-                )
-            }
-        }
-
-        // Version 29 existed in two development lines. Preserve either receipt type.
-        internal val MIGRATION_31_32 = Migration(31, 32) { database ->
-            database.execSQL("ALTER TABLE conversations ADD COLUMN has_completion_marker INTEGER NOT NULL DEFAULT 0")
-            /** 子代理消耗样本：滑动窗口数据，只用于同档位预算估算。 */
-            database.execSQL(
-                "CREATE TABLE IF NOT EXISTS sub_agent_runs (" +
-                    "id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
-                    "scope TEXT NOT NULL, " +
-                    "tokens INTEGER NOT NULL, " +
-                    "rounds INTEGER NOT NULL, " +
-                    "ok INTEGER NOT NULL, " +
-                    "created_at INTEGER NOT NULL)"
-            )
-        }
-
-        /** 上游 v5.3.6 新增：会话完成标记（未读完成圆环）。设备旧库已在我方 32 上，需要独立补这一列。 */
-        internal val MIGRATION_32_33 = Migration(32, 33) { database ->
-            if (!tableHasColumn(database, "conversations", "has_completion_marker")) {
-                database.execSQL("ALTER TABLE conversations ADD COLUMN has_completion_marker INTEGER NOT NULL DEFAULT 0")
-            }
-        }
-
-        /**
-         * 上游 v5.3.8：收敛历史超限事件行并标记不完整恢复。
-         * 我方 v33 已被「会话完成标记」占用，故上游这段顺延为 33→34。
-         * SQLite 未显式 CAST 时按字符计长，故统一 CAST AS BLOB 与 checkpoint 的 UTF-8 字节上限对齐。
-         */
-        internal val MIGRATION_33_34 = Migration(33, 34) { database ->
-            if (!tableHasColumn(database, "runtime_inflight_runs", "recovery_incomplete")) {
-                database.execSQL(
-                    "ALTER TABLE runtime_inflight_runs ADD COLUMN " +
-                        "recovery_incomplete INTEGER NOT NULL DEFAULT 0"
-                )
-            }
-            if (tableHasColumn(database, "runtime_inflight_events", "event_json")) {
-                database.execSQL(
-                    "UPDATE runtime_inflight_runs SET recovery_incomplete = 1 " +
-                        "WHERE run_id IN (" +
-                        "SELECT run_id FROM runtime_inflight_events " +
-                        "WHERE length(CAST(event_json AS BLOB)) > 65536)"
-                )
-                database.execSQL(
-                    "UPDATE runtime_inflight_events SET event_json = " +
-                        "'{\"__eta_checkpoint_skipped\":true}' " +
-                        "WHERE length(CAST(event_json AS BLOB)) > 65536"
-                )
-            }
-            if (tableHasColumn(database, "runtime_archive_events", "event_json")) {
-                database.execSQL(
-                    "UPDATE runtime_archive_events SET event_json = " +
-                        "'{\"__eta_checkpoint_skipped\":true}' " +
-                        "WHERE length(CAST(event_json AS BLOB)) > 65536"
-                )
-            }
-        }
-
-        /** 会话 Todo 清单：新增表与索引；会话删除时随外键 CASCADE 清理。 */
-        internal val MIGRATION_34_35 = Migration(34, 35) { database ->
-            database.execSQL(
-                "CREATE TABLE IF NOT EXISTS conversation_todos (" +
-                    "conversation_id TEXT NOT NULL, " +
-                    "position INTEGER NOT NULL, " +
-                    "content TEXT NOT NULL, " +
-                    "status TEXT NOT NULL, " +
-                    "priority TEXT NOT NULL, " +
-                    "PRIMARY KEY(conversation_id, position), " +
-                    "FOREIGN KEY(conversation_id) REFERENCES conversations(id) " +
-                    "ON UPDATE NO ACTION ON DELETE CASCADE)"
-            )
-            database.execSQL(
-                "CREATE INDEX IF NOT EXISTS index_conversation_todos_conversation_id " +
-                    "ON conversation_todos (conversation_id)"
-            )
-        }
-
-        /**
-         * 单轮统计胶囊持久化：消息表新增一列存放耗时 JSON（token 用量已有既有列，不重复存）。
-         * 可空列 + 先查列是否存在，旧记录读回 null，重复执行不会因列已存在而失败。
-         */
-        internal val MIGRATION_35_36 = Migration(35, 36) { database ->
-            if (!tableHasColumn(database, "conversation_messages", "usage_timings_json")) {
-                database.execSQL(
-                    "ALTER TABLE conversation_messages ADD COLUMN usage_timings_json TEXT",
-                )
-            }
-        }
-
-        internal val MIGRATION_30_31 = Migration(30, 31) { database ->
-            database.execSQL(
-                "ALTER TABLE model_providers ADD COLUMN session_gateway_json TEXT NOT NULL DEFAULT ''"
-            )
-        }
-
-        internal val MIGRATION_29_30 = Migration(29, 30) { database ->
-            fun addColumnIfMissing(table: String, column: String, definition: String) {
-                if (!tableHasColumn(database, table, column)) {
-                    database.execSQL("ALTER TABLE $table ADD COLUMN $column $definition")
-                }
-            }
-            addColumnIfMissing("conversation_context_checkpoints", "cloud_usage_json", "TEXT NOT NULL DEFAULT ''")
-            addColumnIfMissing("runtime_results", "virtual_delivery_completed", "INTEGER NOT NULL DEFAULT 0")
-            addColumnIfMissing("runtime_archive_runs", "virtual_delivery_completed", "INTEGER NOT NULL DEFAULT 0")
-        }
-
-        internal val MIGRATION_27_28 = Migration(27, 28) { database ->
-            database.execSQL("ALTER TABLE conversation_messages ADD COLUMN generated_at_millis INTEGER")
-        }
-
-        internal val MIGRATION_26_27 = Migration(26, 27) { database ->
-            database.execSQL("ALTER TABLE model_providers ADD COLUMN responses_strip_reasoning_status INTEGER NOT NULL DEFAULT 0")
-        }
-
-        internal val MIGRATION_25_26 = Migration(25, 26) { database ->
-            if (!tableHasColumn(database, "conversations", "assistant_id")) {
-                database.execSQL(
-                    "ALTER TABLE conversations ADD COLUMN assistant_id TEXT NOT NULL DEFAULT ''",
-                )
-            }
-        }
-
-        internal val MIGRATION_22_23 = Migration(22, 23) { database ->
-            rebuildModelProvidersWithBalanceOption(database)
-        }
-
-        private fun tableHasColumn(database: SupportSQLiteDatabase, table: String, column: String): Boolean =
-            database.query("PRAGMA table_info($table)").use { cursor ->
-                val nameIndex = cursor.getColumnIndex("name")
-                generateSequence { if (cursor.moveToNext()) cursor else null }
-                    .any { it.getString(nameIndex) == column }
-            }
-
-        private fun rebuildModelProvidersWithBalanceOption(database: SupportSQLiteDatabase) {
-            val hasBalance = tableHasColumn(database, "model_providers", "balance_option_json")
-            database.execSQL(
-                "CREATE TABLE IF NOT EXISTS model_providers_new (" +
-                    "id TEXT NOT NULL, " +
-                    "type TEXT NOT NULL, " +
-                    "name TEXT NOT NULL, " +
-                    "base_url TEXT NOT NULL, " +
-                    "api_key TEXT NOT NULL, " +
-                    "is_enabled INTEGER NOT NULL, " +
-                    "is_built_in INTEGER NOT NULL, " +
-                    "sort_order INTEGER NOT NULL, " +
-                    "system_prompt TEXT, " +
-                    "custom_headers_json TEXT NOT NULL, " +
-                    "custom_body_json TEXT NOT NULL, " +
-                    "created_at INTEGER NOT NULL, " +
-                    "endpoint_mode TEXT NOT NULL, " +
-                    "hosted_web_search_enabled INTEGER NOT NULL DEFAULT 0, " +
-                    "anthropic_version TEXT NOT NULL, " +
-                    "balance_option_json TEXT NOT NULL DEFAULT '{}', " +
-                    "PRIMARY KEY(id))"
-            )
-            if (hasBalance) {
-                database.execSQL(
-                    "INSERT INTO model_providers_new (" +
-                        "id, type, name, base_url, api_key, is_enabled, is_built_in, " +
-                        "sort_order, system_prompt, custom_headers_json, custom_body_json, " +
-                        "created_at, endpoint_mode, hosted_web_search_enabled, " +
-                        "anthropic_version, balance_option_json) " +
-                        "SELECT id, type, name, base_url, api_key, is_enabled, is_built_in, " +
-                        "sort_order, system_prompt, custom_headers_json, custom_body_json, " +
-                        "created_at, endpoint_mode, hosted_web_search_enabled, " +
-                        "anthropic_version, COALESCE(NULLIF(balance_option_json, ''), '{}') " +
-                        "FROM model_providers"
-                )
-            } else {
-                database.execSQL(
-                    "INSERT INTO model_providers_new (" +
-                        "id, type, name, base_url, api_key, is_enabled, is_built_in, " +
-                        "sort_order, system_prompt, custom_headers_json, custom_body_json, " +
-                        "created_at, endpoint_mode, hosted_web_search_enabled, " +
-                        "anthropic_version, balance_option_json) " +
-                        "SELECT id, type, name, base_url, api_key, is_enabled, is_built_in, " +
-                        "sort_order, system_prompt, custom_headers_json, custom_body_json, " +
-                        "created_at, endpoint_mode, hosted_web_search_enabled, " +
-                        "anthropic_version, '{}' FROM model_providers"
-                )
-            }
-            database.execSQL("DROP TABLE model_providers")
-            database.execSQL("ALTER TABLE model_providers_new RENAME TO model_providers")
         }
 
         internal val MIGRATION_7_8 = Migration(7, 8) { database ->
@@ -423,11 +262,9 @@ internal abstract class EtaDatabase : RoomDatabase() {
             )
             database.execSQL(
                 "INSERT INTO conversation_context_checkpoints (conversation_id, history_json) " +
-                    "SELECT id, CASE " +
-                    "WHEN length(CAST(history_json AS BLOB)) <= 131072 THEN history_json " +
-                    "ELSE '[]' END FROM conversations"
+                    "SELECT id, history_json FROM conversations"
             )
-            // 会话列表不再使用旧字段；及时清空可保证旧版留下的超大行不会继续占用数据库。
+            // SQL 内搬移完整正文；后续分块迁移负责行大小，不能因旧字段过大丢弃历史。
             database.execSQL("UPDATE conversations SET history_json = '[]'")
         }
 

@@ -1,18 +1,19 @@
 package io.github.mangi.eta.agent.runtime
 
 import android.content.Context
+import io.github.mangi.eta.agent.model.AgentContextSnapshot
+import io.github.mangi.eta.agent.model.AgentConversationCodec
+import io.github.mangi.eta.agent.model.AgentModelClient
+import io.github.mangi.eta.agent.model.AgentToolBatchRecovery
 import io.github.mangi.eta.data.db.EtaDatabase
 import io.github.mangi.eta.data.db.RuntimeInFlightEventEntity
 import io.github.mangi.eta.data.db.RuntimeInFlightRunEntity
-import io.github.mangi.eta.ui.components.StreamPerformanceDiagnostics
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 
 /**
- * 在途 UI run 的进程持久化日志。
- *
- * 它不保存 Provider 配置、API Key、工具调用参数增量或原始工具结果，只保存 UI 已可见的
- * 参数摘要、终端命令与结果摘要。
+ * 在途 run 的 UI 事件、完整脱敏 transcript 与模型上下文快照。
+ * 三者用途独立；配置和密钥不落盘，敏感工具原始数据由会话 codec 过滤。
  */
 internal object AgentRunCheckpointStore {
     data class Checkpoint(
@@ -22,8 +23,10 @@ internal object AgentRunCheckpointStore {
         val events: List<AgentEvent>,
         val createdAt: Long,
         val updatedAt: Long,
-        val recoveryIncomplete: Boolean = false,
-        val skippedEventCount: Int = 0,
+        val contextSnapshot: AgentContextSnapshot? = null,
+        val operation: String = AgentRuntimeWire.OP_CHAT,
+        val transcript: List<AgentModelClient.ConversationMessage> = emptyList(),
+        val rewriteTargetMessageId: String? = null,
     )
 
     fun start(
@@ -40,6 +43,8 @@ internal object AgentRunCheckpointStore {
                 RuntimeInFlightRunEntity(
                     runId = runId,
                     ownerInstanceId = ownerInstanceId,
+                    operation = request.operation,
+                    rewriteTargetMessageId = request.rewriteTargetMessageId,
                     handoffId = handoff.id,
                     handoffSource = handoff.source,
                     handoffPayload = handoff.payload,
@@ -59,120 +64,63 @@ internal object AgentRunCheckpointStore {
         event: AgentEvent,
         now: Long = System.currentTimeMillis(),
     ) {
-        val diagnose = StreamPerformanceDiagnostics.enabled
-        val attribution = if (diagnose) StreamPerformanceDiagnostics.captureAttribution() else null
-        try {
-            runBlocking(Dispatchers.IO) {
-                // Keep DAO acquisition before encoding, as in the original call expression.
-                val dao = EtaDatabase.get(context.applicationContext).runtimeRunDao()
-                val encoded = StreamPerformanceDiagnostics.withAttribution(attribution) {
-                    StreamPerformanceDiagnostics.measure("runtime.checkpoint.encode") {
-                        AgentEventJsonCodec.encodeForCheckpoint(
-                            event,
-                            completeJson = AgentEventJsonCodec.encode(event),
-                        )
-                    }
-                }
-                val entity = RuntimeInFlightEventEntity(
+        val durableEvent = event.recoveryProjection() ?: return
+        runBlocking(Dispatchers.IO) {
+            EtaDatabase.get(context.applicationContext).runtimeRunDao().appendInFlightEvent(
+                event = RuntimeInFlightEventEntity(
                     runId = runId,
                     sortIndex = sortIndex,
-                    eventJson = encoded.json,
-                )
-                val started = if (diagnose) System.nanoTime() else 0L
-                try {
-                    dao.appendInFlightEvent(
-                        event = entity,
-                        updatedAt = now,
-                        recoveryIncomplete = encoded.degraded,
-                    )
-                } finally {
-                    if (diagnose) {
-                        val elapsed = System.nanoTime() - started
-                        StreamPerformanceDiagnostics.withAttribution(attribution) {
-                            StreamPerformanceDiagnostics.record(
-                                "runtime.checkpoint.write",
-                                elapsed,
-                                encoded.json.toByteArray(Charsets.UTF_8).size.toLong(),
-                            )
-                        }
-                    }
-                }
-            }
-        } catch (_: Exception) {
-            // Checkpoint persistence is best-effort and must not fail the active run.
+                    eventJson = AgentEventJsonCodec.encode(durableEvent),
+                ),
+                updatedAt = now,
+            )
         }
     }
 
-    /** 返回所有未确认 run；事件按小批次读取，避免 Room @Relation 批量填充 CursorWindow。 */
-    fun list(context: Context): List<Checkpoint> = try {
+    /** 返回所有未确认 run；是否 active 或已完成由恢复协调器结合 Runtime 状态判断。 */
+    fun list(context: Context): List<Checkpoint> =
         runBlocking(Dispatchers.IO) {
-            val dao = EtaDatabase.get(context.applicationContext).runtimeRunDao()
-            dao.inFlightRunHeaders().map { stored ->
-                runCatching {
-                    val events = buildList {
-                        var offset = 0
-                        while (true) {
-                            val page = dao.inFlightEvents(
-                                runId = stored.runId,
-                                limit = CHECKPOINT_EVENT_PAGE_SIZE,
-                                offset = offset,
-                            )
-                            if (page.isEmpty()) break
-                            addAll(page)
-                            offset += page.size
-                            if (page.size < CHECKPOINT_EVENT_PAGE_SIZE) break
-                        }
-                    }
-                    var skipped = 0
-                    val decoded = events
-                        .sortedBy { it.sortIndex }
-                        .mapNotNull { row ->
-                            AgentEventJsonCodec.decode(row.eventJson).also {
-                                if (it == null) skipped++
-                            }
-                        }
-                    val incomplete = stored.recoveryIncomplete || skipped > 0 || events.any {
-                        AgentEventJsonCodec.isCheckpointDegraded(it.eventJson)
-                    }
-                    if (incomplete && !stored.recoveryIncomplete) {
-                        dao.markInFlightRecoveryIncomplete(stored.runId)
-                    }
+            EtaDatabase.get(context.applicationContext)
+                .runtimeRunDao()
+                .inFlightRuns()
+                .asSequence()
+                .map { stored ->
                     Checkpoint(
-                        runId = stored.runId,
-                        ownerInstanceId = stored.ownerInstanceId,
-                        handoff = stored.toHandoff(),
-                        events = decoded,
-                        createdAt = stored.createdAt,
-                        updatedAt = stored.updatedAt,
-                        recoveryIncomplete = incomplete,
-                        skippedEventCount = skipped,
-                    )
-                }.getOrElse {
-                    // A malformed/legacy row must not hide other runs or crash recovery.
-                    runCatching { dao.markInFlightRecoveryIncomplete(stored.runId) }
-                    Checkpoint(
-                        runId = stored.runId,
-                        ownerInstanceId = stored.ownerInstanceId,
-                        handoff = stored.toHandoff(),
-                        events = emptyList(),
-                        createdAt = stored.createdAt,
-                        updatedAt = stored.updatedAt,
-                        recoveryIncomplete = true,
-                        skippedEventCount = 0,
+                        runId = stored.run.runId,
+                        ownerInstanceId = stored.run.ownerInstanceId,
+                        contextSnapshot = AgentContextSnapshot.decode(stored.run.contextSnapshotJson),
+                        operation = stored.run.operation,
+                        rewriteTargetMessageId = stored.run.rewriteTargetMessageId,
+                        transcript = AgentToolBatchRecovery.completeInterrupted(AgentConversationCodec.decodeTranscript(stored.run.transcriptJson)),
+                        handoff = AgentRuntimeWire.EntryHandoff(
+                            id = stored.run.handoffId,
+                            source = stored.run.handoffSource,
+                            payload = stored.run.handoffPayload,
+                            dismissEntrySurfaceOnForegroundOperation =
+                                stored.run.dismissEntrySurface,
+                        ),
+                        events = stored.events
+                            .sortedBy { it.sortIndex }
+                            .mapNotNull { AgentEventJsonCodec.decode(it.eventJson) },
+                        createdAt = stored.run.createdAt,
+                        updatedAt = stored.run.updatedAt,
                     )
                 }
-            }
+                .toList()
         }
-    } catch (_: Exception) {
-        emptyList()
+
+    fun saveTranscript(context: Context, runId: String, transcript: List<AgentModelClient.ConversationMessage>) {
+        runBlocking(Dispatchers.IO) {
+            EtaDatabase.get(context.applicationContext).runtimeRunDao()
+                .updateTranscript(runId, AgentConversationCodec.encodeTranscriptForStorage(transcript))
+        }
     }
 
-    private fun RuntimeInFlightRunEntity.toHandoff() = AgentRuntimeWire.EntryHandoff(
-        id = handoffId,
-        source = handoffSource,
-        payload = handoffPayload,
-        dismissEntrySurfaceOnForegroundOperation = dismissEntrySurface,
-    )
+    fun saveContext(context: Context, runId: String, snapshot: AgentContextSnapshot) {
+        runBlocking(Dispatchers.IO) {
+            EtaDatabase.get(context.applicationContext).runtimeRunDao().updateContextSnapshot(runId, snapshot.encode())
+        }
+    }
 
     fun remove(context: Context, runId: String) {
         if (runId.isBlank()) return
@@ -182,7 +130,4 @@ internal object AgentRunCheckpointStore {
                 .deleteInFlightRun(runId)
         }
     }
-
-    private const val CHECKPOINT_EVENT_PAGE_SIZE = 8
-
 }

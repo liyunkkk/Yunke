@@ -1,155 +1,181 @@
 package io.github.mangi.eta.agent.model
 
 import io.github.mangi.eta.agent.runtime.AgentEvent
-import io.github.mangi.eta.agent.runtime.AgentTokenUsage
 import io.github.mangi.eta.agent.runtime.AgentRunController
 import io.github.mangi.eta.agent.tool.AgentToolCapabilities
-import io.github.mangi.eta.data.model.ReasoningEffort
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
+import io.github.mangi.eta.data.model.OpenAiEndpointMode
+import io.github.mangi.eta.data.model.ProviderTypes
 import java.util.concurrent.atomic.AtomicInteger
-import kotlin.concurrent.thread
+import io.github.mangi.eta.agent.device.RootAccessState
+import io.github.mangi.eta.agent.device.RootAccessStatus
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AgentModelClientLoopTest {
-    @Test fun historyBoundaryIsPublishedBeforeEventsAndOnlyAfterCompleteToolBatch() {
-        val snapshots = mutableListOf<List<AgentModelClient.ConversationMessage>>()
-        val provider = ScriptedProvider(
-            assistant(content = "doing work", finishReason = "tool_calls", toolCalls = listOf(
-                toolCall("one", "get_current_context", "{}"), toolCall("two", "get_current_context", "{}"))),
-            assistant(content = "done", finishReason = "stop"))
-        var finished = 0
-        AgentModelClient.complete(config = modelConfig(), prompt = "task", provider = provider, turnId = "turn",
-            onHistorySnapshot = { round, history ->
-                assertEquals(round - 1, snapshots.size)
-                if (round == 2) assertEquals(2, finished)
-                snapshots += history
-                "snapshot-$round"
+    @Test
+    fun rootProbeStatesKeepThePrefixStableUntilGrantActuallyChanges() {
+        var root = RootAccessState(isChecking = true)
+        val calls = mutableListOf<String>()
+        val systems = mutableListOf<String>()
+        val toolLists = mutableListOf<String>()
+        fun record(request: ProviderRequest) {
+            systems += (0 until request.messages.length()).map(request.messages::getJSONObject)
+                .filter { it.optString("role") == "system" }.joinToString { it.toString() }
+            toolLists += request.tools.toString()
+        }
+        val provider = ScriptedProvider(listOf(
+            { request, _ ->
+                record(request)
+                assistant(finishReason = "tool_calls", toolCalls = listOf(toolCall("context", "get_current_context", "{}")))
             },
-            onEvent = { event -> if (event is AgentEvent.RoundStarted) {
-                assertEquals("snapshot-${event.round}", event.historySnapshotId)
-                assertEquals(event.round, snapshots.size)
-            } },
-            toolExecutor = AgentModelClient.ToolExecutor { finished++; AgentModelClient.ToolResult("result") })
-        assertEquals(2, snapshots.size)
-        assertEquals(listOf("user"), snapshots.first().map { it.role })
-        assertEquals(listOf("user", "assistant", "tool", "tool"), snapshots.last().map { it.role })
-        assertEquals(setOf("one", "two"), snapshots.last().filter { it.role == "tool" }.map { it.toolCallId }.toSet())
-        assertEquals(setOf("turn"), snapshots.last().map { it.turnId }.toSet())
-    }
-
-    @Test fun snapshotRestoresDurableMediaAfterProviderHydration() {
-        val user = AgentModelClient.ConversationMessage("user", contentJson =
-            """[{"type":"text","text":"old media"},{"type":"image_file","path":"/nonexistent/image.jpg","mime":"image/jpeg","name":"image"},{"type":"video_file","path":"/nonexistent/video.mp4","mime":"video/mp4","name":"video"}]""",
-            turnId = "old")
-        var captured: List<AgentModelClient.ConversationMessage>? = null
-        AgentModelClient.complete(config = modelConfig().copy(supportsVision = false), prompt = "task",
-            history = listOf(user), provider = ScriptedProvider(assistant(content = "done", finishReason = "stop")),
-            onHistorySnapshot = { _, history -> captured = history; "snapshot" },
-            toolExecutor = AgentModelClient.ToolExecutor { error("unexpected tool") })
-        assertEquals(user, captured!!.first())
-        assertEquals(listOf("/nonexistent/image.jpg", "/nonexistent/video.mp4"),
-            AgentConversationCodec.persistedImageSources(captured!!.first()))
-    }
-
-    @Test fun failingSnapshotPublisherCannotAbortTheOriginalRun() {
-        val provider = ScriptedProvider(assistant(content = "done", finishReason = "stop"))
-        val tokens = mutableListOf<String>()
-        val result = AgentModelClient.complete(config = modelConfig(), prompt = "task", provider = provider,
-            onHistorySnapshot = { _, _ -> error("snapshot unavailable") },
-            onEvent = { event -> if (event is AgentEvent.RoundStarted) tokens += event.historySnapshotId },
-            toolExecutor = AgentModelClient.ToolExecutor { error("unexpected tool") })
-        assertEquals("done", result.content)
-        assertEquals(listOf(""), tokens)
-        assertEquals(1, provider.requests.size)
-    }
-
-    @Test fun completeForwardsExplicitUnknownContextPermission() {
-        val prompt = "中".repeat(190_000) // >272k local tokens, safely below the stored-character cap.
-        assertTrue(AgentContextBudget.countTokens(prompt) > 272_000)
-        for (allowed in listOf(false, true)) {
-            val controller = AgentRunController()
-            val provider = ScriptedProvider(assistant(content = "done", finishReason = "stop"))
-            val run = {
-                AgentModelClient.complete(
-                    config = modelConfig().copy(contextWindow = 272_000), prompt = prompt,
-                    provider = provider, runController = controller,
-                    allowUnmeasuredContextSend = allowed,
-                    onEvent = { event ->
-                        if (event is AgentEvent.ContextCompacted && event.blocked) controller.cancel()
-                    },
-                    toolExecutor = AgentModelClient.ToolExecutor { error("Unexpected tool") },
-                )
-            }
-            if (allowed) {
-                assertEquals("done", run().content)
-                assertEquals(1, provider.requests.size)
-                assertEquals(prompt, provider.requests.single()
-                    .getJSONObject(provider.requests.single().length() - 1).getString("content"))
-            } else {
-                assertThrows(io.github.mangi.eta.agent.runtime.AgentRunCancelledException::class.java) { run() }
-                assertTrue(provider.requests.isEmpty())
-            }
-        }
-    }
-
-    @Test fun stoppingMidBatchKeepsCompletedResultsAndMarksUnconfirmedCalls() {
-        val controller = AgentRunController()
-        val provider = ScriptedProvider(assistant(finishReason = "tool_calls", toolCalls = listOf(
-            toolCall("done", "get_current_context", "{}"),
-            toolCall("unknown", "get_current_context", "{}"),
-        )))
-        val executed = mutableListOf<String>()
-        val failure = assertThrows(io.github.mangi.eta.agent.runtime.AgentRunCancelledException::class.java) {
-            AgentModelClient.complete(config = modelConfig(), prompt = "task", provider = provider,
-                runController = controller, turnId = "logical-turn",
-                toolExecutor = AgentModelClient.ToolExecutor { call ->
-                    executed += call.id
-                    controller.steer("accepted supplement")
-                    controller.cancel()
-                    AgentModelClient.ToolResult("confirmed result")
-                })
-        }
-        assertEquals(listOf("done"), executed)
-        assertEquals("confirmed result", failure.transcript.single { it.toolCallId == "done" }.content)
-        assertTrue(failure.transcript.single { it.toolCallId == "unknown" }.content.contains("STOPPED_OUTCOME_UNKNOWN"))
-        assertTrue(failure.transcript.last().content.contains("accepted supplement"))
-        assertTrue(failure.transcript.all { it.turnId == "logical-turn" })
-    }
-
-    @get:org.junit.Rule val timeout = org.junit.rules.Timeout.seconds(45)
-    @Test fun stoppedPartialTextAndSupplementSurviveWithoutReplayingTools() {
-        val controller = AgentRunController()
-        val provider = object : AgentProviderClient {
-            override val id = "stop-partial"
-            override val capabilities = ProviderCapabilities(EndpointKind.CHAT_COMPLETIONS, true, true, false, false, false, false)
-            override fun complete(request: ProviderRequest, runController: AgentRunController,
-                onEvent: (ProviderEvent) -> Unit): ProviderResponse {
-                onEvent(ProviderEvent.BlockDelta(AssistantBlockKind.TEXT, 0, "visible partial"))
-                runController.steer("review this")
-                runController.cancel()
-                runController.throwIfCancelled()
-                error("unreachable")
-            }
-        }
-        val failure = assertThrows(io.github.mangi.eta.agent.runtime.AgentRunCancelledException::class.java) {
-            AgentModelClient.complete(config = modelConfig(), prompt = "task", provider = provider,
-                runController = controller, turnId = "one-turn",
-                toolExecutor = AgentModelClient.ToolExecutor { error("must not execute") })
-        }
-        assertEquals("visible partial", failure.transcript.first().content)
-        assertTrue(failure.transcript.last().content.contains("review this"))
-        assertEquals(setOf("one-turn"), failure.transcript.map { it.turnId }.toSet())
+            { request, _ ->
+                record(request)
+                assertFalse(request.tools.toString().contains("set_setting"))
+                assistant(finishReason = "tool_calls", toolCalls = listOf(toolCall("probe", "terminal", """{"action":"check_root"}""")))
+            },
+            { request, _ ->
+                record(request)
+                assertTrue(request.messages.toString().contains("Root 授权已确认"))
+                assertTrue(request.tools.toString().contains("set_setting"))
+                assistant(finishReason = "tool_calls", toolCalls = listOf(toolCall("root-command", "terminal", """{"command":"id -u","identity":"root"}""")))
+            },
+            { _, _ -> assistant(content = "已验证 Root", finishReason = "stop") },
+        ))
+        AgentModelClient.complete(
+            modelConfig().copy(terminalTools = true, deviceSensitiveActionTools = true), "检查 Root",
+            AgentModelClient.ToolExecutor { call ->
+                calls += call.id
+                root = if (call.id == "context") RootAccessState(RootAccessStatus.TIMED_OUT, suPresent = true)
+                    else RootAccessState(RootAccessStatus.GRANTED, suPresent = true)
+                AgentModelClient.ToolResult("""{"ok":true}""")
+            },
+            provider = provider,
+            capabilitiesProvider = { AgentToolCapabilities(rootAvailable = root.isGranted, rootState = root) },
+        )
+        assertEquals(listOf("context", "probe", "root-command"), calls)
+        // 检测中 → 超时都未授权：系统提示与工具目录逐字节不变；授权确认后才整体更新。
+        assertEquals(systems[0], systems[1])
+        assertEquals(toolLists[0], toolLists[1])
+        assertNotEquals(systems[1], systems[2])
     }
 
     @Test
-    fun eachRoundUsesOneCapabilitySnapshotForDeclarationValidationAndPrompt() {
+    fun transientCapabilityLossDoesNotShrinkTheToolCatalogMidRun() {
+        var accessibility = true
+        val toolLists = mutableListOf<String>()
+        val provider = ScriptedProvider(listOf(
+            { request, _ ->
+                toolLists += request.tools.toString()
+                assistant(finishReason = "tool_calls", toolCalls = listOf(toolCall("context", "get_current_context", "{}")))
+            },
+            { request, _ ->
+                toolLists += request.tools.toString()
+                assistant(content = "完成", finishReason = "stop")
+            },
+        ))
+        AgentModelClient.complete(
+            modelConfig(), "看一下屏幕",
+            AgentModelClient.ToolExecutor {
+                accessibility = false
+                AgentModelClient.ToolResult("""{"ok":true}""")
+            },
+            provider = provider,
+            capabilitiesProvider = { AgentToolCapabilities(rootAvailable = false, accessibilityAvailable = accessibility) },
+        )
+        assertTrue(toolLists[0].contains("observe_screen"))
+        assertEquals(toolLists[0], toolLists[1])
+    }
+
+    @Test
+    fun capabilityLostMidRunStaysListedButExecutionReportsTheCatalogCode() {
+        var notifications = true
+        val executed = mutableListOf<String>()
+        val results = mutableListOf<String>()
+        val provider = ScriptedProvider(listOf(
+            { request, _ ->
+                assertTrue(request.tools.toString().contains("recent_notifications"))
+                assistant(finishReason = "tool_calls", toolCalls = listOf(toolCall("ctx", "get_current_context", "{}")))
+            },
+            { request, _ ->
+                assertTrue(request.tools.toString().contains("recent_notifications"))
+                assistant(finishReason = "tool_calls", toolCalls = listOf(toolCall("notes", "recent_notifications", "{}")))
+            },
+            { request, _ ->
+                results += request.messages.toString()
+                assistant(content = "完成", finishReason = "stop")
+            },
+        ))
+        AgentModelClient.complete(
+            modelConfig().copy(deviceSensitiveReadTools = true), "看看通知",
+            AgentModelClient.ToolExecutor { call ->
+                executed += call.id
+                notifications = false
+                AgentModelClient.ToolResult("""{"ok":true}""")
+            },
+            provider = provider,
+            capabilitiesProvider = { AgentToolCapabilities(rootAvailable = false, notificationsAllowed = notifications) },
+        )
+        assertEquals(listOf("ctx"), executed)
+        assertTrue(results.single().contains("NOTIFICATION_ACCESS_REQUIRED"))
+    }
+
+    @Test
+    fun hostedSearchReplacesOnlyTheLocalSearchInSupportedConfigurations() {
+        for (providerType in listOf(ProviderTypes.OPENAI_COMPATIBLE, ProviderTypes.ANTHROPIC)) {
+            for (endpoint in listOf(OpenAiEndpointMode.RESPONSES, OpenAiEndpointMode.CHAT_COMPLETIONS)) {
+                for (hosted in listOf(false, true)) for (browser in listOf(false, true)) {
+                    val effectiveHosted = providerType == ProviderTypes.OPENAI_COMPATIBLE &&
+                        endpoint == OpenAiEndpointMode.RESPONSES && hosted
+                    val config = modelConfig().copy(
+                        providerType = providerType, openAiEndpointMode = endpoint,
+                        hostedWebSearchEnabled = hosted, browserTools = browser,
+                    )
+                    val provider = ScriptedProvider(listOf({ request, _ ->
+                        val names = (0 until request.tools.length()).map {
+                            request.tools.getJSONObject(it).getJSONObject("function").getString("name")
+                        }
+                        assertEquals(browser && !effectiveHosted, "web_search" in names)
+                        assertEquals(browser, "fetch_url" in names)
+                        assertEquals(browser, "browser_use" in names)
+                        assertEquals(effectiveHosted, request.messages.toString().contains("Provider 托管的 web_search"))
+                        assertEquals(browser && !effectiveHosted, request.messages.toString().contains("使用本地 web_search"))
+                        if (effectiveHosted) {
+                            val outgoing = ResponsesRequestBuilder.build(config, request.messages, request.tools).getJSONArray("tools")
+                            assertEquals(1, (0 until outgoing.length()).count { outgoing.getJSONObject(it).optString("type") == "web_search" })
+                            assertFalse((0 until outgoing.length()).any { outgoing.getJSONObject(it).optString("name") == "web_search" })
+                        }
+                        assistant(content = "完成", finishReason = "stop")
+                    }))
+                    AgentModelClient.complete(config, "查询公开信息", AgentModelClient.ToolExecutor { error("不应执行本地请求") }, provider = provider)
+                }
+            }
+        }
+    }
+
+    @Test
+    fun hiddenLocalSearchCannotBeExecutedAsAFunctionDuringHostedSearch() {
+        val provider = ScriptedProvider(listOf(
+            { _, _ -> assistant(finishReason = "tool_calls", toolCalls = listOf(toolCall("local-search", "web_search", """{"query":"example"}"""))) },
+            { request, _ ->
+                assertTrue(request.messages.toString().contains("TOOL_NOT_AVAILABLE"))
+                assistant(content = "已使用可用能力", finishReason = "stop")
+            },
+        ))
+        AgentModelClient.complete(
+            config = modelConfig().copy(openAiEndpointMode = OpenAiEndpointMode.RESPONSES, hostedWebSearchEnabled = true, browserTools = true),
+            prompt = "查询公开信息", provider = provider,
+            toolExecutor = AgentModelClient.ToolExecutor { error("托管搜索不应误入本地执行器") },
+        )
+    }
+
+    @Test
+    fun eachRoundUsesOneCapabilitySnapshotForToolAvailabilityAndPrompt() {
         var root = true
         var captures = 0
         val executed = mutableListOf<String>()
@@ -164,11 +190,11 @@ class AgentModelClientLoopTest {
                 assertFalse(request.messages.toString().contains("相关应用私有文件与数据库"))
                 assertTrue(request.messages.toString().contains("identity=user"))
                 assistant(finishReason = "tool_calls", toolCalls = listOf(
-                    toolCall("stale", "terminal", "{\"action\":\"open\",\"identity\":\"root\"}"),
+                    toolCall("stale", "set_setting", "{}"),
                 ))
             },
             { request, _ ->
-                assertTrue(request.messages.toString().contains("INVALID_TOOL_ARGUMENTS"))
+                assertTrue(request.messages.toString().contains("TOOL_NOT_AVAILABLE"))
                 assistant(content = "完成", finishReason = "stop")
             },
         ))
@@ -187,7 +213,53 @@ class AgentModelClientLoopTest {
             },
         )
         assertEquals(listOf("first"), executed)
-        assertEquals(4, captures)
+        // 每轮一次目录快照，外加每个实际执行的目录工具一次执行前复核。
+        assertEquals(5, captures)
+    }
+
+    @Test
+    fun signedAnthropicToolRoundKeepsTheOriginalToolAndSystemDeclarations() {
+        var root = true
+        var captures = 0
+        val firstAssistant = assistant(
+            finishReason = "tool_calls",
+            toolCalls = listOf(toolCall("signed-call", "get_current_context", "{}")),
+        ).also { response ->
+            AnthropicEphemeralState.attachContentBlocks(response, JSONArray()
+                .put(JSONObject().put("type", "thinking").put("thinking", "")
+                    .put("signature", "signed-prefix"))
+                .put(JSONObject().put("type", "tool_use").put("id", "signed-call")
+                    .put("name", "get_current_context").put("input", JSONObject())))
+        }
+        val provider = ScriptedProvider(listOf(
+            { request, _ ->
+                assertTrue(request.tools.toString().contains("set_setting"))
+                assertTrue(request.messages.toString().contains("相关应用私有文件与数据库"))
+                firstAssistant
+            },
+            { request, _ ->
+                assertTrue(request.tools.toString().contains("set_setting"))
+                assertTrue(request.messages.toString().contains("相关应用私有文件与数据库"))
+                assistant(content = "完成", finishReason = "stop")
+            },
+        ))
+
+        AgentModelClient.complete(
+            config = modelConfig().copy(terminalTools = true, deviceSensitiveActionTools = true),
+            prompt = "开始",
+            provider = provider,
+            capabilitiesProvider = {
+                captures++
+                AgentToolCapabilities(rootAvailable = root)
+            },
+            toolExecutor = AgentModelClient.ToolExecutor {
+                root = false
+                AgentModelClient.ToolResult("工具结果")
+            },
+        )
+
+        // 签名回合沿用上一轮的目录不再取快照；另一次来自工具执行前的可用性复核。
+        assertEquals(3, captures)
     }
 
     @Test
@@ -256,74 +328,6 @@ class AgentModelClientLoopTest {
         )
         assertEquals("call-1", provider.requests[1].getJSONObjectFromEnd(2).getString("tool_call_id"))
         assertEquals("call-2", provider.requests[1].getJSONObjectFromEnd(1).getString("tool_call_id"))
-        assertEquals(
-            "需要两个结果",
-            provider.requests[1].getJSONObjectFromEnd(3).getString("reasoning_content"),
-        )
-    }
-
-    @Test
-    fun interruptedToolDraftPreservesTextAndSteeringWithoutToolFailureOrReplay() {
-        val events = mutableListOf<AgentEvent>()
-        val executed = mutableListOf<String>()
-        val provider = ScriptedProvider(responses = listOf(
-            { _, controller ->
-                controller.steer("new instruction")
-                interruptedAssistantMessage("before ", "")
-            },
-            { request, _ ->
-                assertTrue(request.messages.toString().contains("before"))
-                assertTrue(request.messages.toString().contains("new instruction"))
-                assertFalse(request.messages.toString().contains("INVALID_TOOL_ARGUMENTS"))
-                assertFalse(request.messages.toString().contains("tool_calls"))
-                assistant(finishReason = "tool_calls", toolCalls = listOf(toolCall("fresh", "get_current_context", "{}")))
-            },
-            { _, _ -> assistant(content = "done", finishReason = "stop") },
-        ))
-        AgentModelClient.complete(config = modelConfig(), prompt = "task", provider = provider,
-            toolExecutor = AgentModelClient.ToolExecutor { call ->
-                executed += call.id
-                AgentModelClient.ToolResult("ok")
-            }, onEvent = events::add)
-        assertEquals(listOf("fresh"), executed)
-        assertEquals(listOf("fresh"), events.filterIsInstance<AgentEvent.ToolStarted>().map { it.toolCallId })
-        assertEquals(3, provider.requests.size)
-    }
-
-    @Test
-    fun pauseResumeAndSupplementKeepTheOriginalLogicalTurn() {
-        val controller = AgentRunController()
-        val provider = ScriptedProvider(responses = listOf(
-            { _, control ->
-                val binding = control.register(interruptible = true) {}
-                try {
-                    control.pause()
-                    control.resume()
-                } finally { binding.close() }
-                interruptedAssistantMessage("first ", "")
-            },
-            { _, control ->
-                val binding = control.register(interruptible = true) {}
-                try {
-                    control.pause()
-                    control.steer("supplement")
-                } finally { binding.close() }
-                interruptedAssistantMessage("second ", "")
-            },
-            { _, _ -> assistant(content = "done", finishReason = "stop") },
-        ))
-        val result = AgentModelClient.complete(
-            config = modelConfig(), prompt = "original task", turnId = "original-turn",
-            provider = provider, runController = controller,
-            toolExecutor = AgentModelClient.ToolExecutor { error("No tools expected") },
-        )
-        assertEquals(3, provider.requests.size)
-        assertTrue(result.transcript.isNotEmpty())
-        assertEquals(setOf("original-turn"), result.transcript.map { it.turnId }.toSet())
-        assertTrue(result.transcript.any { it.role == "user" && it.content.contains("supplement") })
-        assertTrue(result.transcript.any { it.content.contains("first") })
-        assertFalse(controller.isPaused)
-        assertFalse(controller.hasPendingSteering)
     }
 
     @Test
@@ -369,49 +373,6 @@ class AgentModelClientLoopTest {
                 .getString("content")
                 .contains("改用第二种方案")
         )
-    }
-
-    @Test
-    fun streamingSteerInterruptsCurrentRequestAndKeepsPartialText() {
-        val controller = AgentRunController()
-        val provider = ScriptedProvider(
-            responses = listOf(
-                { _, runController ->
-                    val interrupted = CountDownLatch(1)
-                    runController.register(interruptible = true) { interrupted.countDown() }
-                    val worker = thread(name = "loop-steer-interrupt-test", isDaemon = true) {
-                        runController.steer("改成短篇，两百字就够")
-                    }
-                    try {
-                        assertTrue(interrupted.await(1, TimeUnit.SECONDS))
-                    } finally {
-                        worker.join(1_000)
-                    }
-                    assistant(content = "从前有座山，山里有座庙。", finishReason = "stop")
-                },
-                { request, _ ->
-                    assertTrue(
-                        request.messages.getJSONObject(request.messages.length() - 1)
-                            .getString("content")
-                            .contains("改成短篇")
-                    )
-                    assistant(content = "好，改成两百字。", finishReason = "stop")
-                },
-            )
-        )
-
-        val result = AgentModelClient.complete(
-            config = modelConfig(),
-            prompt = "写5000字小说",
-            toolExecutor = AgentModelClient.ToolExecutor { error("不应调用工具") },
-            provider = provider,
-            runController = controller,
-        )
-
-        assertEquals("好，改成两百字。", result.content)
-        assertEquals(listOf("assistant", "user", "assistant"), result.transcript.map { it.role })
-        assertEquals("从前有座山，山里有座庙。", result.transcript.first().content)
-        assertFalse(controller.hasPendingSteering)
     }
 
     @Test
@@ -478,10 +439,10 @@ class AgentModelClientLoopTest {
     }
 
     @Test
-    fun malformedCallsAndUniqueIdsReceiveStableTerminalResults() {
+    fun malformedAndDuplicateToolCallsReceiveStableTerminalResults() {
         val malformedCalls = JSONArray()
-            .put(toolCall("first", "get_current_context", "{}"))
-            .put(toolCall("second", "get_current_context", "{}"))
+            .put(toolCall("duplicate", "get_current_context", "{}"))
+            .put(toolCall("duplicate", "get_current_context", "{}"))
             .put("not-an-object")
         val firstResponse = assistant(content = "", finishReason = "tool_calls")
             .put("tool_calls", malformedCalls)
@@ -503,42 +464,25 @@ class AgentModelClientLoopTest {
 
         assertEquals(
             listOf(
-                "first" to "get_current_context",
-                "second" to "get_current_context",
+                "duplicate" to "get_current_context",
+                "duplicate_1" to "get_current_context",
             ),
             executed,
         )
         val secondRequest = provider.requests[1]
         assertEquals(
-            listOf("first", "second", "tool_call_2"),
+            listOf("duplicate", "duplicate_1", "tool_call_2"),
             secondRequest
                 .getJSONObject(secondRequest.length() - 4)
                 .getJSONArray("tool_calls")
                 .let { calls -> (0 until calls.length()).map { calls.getJSONObject(it).getString("id") } },
         )
         assertEquals(
-            listOf("first", "second", "tool_call_2"),
+            listOf("duplicate", "duplicate_1", "tool_call_2"),
             (3 downTo 1).map { offset ->
                 secondRequest.getJSONObjectFromEnd(offset).getString("tool_call_id")
             },
         )
-    }
-
-    @Test
-    fun duplicateRawToolIdsRejectTheBatchWithoutExecutingEitherCall() {
-        val provider = ScriptedProvider(assistant(content = "", finishReason = "tool_calls")
-            .put("tool_calls", JSONArray()
-                .put(toolCall("duplicate", "get_current_context", "{}"))
-                .put(toolCall("duplicate", "get_current_context", "{}"))))
-        var executed = 0
-        val failure = assertThrows(AgentModelExecutionException::class.java) {
-            AgentModelClient.complete(config = modelConfig(), prompt = "开始", provider = provider,
-                toolExecutor = AgentModelClient.ToolExecutor { executed++; AgentModelClient.ToolResult("unexpected") })
-        }
-        assertTrue(failure.cause is AgentModelFailure)
-        assertEquals(AgentToolReplayGuard.CODE, (failure.cause as AgentModelFailure).code)
-        assertEquals(0, executed)
-        assertEquals(1, provider.requests.size)
     }
 
     @Test
@@ -600,7 +544,7 @@ class AgentModelClientLoopTest {
         )
 
         val result = AgentModelClient.complete(
-            config = modelConfig().copy(supportsVision = true),
+            config = modelConfig(),
             prompt = "观察后点击",
             toolExecutor = AgentModelClient.ToolExecutor { call ->
                 AgentModelClient.ToolResult(
@@ -646,7 +590,7 @@ class AgentModelClientLoopTest {
         var observationIndex = 0
 
         AgentModelClient.complete(
-            config = modelConfig().copy(supportsVision = true),
+            config = modelConfig(),
             prompt = "连续观察",
             toolExecutor = AgentModelClient.ToolExecutor {
                 val reference = if (observationIndex++ == 0) firstImage else secondImage
@@ -671,73 +615,56 @@ class AgentModelClientLoopTest {
     }
 
     @Test
-    fun missingRequiredArgumentsNeverReachDeviceExecutor() {
-        val provider = ScriptedProvider(
-            assistant(
-                finishReason = "tool_calls",
-                toolCalls = listOf(toolCall("call-1", "tap", "{}")),
-            ),
-            assistant(content = "已修正", finishReason = "stop"),
+    fun toolArgumentsReachExecutorWithoutSchemaPreflight() {
+        val calls = listOf(
+            toolCall("write", "write_file", """{"path":"note.md","content":"内容","identity":"USER","extra":true}"""),
+            toolCall("read", "read_file", """{"path":"note.md","start_line":1,"offset_bytes":0,"max_bytes":1000000}"""),
+            toolCall("missing", "tap", "{}"),
         )
-        var executed = false
-
+        val provider = ScriptedProvider(
+            assistant(finishReason = "tool_calls", toolCalls = calls),
+            assistant(content = "完成", finishReason = "stop"),
+        )
+        val executed = mutableListOf<AgentModelClient.ToolCall>()
         AgentModelClient.complete(
-            config = modelConfig(),
-            prompt = "点击",
+            config = modelConfig().copy(terminalTools = true),
+            prompt = "执行工具",
             toolExecutor = AgentModelClient.ToolExecutor {
-                executed = true
-                AgentModelClient.ToolResult("unexpected")
+                executed += it
+                AgentModelClient.ToolResult(
+                    if (it.id == "missing") """{"ok":false,"code":"INVALID_ARGUMENT","message":"缺少坐标"}"""
+                    else """{"ok":true}""",
+                )
             },
             provider = provider,
         )
-
-        assertFalse(executed)
-        assertTrue(
-            provider.requests[1]
-                .getJSONObjectFromEnd(1)
-                .getString("content")
-                .contains("INVALID_TOOL_ARGUMENTS")
-        )
+        assertEquals(calls.map { call ->
+            val function = call.getJSONObject("function")
+            AgentModelClient.ToolCall(call.getString("id"), function.getString("name"), function.getString("arguments"))
+        }, executed)
+        val messages = provider.requests[1].toString()
+        assertTrue(messages.contains("缺少坐标"))
+        assertFalse(messages.contains("INVALID_TOOL_ARGUMENTS"))
     }
 
     @Test
-    fun refusalEndsRunWithoutReplayingPartialAssistantOrExecutingTools() {
-        listOf("content_filter", "refusal").forEach { finishReason ->
-            val provider = ScriptedProvider(
-                assistant(
-                    content = "半截回复",
-                    reasoning = "半截思考",
-                    finishReason = finishReason,
-                    toolCalls = listOf(toolCall("call-1", "tap", "{\"x\":1,\"y\":2}")),
-                ).put(
-                    "stop_details",
-                    JSONObject().put("type", "refusal").put("category", "cyber")
-                        .put("explanation", "服务商说明文本"),
-                ),
-                assistant(content = "不应再请求", finishReason = "stop"),
-            )
-            var executed = false
-
-            val failure = assertThrows(AgentModelExecutionException::class.java) {
-                AgentModelClient.complete(
-                    config = modelConfig(),
-                    prompt = "开始",
-                    toolExecutor = AgentModelClient.ToolExecutor {
-                        executed = true
-                        AgentModelClient.ToolResult("unexpected")
-                    },
-                    provider = provider,
-                )
-            }
-
-            assertFalse(executed)
-            assertEquals(1, provider.requests.size)
-            val cause = failure.cause as AgentModelFailure
-            assertEquals("MODEL_CONTENT_FILTER", cause.code)
-            assertFalse(cause.retryable)
-            assertTrue(cause.message.orEmpty().contains("服务商说明文本"))
-            assertTrue(failure.transcript.none { it.role == "assistant" })
-        }
+    fun remoteToolSchemasAreNotInterpretedByTheLoop() {
+        val call = toolCall("remote", "mcp_test_write", """{"content":"正文","extra":true}""")
+        val provider = ScriptedProvider(
+            assistant(finishReason = "tool_calls", toolCalls = listOf(call)),
+            assistant(content = "完成", finishReason = "stop"),
+        )
+        val executed = mutableListOf<AgentModelClient.ToolCall>()
+        AgentModelClient.complete(
+            config = modelConfig(), prompt = "写文件", provider = provider,
+            additionalTools = JSONArray().put(AgentToolSchema.function("mcp_test_write", "远端文件工具",
+                JSONObject("""{"type":"object","required":["mode"],"additionalProperties":false}"""))),
+            toolExecutor = AgentModelClient.ToolExecutor {
+                executed += it
+                AgentModelClient.ToolResult("""{"ok":true}""")
+            },
+        )
+        assertEquals(listOf(AgentModelClient.ToolCall("remote", "mcp_test_write", """{"content":"正文","extra":true}""")), executed)
     }
 
     @Test
@@ -769,6 +696,45 @@ class AgentModelClientLoopTest {
                     .getString("content")
                     .contains("UNEXPECTED_TOOL_CALL")
             )
+        }
+    }
+
+    @Test
+    fun refusalEndsRunWithoutReplayingPartialAssistantOrExecutingTools() {
+        listOf("content_filter", "refusal").forEach { finishReason ->
+            val provider = ScriptedProvider(
+                assistant(
+                    content = "半截回复",
+                    reasoning = "半截思考",
+                    finishReason = finishReason,
+                    toolCalls = listOf(toolCall("call-1", "tap", "{\"x\":1,\"y\":2}")),
+                ).put(
+                    "stop_details",
+                    JSONObject().put("type", "refusal").put("category", "cyber").put("explanation", "服务商说明文本"),
+                ),
+                assistant(content = "不应再请求", finishReason = "stop"),
+            )
+            var executed = false
+
+            val failure = assertThrows(AgentModelExecutionException::class.java) {
+                AgentModelClient.complete(
+                    config = modelConfig(),
+                    prompt = "开始",
+                    toolExecutor = AgentModelClient.ToolExecutor {
+                        executed = true
+                        AgentModelClient.ToolResult("unexpected")
+                    },
+                    provider = provider,
+                )
+            }
+
+            assertFalse(executed)
+            assertEquals(1, provider.requests.size)
+            val cause = failure.cause as AgentModelFailure
+            assertEquals("MODEL_CONTENT_FILTER", cause.code)
+            assertFalse(cause.retryable)
+            assertTrue(cause.message.orEmpty().contains("服务商说明文本"))
+            assertTrue(failure.transcript.none { it.role == "assistant" })
         }
     }
 
@@ -889,6 +855,8 @@ class AgentModelClientLoopTest {
                     ))
                     2 -> {
                         onEvent(ProviderEvent.BlockDelta(AssistantBlockKind.THINKING, 0, "失败的思考"))
+                        onEvent(ProviderEvent.BlockDelta(AssistantBlockKind.TEXT, 1, "半截回答"))
+                        onEvent(ProviderEvent.BlockDelta(AssistantBlockKind.TOOL_CALL, 2, "半截参数"))
                         throw java.net.SocketTimeoutException("timeout")
                     }
                     else -> ProviderResponse(assistant(content = "完成", finishReason = "stop", reasoning = "观察成功"))
@@ -897,7 +865,7 @@ class AgentModelClientLoopTest {
         }
         val messages = JSONArray().put(AgentConversationCodec.userTextMessage("开始"))
         val loop = AgentLoop(
-            config = modelConfig().copy(supportsVision = true, errorReconnectPolicy = "continuous"), messages = messages,
+            config = modelConfig(), messages = messages,
             tools = AgentToolCatalog.build(terminalTools = false, browserTools = false),
             provider = provider,
             toolExecutor = AgentModelClient.ToolExecutor {
@@ -915,49 +883,14 @@ class AgentModelClientLoopTest {
         assertEquals(1, executions)
         assertEquals(3, requests.size)
         assertEquals(List(3) { "conversation-retry" }, sessions)
-        val retriedHistory = JSONArray(requests[2])
-        assertEquals(requests[1], JSONArray().apply {
-            for (index in 0 until retriedHistory.length() - 1) {
-                val message = retriedHistory.getJSONObject(index)
-                if (!AgentRecoveryContext.isActive(JSONArray().put(message))) put(message)
-            }
-        }.toString())
-        assertTrue(requests[2].contains("Continue the interrupted task"))
+        assertEquals(requests[1], requests[2])
         assertTrue(requests[2].contains("data:image/png"))
         assertFalse(messages.toString().contains("data:image/png"))
         assertFalse(messages.toString().contains("半截"))
         assertEquals("先观察观察成功", result.reasoningContent)
         assertEquals(listOf(1, 2, 3), events.filterIsInstance<AgentEvent.RoundStarted>().map { it.round })
-        assertEquals(2, events.filterIsInstance<AgentEvent.ErrorReconnectChanged>().first().round)
-        assertEquals(1, events.filterIsInstance<AgentEvent.ModelRetryScheduled>().size)
+        assertEquals(2, events.filterIsInstance<AgentEvent.ModelRetryScheduled>().single().round)
         assertEquals(1, events.filterIsInstance<AgentEvent.ToolStarted>().size)
-    }
-
-    @Test
-    fun insufficientRequestWindowBlocksInsteadOfSilentlyTrimmingHistory() {
-        for (legacySkipFlag in listOf(false, true)) {
-            val controller = AgentRunController()
-            val provider = ScriptedProvider(assistant(content = "must not run", finishReason = "stop"))
-            var blocked = false
-            assertThrows(io.github.mangi.eta.agent.runtime.AgentRunCancelledException::class.java) {
-                AgentModelClient.complete(
-                    config = modelConfig().copy(contextWindow = 100),
-                    prompt = "current question",
-                    history = listOf(AgentModelClient.ConversationMessage("user", "protected history")),
-                    toolExecutor = AgentModelClient.ToolExecutor { error("No tools") },
-                    provider = provider, runController = controller,
-                    skipHistoryTrimming = legacySkipFlag,
-                    onEvent = { event ->
-                        if (event is AgentEvent.ContextCompacted && event.blocked) {
-                            blocked = true
-                            controller.cancel()
-                        }
-                    },
-                )
-            }
-            assertTrue(blocked)
-            assertTrue(provider.requests.isEmpty())
-        }
     }
 
     private class ScriptedProvider(
@@ -979,7 +912,6 @@ class AgentModelClientLoopTest {
         )
 
         val requests = mutableListOf<JSONArray>()
-        val requestConfigs = mutableListOf<AgentModelClient.ModelConfig>()
         private var index = 0
 
         override fun complete(
@@ -988,517 +920,11 @@ class AgentModelClientLoopTest {
             onEvent: (ProviderEvent) -> Unit,
         ): ProviderResponse {
             requests += JSONArray(request.messages.toString())
-            requestConfigs += request.config
-            onEvent(ProviderEvent.RequestStarted)
-            AgentWireRequestEstimate.publish(
-                AgentWireRequestEstimate.previewBody(request.config, request.messages, request.tools),
-                AgentWireRequestEstimate.endpoint(request.config), request, onEvent)
             val response = responses.getOrNull(index)
                 ?: error("缺少第 ${index + 1} 个 scripted response")
             index += 1
-            val payload = response(request, runController)
-            val usageJson = payload.optJSONObject("usage")
-            if (usageJson != null) {
-                onEvent(
-                    ProviderEvent.Usage(
-                        AgentTokenUsage(
-                            contextTokens = usageJson.optInt("total_tokens").takeIf { usageJson.has("total_tokens") },
-                            inputTokens = usageJson.optInt("prompt_tokens").takeIf { usageJson.has("prompt_tokens") },
-                            outputTokens = usageJson.optInt("completion_tokens").takeIf { usageJson.has("completion_tokens") },
-                        ),
-                    ),
-                )
-            }
-            return ProviderResponse(payload)
+            return ProviderResponse(response(request, runController))
         }
-    }
-
-    @Test
-    fun compactRunsAfterToolBatchBeforeNextProviderRequest() {
-        val events = mutableListOf<AgentEvent>()
-        var compactCalls = 0
-        val provider = ScriptedProvider(
-            responses = listOf(
-                { _, _ ->
-                    assistant(
-                        finishReason = "tool_calls",
-                        toolCalls = listOf(toolCall("call-1", "get_current_context", "{}")),
-                        promptTokens = 95_000,
-                    )
-                },
-                { _, _ -> assistant(content = "完成", finishReason = "stop", promptTokens = 20) },
-            )
-        )
-        val history = (1..6).flatMap { n ->
-            listOf(
-                AgentConversationCodec.userTextMessage("u$n"),
-                AgentConversationCodec.assistantHistoryMessage(
-                    assistant(content = "a$n", finishReason = "stop"),
-                    emptyList(),
-                ),
-            )
-        }
-        val messages = org.json.JSONArray()
-        history.forEach { messages.put(it) }
-        messages.put(AgentConversationCodec.userTextMessage("现在"))
-
-        val result = AgentLoop(
-            config = modelConfig(),
-            messages = messages,
-            tools = AgentToolCatalog.build(terminalTools = false, browserTools = false),
-            provider = provider,
-            toolExecutor = AgentModelClient.ToolExecutor {
-                AgentModelClient.ToolResult(org.json.JSONObject().put("ok", true).toString())
-            },
-            runController = AgentRunController(),
-            traceFormatter = AgentTraceFormatter(),
-            onEvent = events::add,
-            compactPolicy = AgentLoop.CompactPolicy(
-                enabled = true,
-                contextWindow = 100_000,
-                keepRecentMessages = 2,
-                compressModelConfig = modelConfig(),
-            ),
-            compactHistory = { source, policy ->
-                compactCalls += 1
-                listOf(
-                    AgentModelClient.ConversationMessage(
-                        role = "system",
-                        content = AgentContextCompactor.SUMMARY_PREFIX_ZH + "\n摘要",
-                    ),
-                ) + source.drop(requireNotNull(policy.keepStartOverride))
-            },
-        ).run()
-
-        assertEquals("完成", result.content)
-        assertEquals(1, compactCalls)
-        assertEquals(1, events.filterIsInstance<AgentEvent.ContextCompactionStarted>().size)
-        val compacted = events.filterIsInstance<AgentEvent.ContextCompacted>().single()
-        assertTrue(compacted.applied)
-        val second = provider.requests[1]
-        val secondContents = (0 until second.length()).map { second.getJSONObject(it).optString("content") }
-        assertTrue(secondContents.any { it.contains("摘要") || it.contains("对话摘要") })
-        assertFalse(secondContents.contains("u1"))
-        assertTrue((0 until second.length()).any { second.getJSONObject(it).optString("role") == "tool" })
-        val projections = events.filterIsInstance<AgentEvent.UsageReceived>().filter { it.projected }
-        assertEquals(listOf(1, 2), projections.map { it.round })
-        val secondConfig = provider.requestConfigs[1]
-        val secondBody = AgentWireRequestEstimate.previewBody(secondConfig, second,
-            AgentToolCatalog.build(terminalTools = false, browserTools = false))
-        assertEquals(AgentWireRequestEstimate.measure(secondBody,
-            AgentWireRequestEstimate.endpoint(secondConfig)).tokens, projections.last().usage.inputTokens)
-    }
-
-    @Test
-    fun forcedCompactRunsOnFirstRoundWithoutSplittingRun() {
-        val events = mutableListOf<AgentEvent>()
-        var compactCalls = 0
-        val controller = AgentRunController()
-        controller.requestCompact(keepRecentMessages = 1)
-        val provider = ScriptedProvider(
-            responses = listOf(
-                { _, _ -> assistant(content = "完成", finishReason = "stop", promptTokens = 20) },
-            )
-        )
-        val history = (1..4).flatMap { n ->
-            listOf(
-                AgentConversationCodec.userTextMessage("u$n"),
-                AgentConversationCodec.assistantHistoryMessage(
-                    assistant(content = "a$n", finishReason = "stop"),
-                    emptyList(),
-                ),
-            )
-        }
-        val messages = org.json.JSONArray()
-        history.forEach { messages.put(it) }
-        messages.put(AgentConversationCodec.userTextMessage("现在"))
-
-        val result = AgentLoop(
-            config = modelConfig(),
-            messages = messages,
-            tools = AgentToolCatalog.build(terminalTools = false, browserTools = false),
-            provider = provider,
-            toolExecutor = AgentModelClient.ToolExecutor {
-                AgentModelClient.ToolResult(org.json.JSONObject().put("ok", true).toString())
-            },
-            runController = controller,
-            traceFormatter = AgentTraceFormatter(),
-            onEvent = events::add,
-            compactPolicy = AgentLoop.CompactPolicy(
-                enabled = false,
-                contextWindow = 128_000,
-                keepRecentMessages = 2,
-                compressModelConfig = modelConfig(),
-            ),
-            compactHistory = { source, policy ->
-                compactCalls += 1
-                assertEquals(1, policy.keepRecentMessages)
-                listOf(
-                    AgentModelClient.ConversationMessage(
-                        role = "system",
-                        content = AgentContextCompactor.SUMMARY_PREFIX_ZH + "\n摘要",
-                    ),
-                ) + source.drop(requireNotNull(policy.keepStartOverride))
-            },
-        ).run()
-
-        assertEquals("完成", result.content)
-        assertEquals(1, compactCalls)
-        assertEquals(1, provider.requests.size)
-        val contents = (0 until provider.requests[0].length()).map {
-            provider.requests[0].getJSONObject(it).optString("content")
-        }
-        assertTrue(contents.any { it.contains("摘要") || it.contains("对话摘要") })
-        assertTrue(contents.contains("现在") || contents.any { it.contains("现在") })
-        assertFalse(contents.contains("u1"))
-    }
-
-    @Test
-    fun compactDuringFinalResponseDoesNotGenerateAnotherReplyOrChangeThinking() {
-        val controller = AgentRunController()
-        val provider = ScriptedProvider(
-            responses = listOf(
-                { _, ctrl ->
-                    ctrl.requestCompact(keepRecentMessages = 1)
-                    assistant(content = "前文", finishReason = "stop", promptTokens = 80)
-                },
-                { _, _ -> assistant(content = "续写", finishReason = "stop", promptTokens = 20) },
-            )
-        )
-        val history = (1..4).flatMap { n ->
-            listOf(
-                AgentConversationCodec.userTextMessage("u$n"),
-                AgentConversationCodec.assistantHistoryMessage(
-                    assistant(content = "a$n", finishReason = "stop"),
-                    emptyList(),
-                ),
-            )
-        }
-        val messages = org.json.JSONArray()
-        history.forEach { messages.put(it) }
-        messages.put(AgentConversationCodec.userTextMessage("现在"))
-
-        val result = AgentLoop(
-            config = modelConfig().copy(
-                thinkingEnabled = true,
-                reasoningEffort = ReasoningEffort.HIGH,
-            ),
-            messages = messages,
-            tools = AgentToolCatalog.build(terminalTools = false, browserTools = false),
-            provider = provider,
-            toolExecutor = AgentModelClient.ToolExecutor {
-                AgentModelClient.ToolResult(org.json.JSONObject().put("ok", true).toString())
-            },
-            runController = controller,
-            traceFormatter = AgentTraceFormatter(),
-            onEvent = {},
-            compactPolicy = AgentLoop.CompactPolicy(
-                enabled = false,
-                contextWindow = 128_000,
-                keepRecentMessages = 2,
-                compressModelConfig = modelConfig(),
-            ),
-            compactHistory = { source, policy ->
-                listOf(
-                    AgentModelClient.ConversationMessage(
-                        role = "system",
-                        content = AgentContextCompactor.SUMMARY_PREFIX_ZH + "\n摘要",
-                    ),
-                ) + source.drop(requireNotNull(policy.keepStartOverride))
-            },
-        ).run()
-
-        assertEquals("前文", result.content)
-        assertEquals(1, provider.requestConfigs.size)
-        assertTrue(provider.requestConfigs[0].thinkingEnabled)
-        assertEquals(ReasoningEffort.HIGH, provider.requestConfigs[0].reasoningEffort)
-        assertFalse((0 until messages.length()).any {
-            messages.getJSONObject(it).optString("content") == AgentContextCompactor.SEAMLESS_CONTINUE_PROMPT
-        })
-        assertFalse(controller.requestCompact()) // run has sealed its maintenance inlet
-
-    }
-
-    @Test
-    fun pauseKeepsPartialAssistantInSameTurnThenContinues() {
-        val controller = AgentRunController()
-        val started = CountDownLatch(1)
-        val finished = CountDownLatch(1)
-        val failure = java.util.concurrent.atomic.AtomicReference<Throwable>()
-        val paused = CountDownLatch(1)
-        val provider = ScriptedProvider(
-            responses = listOf(
-                { _, runController ->
-                    val stream = java.util.concurrent.atomic.AtomicInteger()
-                    runController.register(interruptible = true) { stream.incrementAndGet() }
-                    runController.pause()
-                    paused.countDown()
-                    assistant(content = "已经写到一半", finishReason = "stop")
-                },
-                { request, _ ->
-                    val contents = (0 until request.messages.length()).map {
-                        request.messages.getJSONObject(it).optString("content")
-                    }
-                    assertTrue(contents.any { it.contains("已经写到一半") })
-                    assertTrue(contents.any { it.contains(AgentContextCompactor.SEAMLESS_CONTINUE_PROMPT) })
-                    assistant(content = "接着写完", finishReason = "stop")
-                },
-            )
-        )
-        val worker = thread(name = "pause-continue-loop") {
-            started.countDown()
-            runCatching {
-                AgentModelClient.complete(
-                    config = modelConfig(),
-                    prompt = "写一篇长文",
-                    provider = provider,
-                    runController = controller,
-                    toolExecutor = AgentModelClient.ToolExecutor { error("不应调用工具") },
-                )
-            }.exceptionOrNull()?.let(failure::set)
-            finished.countDown()
-        }
-        try {
-            assertTrue(started.await(1, TimeUnit.SECONDS))
-            assertTrue(paused.await(2, TimeUnit.SECONDS))
-            assertFalse(finished.await(200, TimeUnit.MILLISECONDS))
-            controller.resume()
-            assertTrue(finished.await(3, TimeUnit.SECONDS))
-            assertEquals(null, failure.get()?.toString(), failure.get()?.message)
-            assertEquals(2, provider.requests.size)
-        } finally {
-            controller.cancel()
-            worker.join(1_000)
-        }
-    }
-
-    @Test
-    fun pauseAfterCompleteToolCallsExecutesThemOnResume() {
-        val controller = AgentRunController()
-        val started = CountDownLatch(1)
-        val finished = CountDownLatch(1)
-        val paused = CountDownLatch(1)
-        val failure = java.util.concurrent.atomic.AtomicReference<Throwable>()
-        val toolsStarted = AtomicInteger()
-        val provider = ScriptedProvider(
-            responses = listOf(
-                { _, runController ->
-                    runController.register(interruptible = true) {}
-                    runController.pause()
-                    paused.countDown()
-                    assistant(
-                        finishReason = "tool_calls",
-                        toolCalls = listOf(toolCall("call-1", "get_current_context", "{}")),
-                    )
-                },
-                { request, _ ->
-                    val roles = (0 until request.messages.length()).map {
-                        request.messages.getJSONObject(it).optString("role")
-                    }
-                    assertTrue(roles.contains("tool"))
-                    assertFalse((0 until request.messages.length()).any {
-                        request.messages.getJSONObject(it).optString("content") ==
-                            AgentContextCompactor.SEAMLESS_CONTINUE_PROMPT
-                    })
-                    assistant(content = "已根据上下文继续", finishReason = "stop")
-                },
-            )
-        )
-        val worker = thread(name = "pause-tool-loop") {
-            started.countDown()
-            runCatching {
-                AgentModelClient.complete(
-                    config = modelConfig(),
-                    prompt = "查一下时间",
-                    provider = provider,
-                    runController = controller,
-                    toolExecutor = AgentModelClient.ToolExecutor {
-                        toolsStarted.incrementAndGet()
-                        AgentModelClient.ToolResult("{\"now\":\"2026-09-17\"}")
-                    },
-                )
-            }.exceptionOrNull()?.let(failure::set)
-            finished.countDown()
-        }
-        try {
-            assertTrue(started.await(1, TimeUnit.SECONDS))
-            assertTrue(paused.await(2, TimeUnit.SECONDS))
-            assertFalse(finished.await(200, TimeUnit.MILLISECONDS))
-            assertEquals(0, toolsStarted.get())
-            controller.resume()
-            assertTrue(finished.await(3, TimeUnit.SECONDS))
-            assertEquals(null, failure.get()?.toString(), failure.get()?.message)
-            assertEquals(1, toolsStarted.get())
-            assertEquals(2, provider.requests.size)
-        } finally {
-            controller.cancel()
-            worker.join(1_000)
-        }
-    }
-
-    @Test
-    fun usageLessToolRoundsDoNotReopenInitialProjectionBoundary() {
-        val events = mutableListOf<AgentEvent>()
-        val provider = ScriptedProvider(listOf(
-            { _, _ -> assistant(finishReason = "tool_calls",
-                toolCalls = listOf(toolCall("no-bill", "get_current_context", "{}"))) },
-            { _, _ -> assistant(content = "done", finishReason = "stop") },
-        ))
-        AgentLoop(config = modelConfig(),
-            messages = JSONArray().put(AgentConversationCodec.userTextMessage("task")),
-            tools = AgentToolCatalog.build(terminalTools = false, browserTools = false),
-            provider = provider,
-            toolExecutor = AgentModelClient.ToolExecutor { AgentModelClient.ToolResult("{}") },
-            runController = AgentRunController(), traceFormatter = AgentTraceFormatter(),
-            onEvent = events::add, compactPolicy = AgentLoop.CompactPolicy.Disabled).run()
-        val usage = events.filterIsInstance<AgentEvent.UsageReceived>()
-        assertEquals(2, provider.requests.size)
-        assertEquals(listOf(1), usage.map { it.round })
-        assertTrue(usage.all { it.projected })
-    }
-
-    @Test
-    fun reportsOnlyProviderUsageAcrossToolResults() {
-
-        val events = mutableListOf<AgentEvent>()
-        val provider = ScriptedProvider(
-            responses = listOf(
-                { _, _ ->
-                    assistant(
-                        finishReason = "tool_calls",
-                        toolCalls = listOf(toolCall("call-1", "get_current_context", "{}")),
-                        promptTokens = 135_880,
-                    )
-                },
-                { _, _ -> assistant(content = "完成", finishReason = "stop", promptTokens = 137_865) },
-            )
-        )
-        val messages = org.json.JSONArray()
-        messages.put(AgentConversationCodec.userTextMessage("核对账单"))
-
-        AgentLoop(
-            config = modelConfig(),
-            messages = messages,
-            tools = AgentToolCatalog.build(terminalTools = false, browserTools = false),
-            provider = provider,
-            toolExecutor = AgentModelClient.ToolExecutor {
-                AgentModelClient.ToolResult("{\"now\":\"2026-09-12\"}")
-            },
-            runController = AgentRunController(),
-            traceFormatter = AgentTraceFormatter(),
-            onEvent = events::add,
-            compactPolicy = AgentLoop.CompactPolicy.Disabled,
-        ).run()
-
-        val usageEvents = events.filterIsInstance<AgentEvent.UsageReceived>().filterNot { it.projected }
-        assertEquals(2, provider.requests.size)
-        assertEquals(2, usageEvents.size)
-        assertEquals(listOf(1, 2), usageEvents.map { it.round })
-        assertEquals(listOf(135_880, 137_865), usageEvents.map { it.usage.inputTokens })
-        assertEquals(listOf(1), events.filterIsInstance<AgentEvent.UsageReceived>().filter { it.projected }.map { it.round })
-        assertEquals(1, events.filterIsInstance<AgentEvent.ToolFinished>().size)
-    }
-
-    @Test
-    fun compactSkipsWhenBilledOccupancyIsBelowThreshold() {
-        var compactCalls = 0
-        val provider = ScriptedProvider(
-            responses = listOf(
-                { _, _ ->
-                    assistant(
-                        finishReason = "tool_calls",
-                        toolCalls = listOf(toolCall("call-1", "get_current_context", "{}")),
-                        promptTokens = 98_263,
-                    )
-                },
-                { _, _ -> assistant(content = "完成", finishReason = "stop", promptTokens = 98_263) },
-            )
-        )
-        val history = (1..6).flatMap { n ->
-            listOf(
-                AgentConversationCodec.userTextMessage("u$n"),
-                AgentConversationCodec.assistantHistoryMessage(
-                    assistant(content = "a$n", finishReason = "stop"),
-                    emptyList(),
-                ),
-            )
-        }
-        val messages = org.json.JSONArray()
-        history.forEach { messages.put(it) }
-        messages.put(AgentConversationCodec.userTextMessage("现在"))
-
-        val result = AgentLoop(
-            config = modelConfig(),
-            messages = messages,
-            tools = AgentToolCatalog.build(terminalTools = false, browserTools = false),
-            provider = provider,
-            toolExecutor = AgentModelClient.ToolExecutor {
-                AgentModelClient.ToolResult(org.json.JSONObject().put("ok", true).toString())
-            },
-            runController = AgentRunController(),
-            traceFormatter = AgentTraceFormatter(),
-            onEvent = {},
-            compactPolicy = AgentLoop.CompactPolicy(
-                enabled = true,
-                contextWindow = 500_000,
-                keepRecentMessages = 2,
-                compressModelConfig = modelConfig(),
-            ),
-            compactHistory = { source, policy ->
-                compactCalls += 1
-                source
-            },
-        ).run()
-
-        assertEquals("完成", result.content)
-        assertEquals(0, compactCalls)
-        assertEquals(2, provider.requests.size)
-    }
-
-    @Test fun malformedDelegationIsRepairedWithoutExecutingOrReplayingSiblingTools() {
-        val events = mutableListOf<AgentEvent>()
-        val executed = mutableListOf<String>()
-        val tools = AgentToolCatalog.build(terminalTools = false, browserTools = false).also {
-            io.github.mangi.eta.agent.delegation.SubAgentTools.appendTo(it, listOf("worker"))
-        }
-        val provider = ScriptedProvider(listOf(
-            { _, _ -> assistant(finishReason = "tool_calls", toolCalls = listOf(
-                toolCall("bad", "delegate_task", "{}"), toolCall("valid", "get_current_context", "{}"))) },
-            { request, _ ->
-                assertTrue(request.messages.toString().contains("DELEGATION_ARGUMENT_REPAIR"))
-                assertTrue(request.messages.toString().contains("task_created"))
-                assistant(finishReason = "tool_calls", toolCalls = listOf(toolCall("repaired", "delegate_task", "{\"task\":\"check evidence\"}")))
-            },
-            { _, _ -> assistant(content = "完成", finishReason = "stop") },
-        ))
-        AgentLoop(modelConfig(), JSONArray().put(AgentConversationCodec.userTextMessage("检查")), tools, provider,
-            AgentModelClient.ToolExecutor { call -> executed += call.id; AgentModelClient.ToolResult("{\"ok\":true}") },
-            AgentRunController(), AgentTraceFormatter(), { events += it }).run()
-        assertEquals(listOf("valid", "repaired"), executed)
-        assertEquals(1, events.filterIsInstance<AgentEvent.ModelRetryScheduled>().count { it.reasonCode == "DELEGATION_ARGUMENT_REPAIR" })
-        assertFalse(events.filterIsInstance<AgentEvent.ToolStarted>().any { it.toolCallId == "bad" })
-    }
-
-    @Test fun repeatedMalformedDelegationDisablesOnlyNewDelegationAfterTwoRepairRounds() {
-        val events = mutableListOf<AgentEvent>()
-        val tools = JSONArray().also { io.github.mangi.eta.agent.delegation.SubAgentTools.appendTo(it, listOf("worker")) }
-        val provider = ScriptedProvider(listOf(
-            { _, _ -> assistant(finishReason = "tool_calls", toolCalls = listOf(toolCall("bad1", "delegate_task", "{}"))) },
-            { _, _ -> assistant(finishReason = "tool_calls", toolCalls = listOf(toolCall("bad2", "delegate_task", "{}"))) },
-            { _, _ -> assistant(finishReason = "tool_calls", toolCalls = listOf(toolCall("bad3", "delegate_task", "{}"))) },
-            { request, _ ->
-                val names = (0 until request.tools.length()).map { request.tools.getJSONObject(it).getJSONObject("function").getString("name") }
-                assertFalse("delegate_task" in names)
-                assertTrue("get_task_result" in names)
-                assertTrue(request.messages.toString().contains("DELEGATION_ARGUMENT_REPAIR_EXHAUSTED"))
-                assistant(content = "主代理接手", finishReason = "stop")
-            },
-        ))
-        AgentLoop(modelConfig(), JSONArray().put(AgentConversationCodec.userTextMessage("检查")), tools, provider,
-            AgentModelClient.ToolExecutor { error("Malformed calls must never execute") }, AgentRunController(), AgentTraceFormatter(),
-            { events += it }, toolsForRound = { tools }).run()
-        assertEquals(2, events.filterIsInstance<AgentEvent.ModelRetryScheduled>().size)
-        assertEquals(listOf("bad3"), events.filterIsInstance<AgentEvent.ToolStarted>().map { it.toolCallId })
     }
 
     private fun modelConfig(): AgentModelClient.ModelConfig =
@@ -1506,6 +932,7 @@ class AgentModelClientLoopTest {
             baseUrl = "https://example.invalid/v1",
             apiKey = "test-key",
             model = "test-model",
+            contextWindow = 128_000,
             systemPrompt = "",
             browserTools = false,
         )
@@ -1515,7 +942,6 @@ class AgentModelClientLoopTest {
         finishReason: String,
         toolCalls: List<JSONObject> = emptyList(),
         reasoning: String = "",
-        promptTokens: Int? = null,
     ): JSONObject =
         JSONObject()
             .put("role", "assistant")
@@ -1525,15 +951,6 @@ class AgentModelClientLoopTest {
             .also { message ->
                 if (toolCalls.isNotEmpty()) {
                     message.put("tool_calls", JSONArray(toolCalls))
-                }
-                if (promptTokens != null) {
-                    message.put(
-                        "usage",
-                        JSONObject()
-                            .put("prompt_tokens", promptTokens)
-                            .put("completion_tokens", 1)
-                            .put("total_tokens", promptTokens + 1),
-                    )
                 }
             }
 
@@ -1559,4 +976,32 @@ class AgentModelClientLoopTest {
 
     private fun JSONArray.getJSONObjectFromEnd(offset: Int): JSONObject =
         getJSONObject(length() - offset)
+
+    @Test
+    fun steeringMarksInternalFlagAndOpenAiProjectionStripsIt() {
+        val controller = AgentRunController()
+        val provider = ScriptedProvider(
+            responses = listOf(
+                { _, _ ->
+                    controller.steer("继续核对日志")
+                    assistant(content = "第一阶段", finishReason = "stop")
+                },
+                { _, _ -> assistant(content = "已完成", finishReason = "stop") },
+            ),
+        )
+
+        AgentModelClient.complete(
+            config = modelConfig(),
+            prompt = "开始",
+            toolExecutor = AgentModelClient.ToolExecutor { error("不应调用工具") },
+            provider = provider,
+            runController = controller,
+        )
+
+        val steered = provider.requests[1].getJSONObjectFromEnd(1)
+        assertEquals("user", steered.getString("role"))
+        assertTrue(steered.optBoolean("_eta_steering"))
+        val projected = OpenAiRequestMessages.forChatCompletions(provider.requests[1])
+        assertFalse(projected.toString().contains("_eta_steering"))
+    }
 }

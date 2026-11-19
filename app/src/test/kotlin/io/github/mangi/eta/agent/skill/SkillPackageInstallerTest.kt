@@ -110,36 +110,6 @@ class SkillPackageInstallerTest {
     }
 
     @Test
-    fun repositoryInstallIgnoresIncompatibleSkillsOutsideSelection() {
-        val fixture = fixture("mixed-repo-selection")
-        val archive = zip(
-            "repo-main/bilibili-hub/SKILL.md" to skill(
-                "bilibili-hub",
-                "Read Bilibili with Python. Obtain cookies through browser_use get_cookies.",
-            ),
-            "repo-main/android-ui-automation/SKILL.md" to """
-                ---
-                name: android-ui-automation
-                description: Drive phone-only apps through Accessibility.
-                compatibility: Android-only; requires android-a11y-cli and the Minis Accessibility Service
-                ---
-
-                Use android-a11y-cli ui dump.
-            """.trimIndent().encodeToByteArray(),
-        )
-
-        val result = fixture.installer.installRepositoryZip(
-            openStream = { archive.inputStream() },
-            selectedPaths = listOf("bilibili-hub"),
-        )
-
-        val success = result as SkillInstallResult.Success
-        assertEquals(listOf("bilibili-hub"), success.installed.map { it.id })
-        assertTrue(File(fixture.skillsRoot, "bilibili-hub/SKILL.md").isFile)
-        assertFalse(File(fixture.skillsRoot, "android-ui-automation").exists())
-    }
-
-    @Test
     fun repositorySelectionRejectsSkillContainingNestedSkill() {
         val fixture = fixture("nested-selection")
         val archive = zip(
@@ -155,60 +125,6 @@ class SkillPackageInstallerTest {
         assertFailureCode(result, SkillInstallErrorCode.INVALID_SELECTION)
         assertFalse(File(fixture.skillsRoot, "parent").exists())
         assertFalse(File(fixture.skillsRoot, "child").exists())
-    }
-
-    @Test
-    fun incompatibleMinisCliSkillIsRejectedBeforeInstall() {
-        val fixture = fixture("incompatible-minis-cli")
-        val archive = zip(
-            "SKILL.md" to """
-                ---
-                name: android-ui-automation
-                description: Drive phone-only apps through Accessibility.
-                compatibility: Android-only; requires android-a11y-cli and the Minis Accessibility Service
-                ---
-
-                Use android-a11y-cli ui dump.
-            """.trimIndent().encodeToByteArray(),
-        )
-
-        val result = fixture.installer.installLocalZip({ archive.inputStream() })
-
-        assertFailureCode(result, SkillInstallErrorCode.INCOMPATIBLE_SKILL)
-        assertFalse(File(fixture.skillsRoot, "android-ui-automation").exists())
-    }
-
-    @Test
-    fun appleRuntimeSkillIsRejectedBeforeInstall() {
-        val fixture = fixture("incompatible-healthkit")
-        val archive = zip(
-            "SKILL.md" to skill(
-                "health-sleep-analysis",
-                "Analyze sleep health data from Apple HealthKit and Watch sleep stages.",
-            ),
-        )
-
-        val result = fixture.installer.installLocalZip({ archive.inputStream() })
-
-        assertFailureCode(result, SkillInstallErrorCode.INCOMPATIBLE_SKILL)
-        assertFalse(File(fixture.skillsRoot, "health-sleep-analysis").exists())
-    }
-
-    @Test
-    fun hubSkillThatMentionsBrowserCookiesStillInstalls() {
-        val fixture = fixture("compatible-hub")
-        val archive = zip(
-            "SKILL.md" to skill(
-                "bilibili-hub",
-                "Read Bilibili with Python. Obtain cookies through browser_use get_cookies.",
-            ),
-        )
-
-        val result = fixture.installer.installLocalZip({ archive.inputStream() })
-
-        val success = result as SkillInstallResult.Success
-        assertEquals("bilibili-hub", success.installed.single().id)
-        assertTrue(File(fixture.skillsRoot, "bilibili-hub/SKILL.md").isFile)
     }
 
     @Test

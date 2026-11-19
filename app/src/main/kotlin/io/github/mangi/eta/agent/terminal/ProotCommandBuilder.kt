@@ -16,7 +16,6 @@ internal object ProotCommandBuilder {
         workspace: String = TerminalRuntime.userWorkspacePath,
         tempDirectory: File = TerminalRuntime.temporaryDirectory,
         publicStorageGranted: Boolean = TerminalRuntime.publicStorageGranted,
-        skillsDirectory: File? = TerminalRuntime.visibleSkillsDirectory(),
     ): String {
         val native = nativeDirectory ?: return "echo ETA_PROOT_UNAVAILABLE >&2; exit 127"
         val proot = File(native, "libproot_exec.so").absolutePath
@@ -27,22 +26,7 @@ internal object ProotCommandBuilder {
             args += listOf("-b", "$source:$destination")
         }
         listOf("/dev", "/proc", "/sys").filter { File(it).isDirectory }.forEach { bind(it) }
-        TerminalRuntime.ensureLinuxWorkspaceLayout(workspace)
         bind(workspace, "/workspace")
-        bind(workspace, "/var/minis/workspace")
-        val offloads = TerminalRuntime.minisOffloadsDirectory()
-        val browser = TerminalRuntime.minisBrowserDirectory()
-        if (offloads != null) bind(offloads.absolutePath, "/var/minis/offloads")
-        else bind("$workspace/offloads", "/var/minis/offloads")
-        if (browser != null) bind(browser.absolutePath, "/var/minis/browser")
-        else bind("$workspace/browser", "/var/minis/browser")
-        skillsDirectory?.takeIf { it.isDirectory }?.let { root ->
-            bind(root.absolutePath, "/var/minis/skills")
-            root.listFiles().orEmpty().filter { it.isDirectory && !it.name.startsWith(".") }.forEach { skill ->
-                val data = File(root.parentFile, "skill-data/${skill.name}").canonicalFile
-                if (data.isDirectory) bind(data.absolutePath, "/var/minis/skills/${skill.name}/data")
-            }
-        }
         bind(tempDirectory.absolutePath, "/dev/shm")
         if (publicStorageGranted && File("/storage/emulated/0").canRead()) bind("/storage/emulated/0")
         sharedMounts.filter {
@@ -53,7 +37,7 @@ internal object ProotCommandBuilder {
             bind(it.sourcePath, "${SharedFolderMounts.LINUX_MOUNTS_ROOT}/${it.name}")
         }
         args += listOf("/usr/bin/env", "-i", "HOME=/root", "USER=root", "LOGNAME=root", "SHELL=/bin/sh", "TERM=$termType",
-            "LANG=C.UTF-8", "LC_ALL=C.UTF-8", "TMPDIR=/tmp", "PYTHONDONTWRITEBYTECODE=1", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+            "LANG=C.UTF-8", "LC_ALL=C.UTF-8", "TMPDIR=/tmp", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
         if (command != null) args += "NO_COLOR=1"
         args += "/bin/sh"
         if (command != null) args += listOf("-lc", command)

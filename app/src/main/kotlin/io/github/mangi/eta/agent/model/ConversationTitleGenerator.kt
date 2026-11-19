@@ -49,8 +49,7 @@ internal class ConversationTitleGenerator(
                     config = config,
                     messages = messages,
                     tools = JSONArray(),
-                    // Reuse Yunke's post-custom-body text-only envelope restriction.
-                    reconnectTextOnly = true,
+                    purpose = ProviderRequestPurpose.TITLE_GENERATION,
                 ),
                 controller,
             ) { event ->
@@ -61,7 +60,6 @@ internal class ConversationTitleGenerator(
                 }
             }
             if (response.stopReason != AssistantStopReason.END_TURN) return@async null
-            if ((response.assistantMessage.optJSONArray("tool_calls")?.length() ?: 0) > 0) return@async null
             response.assistantMessage.optString("content")
         }
         try {

@@ -3,7 +3,6 @@ package io.github.mangi.eta.agent.runtime
 import android.content.SharedPreferences
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.config.Prefs
-import io.github.mangi.eta.data.model.ReasoningEffort
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -11,22 +10,15 @@ import org.json.JSONObject
 
 /** Runtime 自己裁决可选能力，不能把入口进程提交的布尔值当作授权。 */
 internal object AgentRuntimePolicy {
-    private val COMPRESSION_EFFORT_PROBE = listOf(
-        ReasoningEffort.MINIMAL,
-        ReasoningEffort.LOW,
-        ReasoningEffort.MEDIUM,
-        ReasoningEffort.HIGH,
-        ReasoningEffort.XHIGH,
-        ReasoningEffort.MAX,
-    )
-
     data class Permissions(
         val terminalTools: Boolean,
         val browserTools: Boolean,
         val deviceDirectTools: Boolean = false,
         val deviceSensitiveReadTools: Boolean = false,
         val deviceSensitiveActionTools: Boolean = false,
-        val thinking: Boolean,
+        val autoCompaction: Boolean = Prefs.Keys.BOOLEAN_DEFAULTS.getValue(Prefs.Keys.AGENT_AUTO_COMPACTION_ENABLED),
+        val subagentTools: Boolean = Prefs.Keys.BOOLEAN_DEFAULTS.getValue(Prefs.Keys.AGENT_SUBAGENT_ENABLED),
+        val virtualDisplay: Boolean = Prefs.Keys.BOOLEAN_DEFAULTS.getValue(Prefs.Keys.AGENT_VIRTUAL_DISPLAY_ENABLED),
     )
 
     fun permissions(preferences: SharedPreferences?): Permissions =
@@ -38,64 +30,16 @@ internal object AgentRuntimePolicy {
                 preferences.allowed(Prefs.Keys.AGENT_DEVICE_SENSITIVE_READ_TOOLS),
             deviceSensitiveActionTools =
                 preferences.allowed(Prefs.Keys.AGENT_DEVICE_SENSITIVE_ACTION_TOOLS),
-            thinking = preferences.allowed(Prefs.Keys.AGENT_THINKING_ENABLED),
+            autoCompaction = preferences.allowed(Prefs.Keys.AGENT_AUTO_COMPACTION_ENABLED),
+            subagentTools = preferences.allowed(Prefs.Keys.AGENT_SUBAGENT_ENABLED),
+            virtualDisplay = preferences.allowed(Prefs.Keys.AGENT_VIRTUAL_DISPLAY_ENABLED),
         )
-
-    fun withoutOptionalThinking(config: AgentModelClient.ModelConfig): AgentModelClient.ModelConfig {
-        if (config.reasoningCapabilities?.mandatory == true) return config
-        return constrain(
-            config,
-            Permissions(
-                terminalTools = true,
-                browserTools = true,
-                deviceDirectTools = true,
-                deviceSensitiveReadTools = true,
-                deviceSensitiveActionTools = true,
-                thinking = false,
-            ),
-        )
-    }
-
-    /**
-     * 压缩思考探测顺序：能关先关；否则从 minimal 一档档往上，不沿用对话里的 high/max。
-     */
-    fun compressionEffortLadder(config: AgentModelClient.ModelConfig): List<ReasoningEffort> {
-        val capabilities = config.reasoningCapabilities
-        val steps = ArrayList<ReasoningEffort>()
-        if (capabilities == null || (capabilities.canDisable && !capabilities.mandatory)) {
-            steps += ReasoningEffort.OFF
-        }
-        steps += COMPRESSION_EFFORT_PROBE
-        if (steps.isEmpty()) {
-            steps += if (capabilities?.mandatory == true) ReasoningEffort.DEFAULT else ReasoningEffort.OFF
-        }
-        return steps.distinct()
-    }
-
-    fun forCompression(
-        config: AgentModelClient.ModelConfig,
-        effort: ReasoningEffort = compressionEffortLadder(config).first(),
-    ): AgentModelClient.ModelConfig {
-        val disabled = constrain(
-            config.copy(reasoningEffort = effort, thinkingEnabled = effort.enablesReasoning),
-            Permissions(
-                terminalTools = true,
-                browserTools = true,
-                deviceDirectTools = true,
-                deviceSensitiveReadTools = true,
-                deviceSensitiveActionTools = true,
-                thinking = effort.enablesReasoning,
-            ),
-        )
-        return disabled.copy(reasoningEffort = effort, thinkingEnabled = effort.enablesReasoning)
-    }
 
     fun constrain(
         config: AgentModelClient.ModelConfig,
         permissions: Permissions,
     ): AgentModelClient.ModelConfig {
-        val requestedEffort = config.effectiveReasoningEffort
-        val effectiveEffort = if (permissions.thinking) requestedEffort else ReasoningEffort.OFF
+        val effectiveEffort = config.effectiveReasoningEffort
         val thinkingEnabled = effectiveEffort.enablesReasoning
         val constrained = config.copy(
             terminalTools = config.terminalTools && permissions.terminalTools,
@@ -107,6 +51,8 @@ internal object AgentRuntimePolicy {
                 config.deviceSensitiveActionTools && permissions.deviceSensitiveActionTools,
             thinkingEnabled = thinkingEnabled,
             reasoningEffort = effectiveEffort,
+            autoCompactionEnabled = config.autoCompactionEnabled && permissions.autoCompaction,
+            subagentTools = config.subagentTools && permissions.subagentTools,
         )
         if (thinkingEnabled) return constrained
         return constrained.copy(
@@ -166,6 +112,8 @@ internal object AgentRuntimePolicy {
     private val THINKING_OVERRIDE_KEYS = setOf(
         "thinking",
         "thinking_budget",
+        "thinking_level",
+        "thinking_summaries",
         "reasoning",
         "reasoning_effort",
         "reasoning_budget",

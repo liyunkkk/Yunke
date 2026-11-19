@@ -7,7 +7,8 @@ import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
 import androidx.room.Relation
-import io.github.mangi.eta.data.model.BalanceOption
+import io.github.mangi.eta.data.model.GeminiEndpointMode
+import io.github.mangi.eta.data.model.GeminiProviderSetting
 import io.github.mangi.eta.data.model.AnthropicProviderSetting
 import io.github.mangi.eta.data.model.CustomBody
 import io.github.mangi.eta.data.model.CustomHeader
@@ -18,9 +19,10 @@ import io.github.mangi.eta.data.model.ModelSource
 import io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting
 import io.github.mangi.eta.data.model.OpenAiEndpointMode
 import io.github.mangi.eta.data.model.ProviderSetting
+import io.github.mangi.eta.data.model.ProviderAuthModes
 import io.github.mangi.eta.data.model.ProviderTypes
-import io.github.mangi.eta.data.model.ReasoningEffort
 import io.github.mangi.eta.data.provider.ProviderSourceRegistry
+import io.github.mangi.eta.data.provider.ProviderConnectionProfile
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
@@ -44,15 +46,13 @@ internal data class ProviderEntity(
     @ColumnInfo(name = "endpoint_mode") val endpointMode: String,
     @ColumnInfo(name = "hosted_web_search_enabled", defaultValue = "0")
     val hostedWebSearchEnabled: Boolean,
-    @ColumnInfo(name = "responses_strip_reasoning_status", defaultValue = "0")
-    val responsesStripReasoningStatus: Boolean = false,
     @ColumnInfo(name = "anthropic_version") val anthropicVersion: String,
-    @ColumnInfo(name = "balance_option_json", defaultValue = "'{}'")
-    val balanceOptionJson: String = "{}",
     @ColumnInfo(name = "auth_mode", defaultValue = "'api_key'")
-    val authMode: String = "api_key",
-    @ColumnInfo(name = "session_gateway_json", defaultValue = "''")
-    val sessionGatewayJson: String = "",
+    val authMode: String = ProviderAuthModes.API_KEY,
+    @ColumnInfo(name = "vertex_project", defaultValue = "''")
+    val vertexProject: String = "",
+    @ColumnInfo(name = "vertex_location", defaultValue = "'global'")
+    val vertexLocation: String = GeminiProviderSetting.DEFAULT_VERTEX_LOCATION,
 )
 
 @Serializable
@@ -85,7 +85,6 @@ internal data class ProviderModelEntity(
     @ColumnInfo(name = "input_modalities_json") val inputModalitiesJson: String,
     @ColumnInfo(name = "output_modalities_json") val outputModalitiesJson: String,
     @ColumnInfo(name = "attachment") val attachment: Boolean?,
-    @ColumnInfo(name = "vision_override") val visionOverride: Boolean? = null,
     @ColumnInfo(name = "tool_call") val toolCall: Boolean?,
     @ColumnInfo(name = "reasoning") val reasoning: Boolean?,
     @ColumnInfo(name = "reasoning_capabilities_json", defaultValue = "'null'")
@@ -93,8 +92,6 @@ internal data class ProviderModelEntity(
     @ColumnInfo(name = "reasoning_override") val reasoningOverride: Boolean?,
     @ColumnInfo(name = "reasoning_capabilities_override_json", defaultValue = "'null'")
     val reasoningCapabilitiesOverrideJson: String = "null",
-    @ColumnInfo(name = "preferred_reasoning_effort")
-    val preferredReasoningEffort: String? = null,
     @ColumnInfo(name = "structured_output") val structuredOutput: Boolean?,
     @ColumnInfo(name = "supports_temperature") val supportsTemperature: Boolean?,
     @ColumnInfo(name = "custom_headers_json") val customHeadersJson: String,
@@ -118,7 +115,8 @@ internal fun ProviderSetting.toEntity(): ProviderEntity =
         type = storageType,
         name = name,
         baseUrl = baseUrl,
-        apiKey = apiKey,
+        apiKey = apiKey.takeIf { authMode == ProviderAuthModes.API_KEY }.orEmpty(),
+        authMode = authMode,
         isEnabled = isEnabled,
         isBuiltIn = isBuiltIn,
         sortOrder = sortOrder,
@@ -130,16 +128,18 @@ internal fun ProviderSetting.toEntity(): ProviderEntity =
             is OpenAiCompatibleProviderSetting -> endpointMode
             is CustomProviderSetting -> endpointMode
             is AnthropicProviderSetting -> OpenAiEndpointMode.CHAT_COMPLETIONS
+            is GeminiProviderSetting -> GeminiEndpointMode.normalize(endpointMode)
         },
-        responsesStripReasoningStatus = responsesStripReasoningStatus,
         hostedWebSearchEnabled = hostedWebSearchEnabled,
-        balanceOptionJson = ProviderJson.encodeBalance(balanceOption),
-        authMode = io.github.mangi.eta.data.model.ProviderAuthMode.parse(authMode),
-        sessionGatewayJson = sessionGatewayJson,
         anthropicVersion = when (this) {
             is AnthropicProviderSetting -> anthropicVersion
             else -> AnthropicProviderSetting.DEFAULT_ANTHROPIC_VERSION
         },
+        vertexProject = (this as? GeminiProviderSetting)?.vertexProject.orEmpty(),
+        vertexLocation = (this as? GeminiProviderSetting)?.vertexLocation
+            ?.trim()
+            ?.ifBlank { GeminiProviderSetting.DEFAULT_VERTEX_LOCATION }
+            ?: GeminiProviderSetting.DEFAULT_VERTEX_LOCATION,
     )
 
 internal fun ProviderSetting.toModelEntities(): List<ProviderModelEntity> =
@@ -149,7 +149,7 @@ internal fun ProviderWithModels.toDomain(): ProviderSetting {
     val domainModels = models
         .sortedBy { it.sortOrder }
         .map(ProviderModelEntity::toDomain)
-    val sourceType = ProviderSourceRegistry.resolve(
+    val sourceType = ProviderConnectionProfile.forAuthMode(provider.authMode)?.sourceType ?: ProviderSourceRegistry.resolve(
         providerId = provider.id,
         baseUrl = provider.baseUrl,
         providerType = provider.type,
@@ -160,6 +160,26 @@ internal fun ProviderWithModels.toDomain(): ProviderSetting {
             name = provider.name,
             baseUrl = provider.baseUrl,
             sourceType = sourceType,
+            apiKey = provider.apiKey.takeIf { provider.authMode == ProviderAuthModes.API_KEY }.orEmpty(),
+            authMode = provider.authMode,
+            isEnabled = provider.isEnabled,
+            isBuiltIn = provider.isBuiltIn,
+            sortOrder = provider.sortOrder,
+            systemPrompt = provider.systemPrompt,
+            models = domainModels,
+            customHeaders = ProviderJson.decodeHeaders(provider.customHeadersJson),
+            customBody = ProviderJson.decodeBody(provider.customBodyJson),
+            createdAt = provider.createdAt,
+            anthropicVersion = provider.anthropicVersion.ifBlank {
+                AnthropicProviderSetting.DEFAULT_ANTHROPIC_VERSION
+            },
+        )
+
+        ProviderTypes.GEMINI -> GeminiProviderSetting(
+            id = provider.id,
+            name = provider.name,
+            baseUrl = provider.baseUrl,
+            sourceType = sourceType,
             apiKey = provider.apiKey,
             isEnabled = provider.isEnabled,
             isBuiltIn = provider.isBuiltIn,
@@ -169,12 +189,10 @@ internal fun ProviderWithModels.toDomain(): ProviderSetting {
             customHeaders = ProviderJson.decodeHeaders(provider.customHeadersJson),
             customBody = ProviderJson.decodeBody(provider.customBodyJson),
             createdAt = provider.createdAt,
-            authMode = io.github.mangi.eta.data.model.ProviderAuthMode.parse(provider.authMode),
-            balanceOption = ProviderJson.decodeBalance(provider.balanceOptionJson),
-            sessionGatewayJson = provider.sessionGatewayJson,
-            anthropicVersion = provider.anthropicVersion.ifBlank {
-                AnthropicProviderSetting.DEFAULT_ANTHROPIC_VERSION
-            },
+            hostedWebSearchEnabled = provider.hostedWebSearchEnabled,
+            endpointMode = GeminiEndpointMode.normalize(provider.endpointMode),
+            vertexProject = provider.vertexProject,
+            vertexLocation = provider.vertexLocation.ifBlank { GeminiProviderSetting.DEFAULT_VERTEX_LOCATION },
         )
 
         ProviderTypes.CUSTOM -> CustomProviderSetting(
@@ -182,7 +200,8 @@ internal fun ProviderWithModels.toDomain(): ProviderSetting {
             name = provider.name,
             baseUrl = provider.baseUrl,
             sourceType = sourceType,
-            apiKey = provider.apiKey,
+            apiKey = provider.apiKey.takeIf { provider.authMode == ProviderAuthModes.API_KEY }.orEmpty(),
+            authMode = provider.authMode,
             isEnabled = provider.isEnabled,
             isBuiltIn = provider.isBuiltIn,
             sortOrder = provider.sortOrder,
@@ -191,12 +210,8 @@ internal fun ProviderWithModels.toDomain(): ProviderSetting {
             customHeaders = ProviderJson.decodeHeaders(provider.customHeadersJson),
             customBody = ProviderJson.decodeBody(provider.customBodyJson),
             createdAt = provider.createdAt,
-            authMode = io.github.mangi.eta.data.model.ProviderAuthMode.parse(provider.authMode),
             endpointMode = provider.endpointMode.ifBlank { OpenAiEndpointMode.CHAT_COMPLETIONS },
-            responsesStripReasoningStatus = provider.responsesStripReasoningStatus,
             hostedWebSearchEnabled = provider.hostedWebSearchEnabled,
-            balanceOption = ProviderJson.decodeBalance(provider.balanceOptionJson),
-            sessionGatewayJson = provider.sessionGatewayJson,
         )
 
         else -> OpenAiCompatibleProviderSetting(
@@ -204,7 +219,8 @@ internal fun ProviderWithModels.toDomain(): ProviderSetting {
             name = provider.name,
             baseUrl = provider.baseUrl,
             sourceType = sourceType,
-            apiKey = provider.apiKey,
+            apiKey = provider.apiKey.takeIf { provider.authMode == ProviderAuthModes.API_KEY }.orEmpty(),
+            authMode = provider.authMode,
             isEnabled = provider.isEnabled,
             isBuiltIn = provider.isBuiltIn,
             sortOrder = provider.sortOrder,
@@ -213,12 +229,8 @@ internal fun ProviderWithModels.toDomain(): ProviderSetting {
             customHeaders = ProviderJson.decodeHeaders(provider.customHeadersJson),
             customBody = ProviderJson.decodeBody(provider.customBodyJson),
             createdAt = provider.createdAt,
-            authMode = io.github.mangi.eta.data.model.ProviderAuthMode.parse(provider.authMode),
             endpointMode = provider.endpointMode.ifBlank { OpenAiEndpointMode.CHAT_COMPLETIONS },
-            responsesStripReasoningStatus = provider.responsesStripReasoningStatus,
             hostedWebSearchEnabled = provider.hostedWebSearchEnabled,
-            balanceOption = ProviderJson.decodeBalance(provider.balanceOptionJson),
-            sessionGatewayJson = provider.sessionGatewayJson,
         )
     }
 }
@@ -227,6 +239,7 @@ private val ProviderSetting.storageType: String
     get() = when (this) {
         is OpenAiCompatibleProviderSetting -> ProviderTypes.OPENAI_COMPATIBLE
         is AnthropicProviderSetting -> ProviderTypes.ANTHROPIC
+        is GeminiProviderSetting -> ProviderTypes.GEMINI
         is CustomProviderSetting -> ProviderTypes.CUSTOM
     }
 
@@ -245,7 +258,6 @@ private fun Model.toEntity(providerId: String): ProviderModelEntity =
         inputModalitiesJson = ProviderJson.encodeStrings(inputModalities),
         outputModalitiesJson = ProviderJson.encodeStrings(outputModalities),
         attachment = attachment,
-        visionOverride = visionOverride,
         toolCall = toolCall,
         reasoning = reasoning,
         reasoningCapabilitiesJson = ProviderJson.encodeReasoningCapabilities(reasoningCapabilities),
@@ -253,7 +265,6 @@ private fun Model.toEntity(providerId: String): ProviderModelEntity =
         reasoningCapabilitiesOverrideJson = ProviderJson.encodeReasoningCapabilities(
             reasoningCapabilitiesOverride
         ),
-        preferredReasoningEffort = preferredReasoningEffort?.wireValue,
         structuredOutput = structuredOutput,
         supportsTemperature = supportsTemperature,
         customHeadersJson = ProviderJson.encodeHeaders(customHeaders),
@@ -273,12 +284,13 @@ private fun ProviderModelEntity.toDomain(): Model =
         sortOrder = sortOrder,
         contextWindow = contextWindow,
         contextWindowOverride = contextWindowOverride,
-        inputModalities = ProviderJson.decodeStrings(inputModalitiesJson),
+        inputModalities = ProviderJson.decodeStrings(inputModalitiesJson).ifEmpty {
+            listOf(Model.TEXT_MODALITY)
+        },
         outputModalities = ProviderJson.decodeStrings(outputModalitiesJson).ifEmpty {
             listOf(Model.TEXT_MODALITY)
         },
         attachment = attachment,
-        visionOverride = visionOverride,
         toolCall = toolCall,
         reasoning = reasoning,
         reasoningCapabilities = ProviderJson.decodeReasoningCapabilities(reasoningCapabilitiesJson),
@@ -286,7 +298,6 @@ private fun ProviderModelEntity.toDomain(): Model =
         reasoningCapabilitiesOverride = ProviderJson.decodeReasoningCapabilities(
             reasoningCapabilitiesOverrideJson
         ),
-        preferredReasoningEffort = ReasoningEffort.fromWireValue(preferredReasoningEffort),
         structuredOutput = structuredOutput,
         supportsTemperature = supportsTemperature,
         customHeaders = ProviderJson.decodeHeaders(customHeadersJson),
@@ -334,10 +345,4 @@ private object ProviderJson {
                     json.decodeFromString(ModelReasoningCapabilities.serializer(), encoded)
                 }.getOrNull()
             }
-
-    fun encodeBalance(balanceOption: BalanceOption): String =
-        json.encodeToString(BalanceOption.serializer(), balanceOption)
-
-    fun decodeBalance(raw: String): BalanceOption =
-        runCatching { json.decodeFromString(BalanceOption.serializer(), raw) }.getOrDefault(BalanceOption())
 }

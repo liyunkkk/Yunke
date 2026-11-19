@@ -1,52 +1,47 @@
 package io.github.mangi.eta.ui.components
 
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.ui.draw.dropShadow
-import androidx.compose.ui.graphics.shadow.Shadow
-import kotlinx.coroutines.launch
-import androidx.compose.material3.DropdownMenuItem
-import android.Manifest
-import android.content.pm.PackageManager
-import android.widget.Toast
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
+import io.github.mangi.eta.ui.voice.SpeechDictationButton
+import io.github.mangi.eta.ui.voice.SpeechInputFeedback
+import io.github.mangi.eta.ui.voice.rememberSpeechInput
+import androidx.compose.ui.text.TextRange
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -57,95 +52,89 @@ import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ArrowUpward
-import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material.icons.rounded.KeyboardVoice
-import androidx.compose.material.icons.rounded.RecordVoiceOver
-import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import io.github.mangi.eta.ui.model.ConversationMention
-import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.dropShadow
 import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.shadow.Shadow
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInWindow
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.vectorResource
-import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.itos.coui.effect.couiButtonFeedback
+import com.itos.coui.menu.CouiMenuItem
+import com.itos.coui.menu.Menu
+import com.itos.coui.menu.couiMenuAnchor
+import com.itos.coui.menu.rememberCouiMenuAnchor
+import com.itos.coui.shape.CouiShape
+import com.itos.coui.theme.CouiTheme
 import io.github.mangi.eta.R
-import io.github.mangi.eta.agent.media.AgentVideoCodec
-import io.github.mangi.eta.agent.voice.VoiceEntryMode
-import io.github.mangi.eta.agent.voice.VoiceModeState
-import io.github.mangi.eta.agent.voice.VoiceModePhase
-import io.github.mangi.eta.agent.model.AgentModelClient
-import io.github.mangi.eta.agent.skill.SkillCompatibilityChecker
-import io.github.mangi.eta.agent.skill.SkillRuntime
-import io.github.mangi.eta.data.model.GptSpeedMode
+import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.data.model.ReasoningEffort
-import io.github.mangi.eta.config.Prefs
-import androidx.core.content.ContextCompat
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
-import io.github.mangi.eta.ui.haptics.TouchHaptics
-import io.github.mangi.eta.data.repository.AssistantRepository
-import io.github.mangi.eta.ui.screens.assistants.AssistantPickerDialog
-import io.github.mangi.eta.ui.model.AgentModelPickerUiState
-import io.github.mangi.eta.ui.model.liveContextUsage
-import io.github.mangi.eta.ui.model.ConversationMentionInputUi
-import io.github.mangi.eta.ui.model.SkillSlashMention
+import io.github.mangi.eta.data.repository.SpeechSettingsRepository
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.ui.markdown.EditorialLineHeightStyle
+import io.github.mangi.eta.ui.model.AgentContextUsageUi
 import io.github.mangi.eta.ui.model.PendingFileReferenceUi
 import io.github.mangi.eta.ui.model.PendingImageUi
-import kotlin.math.roundToInt
+import io.github.mangi.eta.ui.model.QueuedMessageUi
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
-import top.yukonga.miuix.kmp.basic.Slider
-import top.yukonga.miuix.kmp.basic.SliderDefaults
-import top.yukonga.miuix.kmp.basic.ListPopupDefaults
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.blur.Backdrop
+import top.yukonga.miuix.kmp.glass.GlassPopupItem
+import top.yukonga.miuix.kmp.glass.GlassPopupSizing
+import top.yukonga.miuix.kmp.glass.GlassTransformPopup
+import top.yukonga.miuix.kmp.glass.glassPanel
+import top.yukonga.miuix.kmp.glass.glassPopupAnchor
+import top.yukonga.miuix.kmp.glass.glassPopupAnchorContent
+import top.yukonga.miuix.kmp.glass.glassPress
+import top.yukonga.miuix.kmp.glass.rememberGlassPopupAnchor
+import top.yukonga.miuix.kmp.icon.MiuixIcons
+import top.yukonga.miuix.kmp.icon.glass.Close
+import top.yukonga.miuix.kmp.material.GlassDefaults
+import top.yukonga.miuix.kmp.material.GlassEdgeStrokes
+import top.yukonga.miuix.kmp.material.GlassMaterials
+import top.yukonga.miuix.kmp.material.GlassShadows
+import top.yukonga.miuix.kmp.material.GlassShape
+import top.yukonga.miuix.kmp.material.isRuntimeShaderSupported
 import top.yukonga.miuix.kmp.squircle.squircleBorder
 import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import top.yukonga.miuix.kmp.window.WindowDialog
 
 private val SendButtonVisualSize = ChatInputActionIconSize
 private val SendIconSize = 16.dp
 private val StopIconSize = 10.dp
-private val ThinkingIconSize = 21.dp
-private val InputContainerShape = RoundedCornerShape(EtaInputCornerRadius)
 
 /**
  * Agent 输入器始终保持同一空间结构，聚焦、输入和执行过程只改变状态，不搬动操作入口。
@@ -154,204 +143,142 @@ private val InputContainerShape = RoundedCornerShape(EtaInputCornerRadius)
 @Composable
 internal fun AgentChatInputBar(
     input: String,
-    draftField: androidx.compose.foundation.text.input.TextFieldState? = null,
-    modelPickerState: AgentModelPickerUiState,
-    history: List<AgentModelClient.ConversationMessage>,
-    billedContextTokens: Int? = null,
-    projectedContextTokens: Int? = null,
-    billedHistoryTokens: Int? = null,
-    requestOverheadTokens: Int = 0,
-    measuredContextTokens: Int? = null,
-    contextDisplayPolicy: io.github.mangi.eta.ui.model.ContextDisplayPolicy = io.github.mangi.eta.ui.model.ContextDisplayPolicy(),
-    billedOverheadTokens: Int? = null,
-    activeRunContextWindow: Int? = null,
-    autoCompressEnabled: Boolean,
+    isCompacting: Boolean,
+    contextUsage: AgentContextUsageUi,
     showContextUsage: Boolean,
-    conversationUsage: io.github.mangi.eta.ui.model.ConversationTokenUsageUi? = null,
     isStreaming: Boolean,
-    isCompressingContext: Boolean = false,
-    showMorphLoading: Boolean = false,
     reasoningEffort: ReasoningEffort,
     availableReasoningEfforts: List<ReasoningEffort>,
     pendingImages: List<PendingImageUi>,
     pendingFileReferences: List<PendingFileReferenceUi>,
-    conversationMentions: ConversationMentionInputUi = ConversationMentionInputUi(),
+    queuedMessages: List<QueuedMessageUi> = emptyList(),
+    inputSyncVersion: Int = 0,
+    focusInputOnSync: Boolean = true,
     isEditingMessage: Boolean,
-    collaborationConversationId: String? = null,
-    assistantId: String = "",
-    voiceState: VoiceModeState = VoiceModeState(),
-    onStartVoiceMode: (VoiceEntryMode) -> Unit = {},
-    onStopVoiceMode: () -> Unit = {},
     editHasLaterTurns: Boolean,
+    preserveFollowingMessages: Boolean,
     onReasoningEffortChange: (ReasoningEffort) -> Unit,
-    onModelSelected: (String, String) -> Unit,
+    onCompactContext: () -> Unit,
+    canCompactContext: Boolean,
     onSubmit: (String) -> Unit,
+    onInterruptAndSubmit: (String) -> Unit = onSubmit,
+    onSteerQueuedMessage: (String) -> Unit = {},
+    onRecallQueuedMessage: (String, String) -> Unit = { _, _ -> },
+    onRemoveQueuedMessage: (String) -> Unit = {},
     onStop: () -> Unit,
-    onContinue: () -> Unit = {},
-    onAbortPausedRun: () -> Unit = {},
-    isPaused: Boolean = false,
-    canContinueDisconnected: Boolean = false,
     onAttachImage: (String) -> Unit,
-    onAttachVideo: (String) -> Unit,
     onRemoveImage: (String) -> Unit,
     onAttachFiles: (List<String>) -> Unit,
     onAttachFolder: (String) -> Unit,
     onAttachFilePath: (String) -> Unit,
     onRemoveFileReference: (String) -> Unit,
     onCancelMessageEdit: () -> Unit,
-    onEditAssistant: (String) -> Unit,
-    onAssistantSelected: (String) -> Unit = {},
-    /** 宿主可注入自己的 FocusRequester；浮窗用它驱动输入框聚焦。 */
-    focusRequester: FocusRequester = remember { FocusRequester() },
-    /** 浮窗（TYPE_APPLICATION_OVERLAY + Service context）没有 Activity 窗口 token，
-     *  任何 WindowDialog/Dialog.show 都会抛 BadTokenException 并杀死进程。
-     *  开启后弹层全部改走 Popup 路线（挂在 overlay 自己的窗口 token 下）。 */
-    overlayMode: Boolean = false,
-    /** GPT 速度档位（真值来自 owner 的 uiState，UI 不本地记忆）。 */
-    gptSpeedMode: GptSpeedMode = GptSpeedMode.NORMAL,
-    /** 长按速度图标时派发给 owner 的循环切换事件。 */
-    onCycleGptSpeedMode: () -> Unit = {},
+    glassBackdrop: Backdrop? = null,
     modifier: Modifier = Modifier,
 ) {
-    // Commit count only: no snapshot writes, no callbacks retained, no CPU-time claim.
-    SideEffect { StreamPerformanceDiagnostics.record("chat.input.compose") }
-    val textFieldState = draftField ?: rememberTextFieldState(initialText = input)
-    var wasEditingMessage by remember { mutableStateOf(isEditingMessage) }
-    val draftText = textFieldState.text.toString()
-    val skillAppContext = LocalContext.current.applicationContext
-    val assistantProfiles by AssistantRepository.profiles.collectAsState()
-    val repositoryActiveId by AssistantRepository.activeId.collectAsState()
-    val availableSkills = remember(assistantId, skillAppContext, assistantProfiles, repositoryActiveId) {
-        val profile = assistantProfiles.firstOrNull { it.id == assistantId }
-            ?: assistantProfiles.firstOrNull { it.id == repositoryActiveId }
-            ?: AssistantRepository.active()
-        val enabledIds = profile.enabledSkillIds.toSet()
-        SkillRuntime.createIndexService(skillAppContext)
-            .listSkillsForManagement()
-            .filter { it.installed && it.id in enabledIds }
-            .filter { SkillCompatibilityChecker.evaluate(it).available }
-    }
-    val supportsVision = modelPickerState.selectedModel?.supportsVision == true
-    val supportsVideo = modelPickerState.selectedModel?.supportsVideo == true
-    // 只有“实际选中模型”的 modelId 是 GPT 速度模型、端点仍是文本 OpenAI 且非图像/视频生成时，
-    // 思考图标才具备长按切速度语义。非 GPT 立即走普通原色分支，不给长按语义，也不做旋转/缩放。
-    val gptSpeedSupported = modelPickerState.selectedModel?.gptSpeedSupported == true
-    val liveUsage = remember(contextDisplayPolicy, billedContextTokens, modelPickerState.selectedModel,
-        activeRunContextWindow, billedHistoryTokens, billedOverheadTokens) {
-        // 圆环只显示真实云端回执：没有实测回执时不投影任何本地估算。
-        liveContextUsage(
-            billedContextTokens = billedContextTokens,
-            selectedModel = modelPickerState.selectedModel,
-            contextDisplayPolicy = contextDisplayPolicy,
-            activeRunContextWindow = activeRunContextWindow,
-            billedHistoryTokens = billedHistoryTokens,
-            billedOverheadTokens = billedOverheadTokens,
-        )
-    }
-    // The budget only serves manual send blocking. Skip all local history work
-    // when the existing policy cannot block; the cloud-only ring stays independent.
-    val contextSendBlocked = contextSendBlocked(measuredContextTokens, autoCompressEnabled) {
-        val historyTokenCount = remember(history) { history.sumOf { io.github.mangi.eta.agent.model.AgentContextBudget.countMessage(it) } }
-        val localHistoryTokenCount = remember(history, supportsVision, supportsVideo) {
-            io.github.mangi.eta.agent.model.AgentRequestTokenEstimate.history(history, supportsVision, supportsVideo)
-        }
-        val sendBudget = remember(historyTokenCount, localHistoryTokenCount, draftText, pendingImages, pendingFileReferences,
-            conversationMentions.pending, modelPickerState.selectedModel, billedContextTokens,
-            billedHistoryTokens, requestOverheadTokens, billedOverheadTokens, projectedContextTokens, activeRunContextWindow) {
-            io.github.mangi.eta.ui.model.compressionContextUsage(
-                history = emptyList(), currentInput = draftText, pendingImages = pendingImages,
-                selectedModel = modelPickerState.selectedModel, historyTokenCount = historyTokenCount,
-                localHistoryTokenCount = localHistoryTokenCount,
-                pendingFileReferences = pendingFileReferences, pendingConversationMentions = conversationMentions.pending,
-                billedContextTokens = billedContextTokens, requestOverheadTokens = requestOverheadTokens,
-                billedHistoryTokens = billedHistoryTokens, billedOverheadTokens = billedOverheadTokens,
-                projectedContextTokens = projectedContextTokens,
-                activeRunContextWindow = activeRunContextWindow,
-            )
-        }
-        sendBudget
-    }
-    val compressionSendBlocked = isCompressingContext
-    val canSend = !modelPickerState.isChanging && modelPickerState.selectedModel != null && !contextSendBlocked && !compressionSendBlocked && (
-        textFieldState.text.isNotBlank() ||
-            pendingImages.isNotEmpty() ||
-            (pendingFileReferences.isNotEmpty() || conversationMentions.pending.isNotEmpty())
-        )
-    val density = LocalDensity.current
-    val statusBarTopPx = WindowInsets.statusBars.getTop(density)
-    var inputContainerTopPx by remember { mutableIntStateOf(0) }
-    val thinkingPopupMaxHeight = with(density) {
-        (inputContainerTopPx - statusBarTopPx).coerceAtLeast(0).toDp()
-    }.minus(ChatInputPopupMargin * 2)
-        .coerceAtLeast(ListPopupDefaults.MinPopupHeight)
-
     val keyboard = LocalSoftwareKeyboardController.current
-    val view = LocalView.current
-    val drawerBlocksIme = LocalConversationDrawerBlocksIme.current
-    // 附件入口与工具箱面板共用同一套选择器句柄：主界面走 Compose 选择器，
-    // 悬浮窗等没有 ActivityResultRegistry 的场景自动回退 Trampoline Activity。
-    val attachmentLaunchers = rememberAttachmentPickerLaunchers(
-        onAttachImage = onAttachImage,
-        onAttachVideo = onAttachVideo,
-        onAttachFiles = onAttachFiles,
-        onAttachFolder = onAttachFolder,
+    val hapticFeedback = LocalHapticFeedback.current
+    val focusRequester = remember { FocusRequester() }
+    val textFieldState = rememberTextFieldState(initialText = input)
+    val speechSettings by remember { SpeechSettingsRepository.settingsFlow() }.collectAsState(initial = null)
+    val recognitionEnabled = speechSettings?.recognitionEnabled == true
+    val dictation = rememberSpeechInput(
+        onHoldResult = { recognized ->
+            val spoken = recognized.trim()
+            if (spoken.isEmpty()) return@rememberSpeechInput
+            val draft = textFieldState.text.toString()
+            val toSubmit = if (draft.isBlank()) {
+                spoken
+            } else {
+                textFieldState.edit {
+                    val range = selection
+                    replace(range.min, range.max, spoken)
+                    selection = TextRange(range.min + spoken.length)
+                }
+                textFieldState.text.toString().trim()
+            }
+            textFieldState.clearText()
+            onSubmit(toSubmit)
+        },
+        onResult = { recognized ->
+            textFieldState.edit {
+                val range = selection
+                replace(range.min, range.max, recognized)
+                selection = TextRange(range.min + recognized.length)
+            }
+        },
     )
-    LaunchedEffect(isEditingMessage) {
-        // 编辑模式切换由业务状态驱动；日常输入使用会话拥有的 TextFieldState，
-        // 不让每个字符触发消息列表和 Markdown 重组。
-        if (draftField == null && (isEditingMessage || wasEditingMessage)) {
+    val dictationState by dictation.state.collectAsState()
+    var holdCancelling by remember { mutableStateOf(false) }
+    val isHoldingSpeech =
+        dictationState.active && dictationState.holdToTalk &&
+            dictationState.phase != io.github.mangi.eta.agent.voice.EtaSpeechPhase.RECOGNIZING
+    LaunchedEffect(isHoldingSpeech) {
+        if (!isHoldingSpeech) holdCancelling = false
+    }
+    LaunchedEffect(isEditingMessage, recognitionEnabled) { dictation.cancel() }
+    var wasEditingMessage by remember { mutableStateOf(isEditingMessage) }
+    var syncedVersion by remember { mutableIntStateOf(inputSyncVersion) }
+    val canSend = textFieldState.text.isNotBlank() ||
+        pendingImages.isNotEmpty() ||
+        pendingFileReferences.isNotEmpty()
+
+    LaunchedEffect(isEditingMessage, inputSyncVersion) {
+        // 编辑态与排队消息撤回由外部业务状态驱动；普通输入只保留在本地，避免每个字符把聊天舞台
+        // 的消息流、滚动和 Markdown 一起带入重组。
+        val versionChanged = inputSyncVersion != syncedVersion
+        if (isEditingMessage || wasEditingMessage || versionChanged) {
             textFieldState.setTextAndPlaceCursorAtEnd(input)
         }
-        if (isEditingMessage && !wasEditingMessage && !drawerBlocksIme) {
-            showChatInputIme(focusRequester, keyboard, view)
+        if (isEditingMessage || (versionChanged && input.isNotEmpty() && focusInputOnSync)) {
+            focusRequester.requestFocus()
+            keyboard?.show()
         }
         wasEditingMessage = isEditingMessage
+        syncedVersion = inputSyncVersion
     }
 
-    CompositionLocalProvider(LocalChatInputFocusRequester provides focusRequester) {
     Column(
         modifier = modifier
             .fillMaxWidth(),
     ) {
-        val mentionQuery = ConversationMention.queryAtCursor(draftText, textFieldState.selection.end)
-            .takeIf { textFieldState.selection.collapsed }
-        val skillQuery = SkillSlashMention.queryAtCursor(draftText, textFieldState.selection.end)
-            .takeIf { textFieldState.selection.collapsed }
-        SkillSlashMentionPanel(
-            skills = availableSkills,
-            query = skillQuery?.query,
-            selectedIds = SkillSlashMention.selectedIds(draftText),
-            onSelect = { skill ->
-                val query = skillQuery
-                if (query != null) {
-                    val end = textFieldState.selection.end
-                    textFieldState.edit {
-                        replace(query.start, end, SkillSlashMention.token(skill.id))
-                        selection = TextRange(query.start + SkillSlashMention.token(skill.id).length)
-                    }
-                    focusRequester.requestFocus()
-                }
-            },
-        )
-        ConversationMentionPanel(
-            state = conversationMentions,
-            query = mentionQuery?.query,
-            onSelect = { id ->
-                val query = mentionQuery
-                if (query != null && conversationMentions.onAttach(id)) {
-                    val end = textFieldState.selection.end
-                    textFieldState.edit {
-                        replace(query.start, end, "")
-                        selection = TextRange(query.start)
-                    }
-                    focusRequester.requestFocus()
-                }
-            },
-        )
+        if (recognitionEnabled) SpeechInputFeedback(dictation, holdCancelling = holdCancelling)
+        AnimatedVisibility(
+            visible = queuedMessages.isNotEmpty(),
+            enter = fadeIn(tween(160)) + expandVertically(
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioNoBouncy,
+                    stiffness = Spring.StiffnessMediumLow,
+                ),
+                expandFrom = Alignment.Bottom,
+            ),
+            exit = fadeOut(tween(100)) + shrinkVertically(tween(150)),
+        ) {
+            AgentChatQueueStrip(
+                queuedMessages = queuedMessages,
+                isStreaming = isStreaming,
+                onSteer = onSteerQueuedMessage,
+                onRecall = { id -> onRecallQueuedMessage(id, textFieldState.text.toString()) },
+                onRemove = onRemoveQueuedMessage,
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
+        }
         AnimatedVisibility(
             visible = pendingFileReferences.isNotEmpty(),
-            enter = fadeIn(tween(160)),
-            exit = fadeOut(tween(100)) + shrinkVertically(tween(160)),
+            enter = fadeIn(tween(180)) + expandVertically(
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioNoBouncy,
+                    stiffness = Spring.StiffnessMediumLow,
+                ),
+                expandFrom = Alignment.Bottom,
+            ),
+            exit = fadeOut(tween(120)) + shrinkVertically(
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioNoBouncy,
+                    stiffness = Spring.StiffnessMedium,
+                ),
+                shrinkTowards = Alignment.Bottom,
+            ),
         ) {
             PendingFileReferenceStrip(
                 references = pendingFileReferences,
@@ -362,8 +289,20 @@ internal fun AgentChatInputBar(
 
         AnimatedVisibility(
             visible = pendingImages.isNotEmpty(),
-            enter = fadeIn(tween(160)),
-            exit = fadeOut(tween(100)) + shrinkVertically(tween(160)),
+            enter = fadeIn(tween(180)) + expandVertically(
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioNoBouncy,
+                    stiffness = Spring.StiffnessMediumLow,
+                ),
+                expandFrom = Alignment.Bottom,
+            ),
+            exit = fadeOut(tween(120)) + shrinkVertically(
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioNoBouncy,
+                    stiffness = Spring.StiffnessMedium,
+                ),
+                shrinkTowards = Alignment.Bottom,
+            ),
         ) {
             PendingImageStrip(
                 images = pendingImages,
@@ -378,102 +317,163 @@ internal fun AgentChatInputBar(
             exit = fadeOut(tween(100)) + shrinkVertically(tween(140)),
         ) {
             Text(
-                text = if (editHasLaterTurns) {
+                text = if (preserveFollowingMessages) {
+                    stringResource(R.string.chat_edit_preserve_following)
+                } else if (editHasLaterTurns) {
                     stringResource(R.string.chat_edit_replace_later)
                 } else {
                     stringResource(R.string.chat_edit_replace_message)
                 },
-                style = MiuixTheme.textStyles.body2,
+                style = MiuixTheme.textStyles.footnote1,
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                modifier = Modifier.padding(start = 8.dp, bottom = 6.dp),
+                // 与输入框内正文同一起点（容器 10dp + 文本 8dp）。
+                modifier = Modifier.padding(start = 18.dp, end = 18.dp, bottom = 8.dp),
             )
         }
 
-        AnimatedVisibility(
-            visible = contextSendBlocked,
-            enter = fadeIn(tween(160)),
-            exit = fadeOut(tween(100)) + shrinkVertically(tween(140)),
-        ) {
-            Text(
-                text = stringResource(R.string.context_window_send_blocked),
-                style = MiuixTheme.textStyles.body2,
-                color = StatusError,
-                modifier = Modifier.padding(start = 8.dp, bottom = 6.dp),
-            )
+        val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
+        val couiDark = CouiTheme.isDark
+        val couiInputShape = remember { CouiShape(24.dp, 2.3f) }
+        val isDark = MiuixTheme.colorScheme.surface.luminance() < 0.5f
+        val miuixInputBg = if (!isDark && MiuixTheme.colorScheme.surfaceContainer == MiuixTheme.colorScheme.surface) {
+            Color(0xFFF5F6F8)
+        } else {
+            MiuixTheme.colorScheme.surfaceContainer
         }
-
-        AnimatedVisibility(
-            visible = compressionSendBlocked,
-            enter = fadeIn(tween(160)),
-            exit = fadeOut(tween(100)) + shrinkVertically(tween(140)),
-        ) {
-            Text(
-                text = stringResource(R.string.compress_conversation_in_progress),
-                style = MiuixTheme.textStyles.body2,
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                modifier = Modifier.padding(start = 8.dp, bottom = 6.dp),
-            )
+        val defaultInputBorderColor = if (isCoui) {
+            if (couiDark) Color(0x20FFFFFF) else Color(0x0E000000)
+        } else {
+            MiuixTheme.colorScheme.outline.copy(alpha = 0.5f)
         }
-
+        val inputBorderColor by animateColorAsState(
+            targetValue = when {
+                isHoldingSpeech && holdCancelling -> StatusError.copy(alpha = 0.45f)
+                isHoldingSpeech -> MiuixTheme.colorScheme.primary.copy(alpha = 0.38f)
+                else -> defaultInputBorderColor
+            },
+            animationSpec = tween(durationMillis = 180),
+            label = "input_container_border",
+        )
+        val inputBorderWidth by animateDpAsState(
+            targetValue = if (isHoldingSpeech) 1.dp else 0.5.dp,
+            animationSpec = tween(durationMillis = 160),
+            label = "input_container_border_width",
+        )
+        val miuixInputShape = remember { GlassShape(24.dp) }
+        var inputContainerTopPx by remember { mutableFloatStateOf(0f) }
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .onGloballyPositioned { coordinates ->
-                    inputContainerTopPx = coordinates.positionInWindow().y.roundToInt()
+                    inputContainerTopPx = coordinates.boundsInWindow().top
                 },
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .dropShadow(
-                        shape = InputContainerShape,
-                        shadow = Shadow(
-                            radius = 8.dp,
-                            color = Color.Black,
-                            alpha = 0.08f,
-                        ),
-                    )
-                    // Q2-A：半透明输入框底色，让浮窗 blurBehindRadius 透出来（本体与浮窗统一）。
-                    .squircleSurface(
-                        // 浮窗里再压一档透明度，让壁纸色透出来（纯白会像塑料板）。
-                        color = MiuixTheme.colorScheme.surfaceContainer.copy(
-                            alpha = 0.35f,
-                        ),
-                        cornerRadius = 20.dp,
-                    )
-                    .squircleBorder(
-                        width = 0.5.dp,
-                        color = MiuixTheme.colorScheme.outline.copy(alpha = 0.30f),
-                        cornerRadius = EtaInputCornerRadius,
+                    .then(
+                        if (isCoui) {
+                            Modifier
+                                .dropShadow(
+                                    shape = couiInputShape,
+                                    shadow = Shadow(
+                                        radius = 16.dp,
+                                        color = Color.Black,
+                                        alpha = if (couiDark) 0.22f else 0.045f,
+                                    ),
+                                )
+                                .clip(couiInputShape)
+                                .background(
+                                    if (couiDark) Color(0xFF1C1E22) else Color(0xFFF6F7F9),
+                                    couiInputShape,
+                                )
+                                .border(
+                                    width = inputBorderWidth,
+                                    color = inputBorderColor,
+                                    shape = couiInputShape,
+                                )
+                        } else {
+                            Modifier
+                                .glassPanel(
+                                    backdrop = glassBackdrop,
+                                    shape = miuixInputShape,
+                                    style = GlassDefaults.style(isDark),
+                                    material = GlassMaterials.puredThinGlass(isDark),
+                                    stroke = GlassEdgeStrokes.forTheme(
+                                        isDark = isDark,
+                                        light = GlassEdgeStrokes.SmallLight,
+                                        dark = GlassEdgeStrokes.SmallDark,
+                                    ),
+                                    shadow = GlassShadows.Regular,
+                                    shading = false,
+                                    fallback = Modifier
+                                        .squircleSurface(
+                                            color = miuixInputBg,
+                                            cornerRadius = 24.dp,
+                                        )
+                                        .squircleBorder(
+                                            width = inputBorderWidth,
+                                            color = inputBorderColor,
+                                            cornerRadius = 24.dp,
+                                        ),
+                                )
+                                .then(
+                                    if (isHoldingSpeech && glassBackdrop != null && isRuntimeShaderSupported()) {
+                                        Modifier.border(inputBorderWidth, inputBorderColor, miuixInputShape)
+                                    } else {
+                                        Modifier
+                                    },
+                                )
+                        },
                     )
                     .padding(horizontal = 10.dp, vertical = 8.dp),
             ) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .defaultMinSize(minHeight = 40.dp)
-                        .padding(horizontal = 8.dp, vertical = 5.dp),
+                        .defaultMinSize(minHeight = 36.dp)
+                        .padding(horizontal = 6.dp, vertical = 5.dp),
                     contentAlignment = Alignment.TopStart,
                 ) {
+                    // 占位文字与输入正文共用同一行高，首字输入时基线不跳动。
+                    val inputTextStyle = MiuixTheme.textStyles.body1.copy(
+                        lineHeight = 22.sp,
+                        lineHeightStyle = EditorialLineHeightStyle,
+                    )
+                    val character = LocalRoleplayChat.current
                     if (textFieldState.text.isBlank()) {
+                        val hintColor by animateColorAsState(
+                            targetValue = when {
+                                isHoldingSpeech && holdCancelling -> StatusError
+                                isHoldingSpeech -> MiuixTheme.colorScheme.primary
+                                else -> MiuixTheme.colorScheme.onSurfaceVariantSummary
+                            },
+                            animationSpec = tween(durationMillis = 150),
+                            label = "input_hint_color",
+                        )
                         Text(
-                            text = if (isStreaming) stringResource(R.string.chat_eta_working) else stringResource(R.string.chat_input_hint),
-                            style = MiuixTheme.textStyles.body1,
-                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            text = when {
+                                isHoldingSpeech && holdCancelling ->
+                                    stringResource(R.string.speech_hold_release_to_cancel)
+                                isHoldingSpeech -> stringResource(R.string.voice_release_to_send)
+                                // 角色对话的占位文字跟随角色，避免“交给 Eta”打断沉浸感。
+                                character != null && isStreaming ->
+                                    stringResource(R.string.chat_character_typing, character.characterName)
+                                character != null -> stringResource(R.string.chat_character_input_hint, character.characterName)
+                                isStreaming -> stringResource(R.string.chat_eta_working)
+                                else -> stringResource(R.string.chat_input_hint)
+                            },
+                            style = inputTextStyle,
+                            color = hintColor,
                         )
                     }
                     BasicTextField(
                         state = textFieldState,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .focusRequester(focusRequester)
-                            .focusProperties { canFocus = !drawerBlocksIme },
+                            .focusRequester(focusRequester),
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
-                        textStyle = TextStyle(
-                            color = MiuixTheme.colorScheme.onSurface,
-                            fontSize = 16.sp,
-                            lineHeight = 22.sp,
-                        ),
+                        textStyle = inputTextStyle.copy(color = MiuixTheme.colorScheme.onSurface),
                         cursorBrush = SolidColor(MiuixTheme.colorScheme.primary),
                         lineLimits = TextFieldLineLimits.MultiLine(
                             minHeightInLines = 1,
@@ -482,8 +482,10 @@ internal fun AgentChatInputBar(
                     )
                 }
 
-                ChatComposerActionRow(
-                    actions = {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                         if (isEditingMessage) {
                             IconButton(
                                 onClick = onCancelMessageEdit,
@@ -491,7 +493,7 @@ internal fun AgentChatInputBar(
                                 minHeight = ChatInputActionSize,
                             ) {
                                 Icon(
-                                    imageVector = Icons.Rounded.Close,
+                                    imageVector = if (isCoui) Icons.Rounded.Close else MiuixIcons.Glass.Close,
                                     contentDescription = stringResource(R.string.ui_cancel_edit_c698df),
                                     modifier = Modifier.size(ChatInputActionIconSize),
                                     tint = MiuixTheme.colorScheme.onSurface,
@@ -499,129 +501,135 @@ internal fun AgentChatInputBar(
                             }
                         } else {
                             AgentAttachmentPickerButton(
-                                launchers = attachmentLaunchers,
+                                glassBackdrop = glassBackdrop,
+                                inputContainerTopPx = inputContainerTopPx,
+                                onAttachImage = onAttachImage,
+                                onAttachFiles = onAttachFiles,
+                                onAttachFolder = onAttachFolder,
                                 onAttachFilePath = onAttachFilePath,
                             )
 
                             Spacer(modifier = Modifier.width(2.dp))
 
-                            // GPT 速度模型即使没有思考 options 也保留图标以便长按切速度；
-                            // 非 GPT 行为不变：仅在有思考 options 时出现。
-                            if (availableReasoningEfforts.isNotEmpty() || gptSpeedSupported) {
+                            if (availableReasoningEfforts.isNotEmpty()) {
                                 ThinkingEffortChip(
                                     effort = reasoningEffort,
                                     options = availableReasoningEfforts,
-                                    // 模型切换（isChanging）期间 owner 会 no-op，禁用以免出现“假动画”。
-                                    enabled = (!isStreaming || isPaused) && !modelPickerState.isChanging,
-                                    gptSpeedMode = gptSpeedMode,
-                                    gptSpeedSupported = gptSpeedSupported,
-                                    onCycleGptSpeedMode = onCycleGptSpeedMode,
+                                    enabled = !isStreaming,
+                                    glassBackdrop = glassBackdrop,
+                                    inputContainerTopPx = inputContainerTopPx,
                                     onEffortChange = onReasoningEffortChange,
-                                    overlayMode = overlayMode,
                                 )
                             }
-
-                            Spacer(modifier = Modifier.width(2.dp))
-
-                            AssistantPickerButton(
-                                enabled = !isStreaming || isPaused,
-                                selectedAssistantId = assistantId,
-                                onEditAssistant = onEditAssistant,
-                                onAssistantSelected = onAssistantSelected,
-                                overlayMode = overlayMode,
-                            )
                         }
 
                         Spacer(modifier = Modifier.weight(1f))
 
-
-                        // Keep context details accessible even for an empty draft or an unknown limit.
-                        if (showContextUsage) {
+                        if (showContextUsage && contextUsage.contextTokens != null) {
                             AgentContextUsageButton(
-                                conversationUsage = conversationUsage,
-                                usage = liveUsage,
-                                popupMaxHeight = thinkingPopupMaxHeight,
-                                sendBlocked = contextSendBlocked,
+                                usage = contextUsage,
+                                onCompact = onCompactContext,
+                                canCompact = canCompactContext && !isStreaming,
                             )
                             Spacer(modifier = Modifier.width(2.dp))
                         }
 
-                        AgentModelPickerButton(
-                            conversationId = collaborationConversationId,
-                            collaborationTaskRunning = isStreaming || isPaused || isCompressingContext,
-                            state = modelPickerState,
-                            isStreaming = isStreaming,
-                            isPaused = isPaused,
-                            popupAnchorTopPx = inputContainerTopPx,
-                            popupMaxHeight = thinkingPopupMaxHeight,
-                            onModelSelected = onModelSelected,
-                        )
+                        if (recognitionEnabled) {
+                            SpeechDictationButton(
+                                controller = dictation,
+                                enabled = !isCompacting,
+                                holdCancelling = holdCancelling,
+                                onHoldCancellingChange = { holdCancelling = it },
+                            )
+                            Spacer(modifier = Modifier.width(2.dp))
+                        }
 
-                        val sendMode = resolveChatComposerSendMode(
-                            isStreaming = isStreaming,
-                            isPaused = isPaused,
-                            canContinueDisconnected = canContinueDisconnected,
-                            hasSteerContent = textFieldState.text.isNotBlank() ||
-                                pendingImages.isNotEmpty() ||
-                                (pendingFileReferences.isNotEmpty() || conversationMentions.pending.isNotEmpty()),
-                            canStartNewSend = canSend,
-                            isCompressingContext = isCompressingContext,
+                        val showStreamingSend = isStreaming && !isCompacting && canSend
+                        val submitCurrentDraft: (Boolean) -> Unit = { interrupt ->
+                            if (canSend) {
+                                dictation.cancel()
+                                val submittedText = textFieldState.text.toString()
+                                textFieldState.clearText()
+                                if (interrupt) {
+                                    onInterruptAndSubmit(submittedText)
+                                } else {
+                                    onSubmit(submittedText)
+                                }
+                            }
+                        }
+
+                        AnimatedVisibility(
+                            visible = showStreamingSend,
+                            enter = fadeIn(tween(140)) + scaleIn(tween(160), initialScale = 0.78f) + expandHorizontally(tween(160)),
+                            exit = fadeOut(tween(100)) + scaleOut(tween(120), targetScale = 0.78f) + shrinkHorizontally(tween(140)),
+                        ) {
+                            IconButton(
+                                onClick = onStop,
+                                minWidth = ChatInputActionSize,
+                                minHeight = ChatInputActionSize,
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(SendButtonVisualSize)
+                                        .clip(CircleShape)
+                                        .background(MiuixTheme.colorScheme.surfaceContainerHigh),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Stop,
+                                        contentDescription = stringResource(R.string.chat_stop),
+                                        modifier = Modifier.size(StopIconSize),
+                                        tint = MiuixTheme.colorScheme.onSurface,
+                                    )
+                                }
+                            }
+                        }
+
+                        val showPrimaryStop = isStreaming && !showStreamingSend
+                        val sendCircleSize = 32.dp
+                        val ink = MiuixTheme.colorScheme.onSurface.copy(alpha = 1f)
+                        val sendButtonColor by animateColorAsState(
+                            targetValue = when {
+                                showPrimaryStop -> MiuixTheme.colorScheme.onSurface
+                                canSend -> MiuixTheme.colorScheme.primary
+                                else -> ink.copy(alpha = if (isDark) 0.08f else 0.06f)
+                            },
+                            animationSpec = tween(durationMillis = 160),
+                            label = "send_button_color",
                         )
-                        val sendInteraction = remember { MutableInteractionSource() }
-                        val context = LocalContext.current
                         Box(
                             modifier = Modifier
-                                .size(ChatInputActionSize)
-                                .focusProperties { canFocus = false }
+                                .size(36.dp)
+                                .clip(CircleShape)
                                 .combinedClickable(
-                                    enabled = sendMode != "idle",
-                                    indication = null,
-                                    interactionSource = sendInteraction,
-                                    hapticFeedbackEnabled = false,
+                                    enabled = isStreaming || canSend,
                                     onClick = {
-                                        TouchHaptics.click(view)
-                                        when (sendMode) {
-                                            "blocked" -> Toast.makeText(
-                                                context,
-                                                R.string.compress_conversation_in_progress,
-                                                Toast.LENGTH_SHORT,
-                                            ).show()
-                                            "stop" -> onStop()
-                                            "continue" -> onContinue()
-                                            "send" -> {
-                                                val submittedText = textFieldState.text.toString()
-                                                // Q1-A：浮窗未接入外部草稿（draftField == null）时，
-                                                // 提交后必须清空内部 TextFieldState，否则文字残留。
-                                                if (draftField == null) textFieldState.clearText()
-                                                onSubmit(submittedText)
-                                            }
+                                        if (showPrimaryStop) {
+                                            onStop()
+                                        } else {
+                                            submitCurrentDraft(false)
                                         }
                                     },
-                                    onLongClick = {
-                                        if (sendMode != "stop" && !(sendMode == "continue" && isPaused)) return@combinedClickable
-                                        TouchHaptics.longPress(view)
-                                        onAbortPausedRun()
+                                    onLongClick = if (showStreamingSend) {
+                                        {
+                                            hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            submitCurrentDraft(true)
+                                        }
+                                    } else {
+                                        null
                                     },
                                 ),
                             contentAlignment = Alignment.Center,
                         ) {
-                            val sendButtonColor by animateColorAsState(
-                                targetValue = when (sendMode) {
-                                    "stop", "continue", "send" -> MiuixTheme.colorScheme.onSurface
-                                    else -> MiuixTheme.colorScheme.surfaceContainerHigh
-                                },
-                                animationSpec = tween(durationMillis = 160),
-                                label = "send_button_color",
-                            )
                             Box(
                                 modifier = Modifier
-                                    .size(SendButtonVisualSize)
+                                    .size(sendCircleSize)
                                     .clip(CircleShape)
                                     .background(sendButtonColor),
                                 contentAlignment = Alignment.Center,
                             ) {
                                 AnimatedContent(
-                                    targetState = sendMode,
+                                    targetState = showPrimaryStop,
                                     transitionSpec = {
                                         (fadeIn(tween(130)) + scaleIn(tween(160), initialScale = 0.72f))
                                             .togetherWith(
@@ -630,745 +638,354 @@ internal fun AgentChatInputBar(
                                             )
                                     },
                                     label = "send_stop_icon",
-                                ) { mode ->
+                                ) { stopIcon ->
                                     Icon(
-                                        imageVector = when (mode) {
-                                            "stop" -> Icons.Rounded.Stop
-                                            "continue" -> Icons.Rounded.PlayArrow
-                                            else -> Icons.Rounded.ArrowUpward
+                                        imageVector = if (stopIcon) {
+                                            Icons.Rounded.Stop
+                                        } else {
+                                            Icons.Rounded.ArrowUpward
                                         },
-                                        contentDescription = when (mode) {
-                                            "stop" -> stringResource(R.string.chat_stop)
-                                            "continue" -> if (isPaused) {
-                                                stringResource(R.string.chat_continue) +
-                                                    "，" + stringResource(R.string.chat_continue_abort)
-                                            } else {
-                                                stringResource(R.string.chat_continue)
-                                            }
+                                        contentDescription = when {
+                                            stopIcon -> stringResource(R.string.chat_stop)
+                                            isEditingMessage && preserveFollowingMessages -> stringResource(R.string.chat_save_message)
                                             else -> stringResource(R.string.chat_send)
                                         },
-                                        modifier = Modifier.size(
-                                            if (mode == "stop") StopIconSize else SendIconSize
-                                        ),
-                                        tint = when (mode) {
-                                            "stop", "continue", "send" -> MiuixTheme.colorScheme.surface
-                                            else -> MiuixTheme.colorScheme.onSurfaceVariantActions
+                                        modifier = Modifier.size(if (stopIcon) 12.dp else 17.dp),
+                                        tint = when {
+                                            stopIcon -> MiuixTheme.colorScheme.surface
+                                            canSend -> MiuixTheme.colorScheme.onPrimary
+                                            else -> ink.copy(alpha = if (isDark) 0.28f else 0.24f)
                                         },
                                     )
                                 }
                             }
                         }
-                    },
-                    indicator = {
-                        if (isEditingMessage) {
-                            ChatSpeechIndicator(
-                                textFieldState = textFieldState,
-                                showGeneration = showMorphLoading,
-                                interactionBlocked = drawerBlocksIme,
-                                resetKey = isStreaming to isEditingMessage,
-                            )
-                        } else {
-                            VoiceEntryButton(
-                                textFieldState = textFieldState,
-                                showGeneration = showMorphLoading,
-                                interactionBlocked = drawerBlocksIme,
-                                resetKey = isStreaming to isEditingMessage,
-                                voiceState = voiceState,
-                                onStartVoiceMode = onStartVoiceMode,
-                                onStopVoiceMode = onStopVoiceMode,
-                            )
-                        }
-                    },
-                )
+                }
             }
         }
-    }
     }
 
 }
 
 /**
- * 思考强度图标：单击打开旧的思考强度弹窗；当实际选中模型是 GPT 速度模型时，
- * 长按在原位循环切换速度档位（NORMAL → FAST → ULTRA_FAST → NORMAL）。
- *
- * 颜色始终由 owner 传入的 [gptSpeedMode] 决定（非 GPT 立即回到普通原色）；
- * 旋转/缩放只是“一次长按正好一圈”的手势反馈，颜色与业务真值都不本地记忆。
+ * 思考强度胶囊：仅含开关两态时单击直接切换，支持多档强度时展开菜单并在胶囊上直接标明英文档位。
  */
 @Composable
-internal fun ThinkingEffortChip(
+private fun ThinkingEffortChip(
     effort: ReasoningEffort,
     options: List<ReasoningEffort>,
     enabled: Boolean,
-    gptSpeedMode: GptSpeedMode = GptSpeedMode.NORMAL,
-    gptSpeedSupported: Boolean = false,
-    onCycleGptSpeedMode: () -> Unit = {},
+    glassBackdrop: Backdrop?,
+    inputContainerTopPx: Float,
     onEffortChange: (ReasoningEffort) -> Unit,
     modifier: Modifier = Modifier,
-    overlayMode: Boolean = false,
 ) {
-    val showPicker = remember { mutableStateOf(false) }
+    var showPopup by remember { mutableStateOf(false) }
+    var chipTopPx by remember { mutableFloatStateOf(0f) }
+    var chipBottomPx by remember { mutableFloatStateOf(0f) }
+    var measuredPopupHeightPx by remember { mutableFloatStateOf(0f) }
     val active = effort != ReasoningEffort.OFF
-    val pickerEnabled = enabled && options.isNotEmpty()
-    LaunchedEffect(pickerEnabled) {
-        if (!pickerEnabled) showPicker.value = false
+    val interactive = enabled && options.size > 1
+    val binaryToggleTarget = remember(options, effort) {
+        if (options.size == 2 && ReasoningEffort.OFF in options) {
+            options.firstOrNull { it != effort }
+        } else {
+            null
+        }
+    }
+    val anchor = rememberCouiMenuAnchor()
+    val popupAnchor = rememberGlassPopupAnchor()
+    val haptic = LocalHapticFeedback.current
+    LaunchedEffect(interactive) {
+        if (!interactive) showPopup = false
     }
 
-    val normalColor = if (active) {
-        MiuixTheme.colorScheme.primary
-    } else {
-        MiuixTheme.colorScheme.onSurfaceVariantSummary
-    }
-    // 颜色来自 owner 的 gptSpeedMode：非 GPT（gptSpeedSupported=false）直接回落普通原色，
-    // 且最终 tint 当帧恢复原色，不保存旧档位。
+    val colors = MiuixTheme.colorScheme
+    val isDark = colors.surface.luminance() < 0.5f
+    val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
+    val ink = colors.onSurface.copy(alpha = 1f)
     val contentColor by animateColorAsState(
-        targetValue = if (gptSpeedSupported) {
-            gptSpeedChipColor(gptSpeedMode, normalColor)
+        targetValue = if (active) {
+            colors.primary
         } else {
-            normalColor
+            ink.copy(alpha = if (isDark) 0.58f else 0.54f)
         },
-        animationSpec = tween(durationMillis = GptSpeedAnimationDurationMillis),
+        animationSpec = tween(durationMillis = 160),
         label = "thinking_content",
     )
+    val bgColor by animateColorAsState(
+        targetValue = if (active) {
+            colors.primary.copy(alpha = if (isDark) 0.18f else 0.10f)
+        } else {
+            ink.copy(alpha = if (isDark) 0.06f else 0.038f)
+        },
+        animationSpec = tween(durationMillis = 160),
+        label = "thinking_bg",
+    )
+    val borderColor by animateColorAsState(
+        targetValue = if (active) {
+            colors.primary.copy(alpha = if (isDark) 0.30f else 0.22f)
+        } else {
+            ink.copy(alpha = if (isDark) 0.10f else 0.065f)
+        },
+        animationSpec = tween(durationMillis = 160),
+        label = "thinking_border",
+    )
 
-    val displayedColor = if (gptSpeedSupported) contentColor else normalColor
-    val canLongPressSpeed = gptSpeedSupported && enabled
-    val context = LocalContext.current
-    val progress = remember { Animatable(0f) }
-    val gate = remember { GptSpeedAnimationGate() }
-    val scope = rememberCoroutineScope()
-
-    // 用 rememberUpdatedState 固定回调身份：pointerInput 的 key 不随重组改变，
-    // 避免长按手势被反复重启，也不让重组触发额外旋转。
-    val pickerEnabledState = rememberUpdatedState(pickerEnabled)
-    val canLongPressState = rememberUpdatedState(canLongPressSpeed)
-    val gptSpeedModeState = rememberUpdatedState(gptSpeedMode)
-    val contextState = rememberUpdatedState(context)
-    val latestOnCycle by rememberUpdatedState(onCycleGptSpeedMode)
-
-    val openPicker: () -> Unit = remember {
-        { if (pickerEnabledState.value) showPicker.value = true }
+    val chipLabel = when (effort) {
+        ReasoningEffort.OFF -> stringResource(R.string.reasoning_chip_off)
+        ReasoningEffort.DEFAULT -> stringResource(R.string.reasoning_chip_default)
+        else -> effort.displayName
     }
-    val cycleSpeed: () -> Unit = remember {
-        {
-            // 动画中拒绝新的长按：不排队、不累计圈数，避免截断当前一圈或产生过期切换。
-            if (canLongPressState.value) {
-                val token = gate.request()
-                if (token != 0) {
-                    val nextMode = gptSpeedModeState.value.next()
-                    latestOnCycle()
-                    Toast.makeText(
-                        contextState.value,
-                        gptSpeedToastMessage(nextMode),
-                        Toast.LENGTH_SHORT,
-                    ).show()
-                    scope.launch {
-                        try {
-                            progress.snapTo(0f)
-                            progress.animateTo(
-                                targetValue = 1f,
-                                animationSpec = tween(
-                                    durationMillis = GptSpeedAnimationDurationMillis,
-                                    easing = LinearEasing,
-                                ),
-                            )
-                        } finally {
-                            // 携带自己的 token：被取消的旧动画不会关掉随后新动画的门禁。
-                            gate.finish(token)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // 模型切到非 GPT：立即清动画（取消进行中的一圈并复位），最终 tint 当帧恢复原色。
-    LaunchedEffect(gptSpeedSupported) {
-        if (!gptSpeedSupported) {
-            gate.reset()
-            progress.snapTo(0f)
-        }
-    }
-
-    val contentDescription = if (gptSpeedSupported) {
-        gptSpeedChipDescription(
-            stringResource(R.string.chat_reasoning_effort, effort.displayName),
-            gptSpeedMode,
-        )
-    } else {
-        stringResource(R.string.chat_reasoning_effort, effort.displayName)
-    }
-
-    ChatInputNonFocusableIconButton(
-        onClick = openPicker,
-        contentDescription = contentDescription,
-        onLongClick = if (canLongPressSpeed) cycleSpeed else null,
-        longClickLabel = gptSpeedLongPressLabel(),
-        modifier = modifier,
-    ) {
-        Icon(
-            imageVector = ImageVector.vectorResource(R.drawable.ic_atom),
-            contentDescription = null,
-            modifier = Modifier
-                .size(ThinkingIconSize)
-                .then(
-                    if (gptSpeedSupported) {
-                        Modifier.graphicsLayer {
-                            rotationZ = gptSpeedRotationDegrees(progress.value)
-                            val scale = gptSpeedScale(progress.value)
-                            scaleX = scale
-                            scaleY = scale
-                        }
-                    } else {
-                        Modifier
-                    }
-                ),
-            tint = gptSpeedChipTint(
-                displayedColor,
-                if (gptSpeedSupported) gptSpeedMode else GptSpeedMode.NORMAL,
-                enabled = pickerEnabled || canLongPressSpeed,
-            ),
-        )
-    }
-    if (overlayMode) {
-        // 浮窗：无 Activity token，必须走 Popup（挂在 overlay 窗口下）。
-        EtaDropdownMenu(
-            expanded = showPicker.value && pickerEnabled,
-            onDismissRequest = { showPicker.value = false },
-            preferAbove = true,
-            minWidth = 0.dp,
-            focusable = false,
-        ) {
-            options.forEach { option ->
-                DropdownMenuItem(
-                    modifier = Modifier.height(40.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp),
-                    text = {
-                        androidx.compose.material3.Text(
-                            text = option.displayName,
-                            color = if (option == effort) {
-                                MiuixTheme.colorScheme.primary
-                            } else {
-                                MiuixTheme.colorScheme.onSurface
-                            },
-                        )
-                    },
-                    onClick = {
-                        showPicker.value = false
-                        onEffortChange(option)
-                    },
-                )
-            }
-        }
-    } else {
-        ThinkingEffortPickerDialog(
-            show = showPicker.value && pickerEnabled,
-            effort = effort,
-            options = options,
-            onDismiss = { showPicker.value = false },
-            onEffortChange = onEffortChange,
-        )
-    }
-}
-
-@Composable
-internal fun ThinkingEffortPickerDialog(
-    show: Boolean,
-    effort: ReasoningEffort,
-    options: List<ReasoningEffort>,
-    onDismiss: () -> Unit,
-    onEffortChange: (ReasoningEffort) -> Unit,
-    description: String? = null,
-) {
-    if (options.isEmpty()) return
-    val view = LocalView.current
-    val selectedIndex = options.indexOf(effort).coerceAtLeast(0)
-    var sliderValue by remember { mutableFloatStateOf(selectedIndex.toFloat()) }
-    var lastHapticIndex by remember { mutableIntStateOf(selectedIndex) }
-    val latestEffort by rememberUpdatedState(effort)
-    val latestOptions by rememberUpdatedState(options)
-    val latestOnEffortChange by rememberUpdatedState(onEffortChange)
-    LaunchedEffect(show, selectedIndex, options) {
-        if (show) {
-            sliderValue = selectedIndex.toFloat()
-            lastHapticIndex = selectedIndex
-        }
-    }
-    val previewIndex = sliderValue.roundToInt().coerceIn(0, options.lastIndex)
-    val preview = options[previewIndex]
-    val maxIndex = (options.size - 1).toFloat().coerceAtLeast(0f)
-
-    WindowDialog(
-        show = show,
-        title = stringResource(R.string.reasoning_picker_title),
-        onDismissRequest = onDismiss,
-    ) {
-        Column(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            if (description != null) {
-                Text(
-                    text = description,
-                    style = MiuixTheme.textStyles.footnote1,
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                    modifier = Modifier.padding(bottom = 8.dp),
-                )
-            }
+    val accessibilityLabel = stringResource(R.string.chat_reasoning_effort, effort.displayName)
+    val interactionSource = remember { MutableInteractionSource() }
+    val useTransformPopup = !isCoui && binaryToggleTarget == null
+    val popupLayout = rememberInputBarPopupLayout(
+        inputContainerTopPx = inputContainerTopPx,
+        anchorTopPx = chipTopPx,
+        anchorBottomPx = chipBottomPx,
+        measuredHeightPx = measuredPopupHeightPx,
+    )
+    val chipContent: @Composable () -> Unit = {
+        Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
                 imageVector = ImageVector.vectorResource(R.drawable.ic_atom),
                 contentDescription = null,
-                modifier = Modifier
-                    .padding(top = 6.dp)
-                    .size(32.dp),
-                tint = if (preview != ReasoningEffort.OFF) {
-                    MiuixTheme.colorScheme.primary
-                } else {
-                    MiuixTheme.colorScheme.onSurface
-                },
+                modifier = Modifier.size(14.5.dp),
+                tint = contentColor,
             )
+            Spacer(modifier = Modifier.width(5.dp))
             Text(
-                text = preview.displayName,
-                style = MiuixTheme.textStyles.title3,
-                color = MiuixTheme.colorScheme.onSurface,
-                modifier = Modifier.padding(top = 6.dp, bottom = 16.dp),
+                text = chipLabel,
+                style = MiuixTheme.textStyles.footnote1.copy(
+                    fontSize = 12.5.sp,
+                    lineHeight = 16.sp,
+                    fontWeight = FontWeight.Medium,
+                ),
+                color = contentColor,
+                maxLines = 1,
             )
-            if (options.size > 1) {
-                Box(modifier = Modifier.fillMaxWidth()) {
-                    Slider(
-                        value = sliderValue.coerceIn(0f, maxIndex),
-                        onValueChange = {},
-                        modifier = Modifier.fillMaxWidth(),
-                        valueRange = 0f..maxIndex,
-                        steps = (options.size - 2).coerceAtLeast(0),
-                        showKeyPoints = true,
-                        keyPoints = options.indices.map { it.toFloat() },
-                        magnetThreshold = 0.18f,
-                        hapticEffect = SliderDefaults.SliderHapticEffect.None,
+        }
+    }
+
+    Box(modifier = modifier) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .then(
+                    if (useTransformPopup) {
+                        Modifier
+                            .glassPopupAnchor(
+                                anchor = popupAnchor,
+                                cornerRadius = 15.dp,
+                            )
+                            .onGloballyPositioned {
+                                val bounds = it.boundsInWindow()
+                                chipTopPx = bounds.top
+                                chipBottomPx = bounds.bottom
+                            }
+                    } else {
+                        Modifier.couiMenuAnchor(anchor)
+                    },
+                )
+                .heightIn(min = 30.dp)
+                .clip(CircleShape)
+                .background(bgColor, CircleShape)
+                .border(0.5.dp, borderColor, CircleShape)
+                .then(
+                    if (isCoui) {
+                        Modifier.couiButtonFeedback(isDark, interactionSource, enabled = interactive)
+                    } else {
+                        Modifier.glassPress(interactionSource, enabled = interactive)
+                    },
+                )
+                .clickable(
+                    interactionSource = interactionSource,
+                    indication = null,
+                    enabled = interactive,
+                    role = Role.Button,
+                    onClick = {
+                        if (binaryToggleTarget != null) {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onEffortChange(binaryToggleTarget)
+                        } else if (isCoui) {
+                            anchor.open { showPopup = true }
+                        } else {
+                            showPopup = true
+                        }
+                    },
+                )
+                .semantics {
+                    contentDescription = accessibilityLabel
+                }
+                .padding(horizontal = 10.dp, vertical = 5.dp),
+        ) {
+            Box(
+                modifier = if (useTransformPopup) {
+                    Modifier.glassPopupAnchorContent(popupAnchor)
+                } else {
+                    Modifier
+                },
+            ) {
+                chipContent()
+            }
+        }
+        if (binaryToggleTarget == null) {
+            when (LocalUiStyle.current) {
+                AppearanceUiStyle.COUI -> {
+                    val menuItems = remember(options, effort) {
+                        options.map { option ->
+                            CouiMenuItem(
+                                value = option,
+                                text = option.displayName,
+                                selected = option == effort,
+                            )
+                        }
+                    }
+                    Menu(
+                        expanded = showPopup && interactive,
+                        onDismissRequest = { showPopup = false },
+                        items = menuItems,
+                        onItemClick = { item ->
+                            showPopup = false
+                            onEffortChange(item.value)
+                        },
+                        anchor = anchor,
                     )
-                    Box(
-                        modifier = Modifier
-                            .matchParentSize()
-                            .pointerInput(options.size) {
-                                awaitEachGesture {
-                                    val down = awaitFirstDown()
-                                    down.consume()
-                                    val width = size.width.toFloat().coerceAtLeast(1f)
-                                    var current = discreteSliderIndexForTap(
-                                        down.position.x,
-                                        width,
-                                        latestOptions.size,
-                                    )
-                                    sliderValue = current.toFloat()
-                                    lastHapticIndex = current
-                                    TouchHaptics.click(view)
-                                    while (true) {
-                                        val event = awaitPointerEvent()
-                                        val change = event.changes.firstOrNull() ?: break
-                                        val index = discreteSliderIndexForTap(
-                                            change.position.x,
-                                            width,
-                                            latestOptions.size,
-                                        )
-                                        if (index != current) {
-                                            current = index
-                                            sliderValue = current.toFloat()
-                                            if (current != lastHapticIndex) {
-                                                lastHapticIndex = current
-                                                TouchHaptics.click(view)
-                                            }
-                                        }
-                                        change.consume()
-                                        if (!event.changes.any { it.pressed }) break
-                                    }
-                                    val coerced = current.coerceIn(0, latestOptions.lastIndex)
-                                    sliderValue = coerced.toFloat()
-                                    lastHapticIndex = coerced
-                                    val next = latestOptions[coerced]
-                                    if (next != latestEffort) latestOnEffortChange(next)
-                                }
-                            },
-                    )
+                }
+                AppearanceUiStyle.MIUIX -> {
+                    val overlayBackdrop = currentGlassOverlayBackdrop() ?: glassBackdrop
+                    EtaTopLayer {
+                        GlassTransformPopup(
+                            show = showPopup && interactive,
+                            onDismissRequest = { showPopup = false },
+                            anchor = popupAnchor,
+                            backdrop = overlayBackdrop,
+                            gap = popupLayout.gap,
+                            sizing = GlassPopupSizing(maxHeight = popupLayout.maxHeight),
+                            onMeasured = { measuredPopupHeightPx = it.height },
+                            anchorContent = chipContent,
+                        ) {
+                            options.forEach { option ->
+                                GlassPopupItem(
+                                    text = option.displayName,
+                                    selected = option == effort,
+                                    onClick = {
+                                        showPopup = false
+                                        onEffortChange(option)
+                                    },
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
     }
 }
 
-internal fun discreteSliderIndexForTap(x: Float, width: Float, count: Int): Int {
-    if (count <= 1 || width <= 0f) return 0
-    val fraction = (x / width).coerceIn(0f, 1f)
-    return (fraction * (count - 1)).roundToInt().coerceIn(0, count - 1)
-}
-
-
-/**
- * 横向跟随 Chip，竖向则避开整个输入面板；默认下拉定位只会避开 Chip 自身。
- */
 @Composable
-internal fun PendingImageStrip(
+private fun PendingImageStrip(
     images: List<PendingImageUi>,
     onRemoveImage: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState()),
+    val listState = rememberLazyListState()
+    val imagePreviewer = LocalChatImagePreviewer.current
+    val itemBounds = remember { HashMap<String, Rect>() }
+    var previousCount by remember { mutableIntStateOf(images.size) }
+    LaunchedEffect(images.size) {
+        if (images.size > previousCount && images.isNotEmpty()) {
+            listState.animateScrollToItem(images.lastIndex)
+        }
+        previousCount = images.size
+    }
+    LazyRow(
+        state = listState,
+        modifier = modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        images.forEach { image ->
+        itemsIndexed(
+            items = images,
+            key = { _, item -> item.id },
+        ) { index, image ->
             Box(
                 modifier = Modifier
-                    .size(60.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(MiuixTheme.colorScheme.surfaceContainer),
-            ) {
-                rememberDataUrlBitmap(image.dataUrl, fallback = image.uri)?.let { bitmap ->
-                    ChatClickableImage(
-                        source = image.uri,
-                        bitmap = bitmap,
-                        contentDescription = stringResource(
-                            if (image.isVideo) R.string.chat_video_preview else R.string.chat_image_preview,
+                    .animateItem(
+                        fadeInSpec = null,
+                        placementSpec = spring(
+                            dampingRatio = Spring.DampingRatioNoBouncy,
+                            stiffness = Spring.StiffnessMediumLow,
                         ),
+                        fadeOutSpec = tween(durationMillis = 120),
+                    )
+                    .attachmentItemEntrance()
+                    .size(64.dp)
+                    .onGloballyPositioned { coords ->
+                        if (coords.isAttached) itemBounds[image.id] = coords.boundsInWindow()
+                    }
+                    .graphicsLayer {
+                        alpha = if (imagePreviewer?.isPresenting(PendingImagesGroupKey, index) == true) 0f else 1f
+                    }
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MiuixTheme.colorScheme.surfaceContainer)
+                    .border(
+                        width = 0.5.dp,
+                        color = MiuixTheme.colorScheme.outline.copy(alpha = 0.55f),
+                        shape = RoundedCornerShape(12.dp),
+                    )
+                    .then(
+                        if (imagePreviewer != null) {
+                            Modifier.clickable {
+                                imagePreviewer.open(
+                                    images = images.map { it.dataUrl },
+                                    initialIndex = index,
+                                    groupKey = PendingImagesGroupKey,
+                                    sourceBoundsProvider = { page -> images.getOrNull(page)?.let { itemBounds[it.id] } },
+                                    sourceCornerRadius = 12.dp,
+                                )
+                            }
+                        } else {
+                            Modifier
+                        },
+                    ),
+            ) {
+                rememberDataUrlBitmap(image.dataUrl)?.let { bitmap ->
+                    Image(
+                        bitmap = bitmap,
+                        contentDescription = stringResource(R.string.chat_view_image),
                         modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.Crop,
                     )
                 }
-                if (image.isVideo) {
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.BottomStart)
-                            .padding(4.dp)
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(Color.Black.copy(alpha = 0.62f))
-                            .padding(horizontal = 4.dp, vertical = 2.dp),
-                    ) {
-                        Text(
-                            text = AgentVideoCodec.formatDuration(image.durationMs ?: 0L),
-                            style = MiuixTheme.textStyles.body2,
-                            color = Color.White,
-                        )
-                    }
-                    Icon(
-                        imageVector = Icons.Rounded.PlayArrow,
-                        contentDescription = null,
-                        tint = Color.White,
-                        modifier = Modifier
-                            .align(Alignment.Center)
-                            .size(22.dp),
-                    )
-                }
+                // 可见圆点保持小巧，触控区放大到右上角 32dp，避免误触缩略图。
                 Box(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
-                        .padding(3.dp)
-                        .size(18.dp)
-                        .clip(CircleShape)
-                        .background(Color.Black.copy(alpha = 0.58f))
-                        .clickable { onRemoveImage(image.id) },
-                    contentAlignment = Alignment.Center,
+                        .size(32.dp)
+                        .clickable(interactionSource = null, indication = null) { onRemoveImage(image.id) },
+                    contentAlignment = Alignment.TopEnd,
                 ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Close,
-                        contentDescription = stringResource(R.string.ui_remove_image_089db3),
-                        modifier = Modifier.size(11.dp),
-                        tint = Color.White,
-                    )
-                }
-            }
-        }
-    }
-}
-
-
-@Composable
-private fun AssistantPickerButton(
-    enabled: Boolean,
-    selectedAssistantId: String = "",
-    onEditAssistant: (String) -> Unit,
-    onAssistantSelected: (String) -> Unit,
-    modifier: Modifier = Modifier,
-    overlayMode: Boolean = false,
-) {
-    val profiles by AssistantRepository.profiles.collectAsState()
-    val repositoryActiveId by AssistantRepository.activeId.collectAsState()
-    val activeId = selectedAssistantId.ifBlank { repositoryActiveId }
-    var showPicker by remember { mutableStateOf(false) }
-    val assistant = profiles.firstOrNull { it.id == activeId } ?: profiles.firstOrNull()
-    LaunchedEffect(enabled) {
-        if (!enabled) showPicker = false
-    }
-    ChatInputNonFocusableIconButton(
-        onClick = { if (enabled) showPicker = true },
-        contentDescription = stringResource(R.string.assistant_selector),
-        modifier = modifier,
-    ) {
-        Box(modifier = Modifier.size(ThinkingIconSize)) {
-            AssistantAvatar(
-                assistant = assistant,
-                size = ThinkingIconSize,
-                modifier = Modifier.graphicsLayer(alpha = if (enabled) 1f else 0.38f),
-            )
-        }
-    }
-    if (overlayMode) {
-        // 浮窗：无 Activity token，助手选择改走 Popup（①A 裁决）。
-        EtaDropdownMenu(
-            expanded = showPicker && enabled,
-            onDismissRequest = { showPicker = false },
-            preferAbove = true,
-            minWidth = 0.dp,
-            focusable = false,
-        ) {
-            profiles.forEach { profile ->
-                DropdownMenuItem(
-                    modifier = Modifier.height(40.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp),
-                    text = {
-                        androidx.compose.material3.Text(
-                            text = profile.name,
-                            color = if (profile.id == activeId) {
-                                MiuixTheme.colorScheme.primary
-                            } else {
-                                MiuixTheme.colorScheme.onSurface
-                            },
+                    Box(
+                        modifier = Modifier
+                            .padding(4.dp)
+                            .size(18.dp)
+                            .clip(CircleShape)
+                            .background(Color.Black.copy(alpha = 0.58f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Close,
+                            contentDescription = stringResource(R.string.ui_remove_image_089db3),
+                            modifier = Modifier.size(11.dp),
+                            tint = Color.White,
                         )
-                    },
-                    leadingIcon = {
-                        AssistantAvatar(
-                            assistant = profile,
-                            size = 22.dp,
-                            modifier = Modifier.size(22.dp),
-                        )
-                    },
-                    onClick = {
-                        showPicker = false
-                        onAssistantSelected(profile.id)
-                    },
-                )
-            }
-        }
-    } else {
-        AssistantPickerDialog(
-            show = showPicker && enabled,
-            onDismiss = { showPicker = false },
-            onSelect = { id ->
-                showPicker = false
-                onAssistantSelected(id)
-            },
-            onEdit = { id ->
-                showPicker = false
-                onEditAssistant(id)
-            },
-            selectedAssistantId = activeId,
-        )
-    }
-}
-
-internal fun resolveChatComposerSendMode(
-    isStreaming: Boolean,
-    isPaused: Boolean,
-    hasSteerContent: Boolean,
-    canStartNewSend: Boolean,
-    isCompressingContext: Boolean = false,
-    canContinueDisconnected: Boolean = false,
-): String = when {
-    // 压缩进行中禁止追加/续写：有待发内容时显示灰色发送键，点击只提示。
-    // 没有内容时，暂停后显示继续；未暂停的流式仍可停止。
-    isCompressingContext && hasSteerContent -> "blocked"
-    isCompressingContext && isPaused -> "continue"
-    isCompressingContext && isStreaming -> "stop"
-    isCompressingContext -> "idle"
-    (isStreaming || isPaused) && hasSteerContent -> "send"
-    isPaused -> "continue"
-    isStreaming -> "stop"
-    // Terminal failure: Continue creates a new logical turn, never resumes the failed one.
-    canContinueDisconnected && hasSteerContent -> "send"
-    canContinueDisconnected -> "continue"
-    canStartNewSend -> "send"
-    else -> "idle"
-}
-
-@Composable
-private fun VoiceEntryButton(
-    textFieldState: androidx.compose.foundation.text.input.TextFieldState,
-    showGeneration: Boolean,
-    interactionBlocked: Boolean,
-    resetKey: Any?,
-    voiceState: VoiceModeState,
-    onStartVoiceMode: (VoiceEntryMode) -> Unit,
-    onStopVoiceMode: () -> Unit,
-) {
-    val view = LocalView.current
-    val context = LocalContext.current
-    var picker by remember { mutableStateOf(false) }
-    var lastSelected by remember { mutableStateOf(Prefs.getString(Prefs.Keys.AGENT_VOICE_LAST_ENTRY)) }
-    fun rememberMode(mode: VoiceEntryMode) {
-        lastSelected = mode.wireValue
-        Prefs.putString(Prefs.Keys.AGENT_VOICE_LAST_ENTRY, mode.wireValue)
-    }
-    var pendingMode by remember { mutableStateOf<VoiceEntryMode?>(null) }
-    // 浮窗（overlay Service）没有 ActivityResultRegistryOwner；rememberLauncherForActivityResult
-    // 在组合期就会读取该 Local，缺失即抛 IllegalStateException。因此必须按 owner 是否存在
-    // 决定是否创建 launcher，缺失时权限申请改走透明跳板 Activity。
-    val registryOwner = androidx.activity.compose.LocalActivityResultRegistryOwner.current
-    val permission = if (registryOwner != null) {
-        rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            val mode = pendingMode
-            pendingMode = null
-            if (granted && mode != null && io.github.mangi.eta.agent.voice.VoiceEntryPolicy.enabled(
-                    io.github.mangi.eta.agent.voice.doubao.DoubaoVoiceConfig.state.value, mode)) onStartVoiceMode(mode)
-            else if (!granted && mode != null) Toast.makeText(context, R.string.speech_permission_denied, Toast.LENGTH_LONG).show()
-        }
-    } else null
-    fun startMode(mode: VoiceEntryMode) {
-        if (!io.github.mangi.eta.agent.voice.VoiceEntryPolicy.enabled(
-                io.github.mangi.eta.agent.voice.doubao.DoubaoVoiceConfig.state.value, mode)) return
-        rememberMode(mode)
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-            onStartVoiceMode(mode)
-        } else {
-            pendingMode = mode
-            if (permission != null) {
-                permission.launch(Manifest.permission.RECORD_AUDIO)
-            } else {
-                // 浮窗：借透明 Activity 承载权限请求
-                VoicePermissionTrampolineActivity.requestRecordAudio(context) { granted ->
-                    val pending = pendingMode
-                    pendingMode = null
-                    if (granted && pending != null) {
-                        onStartVoiceMode(pending)
-                    } else if (pending != null) {
-                        Toast.makeText(
-                            context,
-                            R.string.speech_permission_denied,
-                            Toast.LENGTH_LONG,
-                        ).show()
                     }
                 }
             }
         }
     }
-    val config by io.github.mangi.eta.agent.voice.doubao.DoubaoVoiceConfig.state.collectAsState()
-    val modes = io.github.mangi.eta.agent.voice.VoiceEntryPolicy.modes(config)
-    val canChoose = io.github.mangi.eta.agent.voice.VoiceEntryPolicy.canChoose(config)
-    val directMode = io.github.mangi.eta.agent.voice.VoiceEntryPolicy.directMode(config, lastSelected)
-    val directLabel = when (directMode) {
-        VoiceEntryMode.DICTATION -> R.string.voice_mode_dictation
-        VoiceEntryMode.UNIVERSAL -> R.string.voice_mode_universal
-        VoiceEntryMode.DOUBAO_DUPLEX -> R.string.voice_mode_doubao
-        null -> R.string.voice_mode_choose
-    }
-    LaunchedEffect(Unit) { io.github.mangi.eta.agent.voice.doubao.DoubaoVoiceConfig.load(context) }
-    LaunchedEffect(modes) {
-        if (!canChoose) picker = false
-        if (pendingMode !in modes) pendingMode = null
-        if (voiceState.mode != null && voiceState.mode !in modes) onStopVoiceMode()
-    }
-    LaunchedEffect(resetKey, interactionBlocked) {
-        pendingMode = null
-        picker = false
-    }
-    val active = voiceState.active || voiceState.error != null
-    val choose: (() -> Unit)? = if (canChoose) ({ picker = true }) else null
-    Box {
-    if (VoiceEntryMode.DICTATION in modes && !active) {
-        ChatSpeechIndicator(
-            textFieldState = textFieldState,
-            showGeneration = showGeneration,
-            interactionBlocked = interactionBlocked,
-            resetKey = resetKey,
-            onLongClick = choose,
-            onUnavailableClick = if (canChoose) ({ picker = true }) else null,
-            onIdleClick = when (directMode) {
-                VoiceEntryMode.DICTATION -> null
-                null -> if (canChoose) ({ picker = true }) else null
-                else -> ({ startMode(directMode) })
-            },
-            idleDescription = context.getString(directLabel),
-            onStartRequested = { rememberMode(VoiceEntryMode.DICTATION) },
-            suspendCapture = picker,
-            forceVisible = true,
-        )
-    } else {
-        Box(
-            modifier = Modifier
-                .size(48.dp)
-                .clip(CircleShape)
-                .then(if (modes.isNotEmpty() || active) Modifier.semantics {
-                    contentDescription = context.getString(if (active) R.string.voice_mode_stop else directLabel)
-                }.combinedClickable(
-                    enabled = !interactionBlocked,
-                    indication = null,
-                    interactionSource = remember { MutableInteractionSource() },
-                    hapticFeedbackEnabled = false,
-                    onLongClick = if (!active) choose?.let { callback ->
-                        {
-                            TouchHaptics.longPress(view)
-                            callback()
-                        }
-                    } else null,
-                    onClick = {
-                        TouchHaptics.click(view)
-                        when {
-                            active -> onStopVoiceMode()
-                            directMode != null -> startMode(directMode)
-                            modes.size > 1 -> picker = true
-                        }
-                    },
-                ) else Modifier),
-            contentAlignment = Alignment.Center,
-        ) {
-            ContainedMorphLoadingIndicator(
-                indicatorSize = if (active) 40.dp else 24.dp,
-                animate = showGeneration || active,
-            )
-        }
-    }
-    VoiceEntryPickerDialog(
-        show = picker && canChoose,
-        modes = modes,
-        onDismiss = { picker = false },
-        onSelect = { mode ->
-            picker = false
-            pendingMode = null
-            if (!interactionBlocked && io.github.mangi.eta.agent.voice.VoiceEntryPolicy.enabled(
-                    io.github.mangi.eta.agent.voice.doubao.DoubaoVoiceConfig.state.value, mode)) {
-                TouchHaptics.click(view)
-                // Choosing changes the default only; a separate tap starts capture or a call.
-                rememberMode(mode)
-            }
-        },
-    )
-    }
 }
 
-@Composable
-private fun VoiceEntryPickerDialog(
-    show: Boolean,
-    modes: List<VoiceEntryMode>,
-    onDismiss: () -> Unit,
-    onSelect: (VoiceEntryMode) -> Unit,
-) {
-    EtaDropdownMenu(
-        expanded = show,
-        onDismissRequest = onDismiss,
-        preferAbove = true,
-    ) {
-        listOf(
-            Triple(VoiceEntryMode.DICTATION, Icons.Rounded.KeyboardVoice, R.string.voice_mode_dictation),
-            Triple(VoiceEntryMode.UNIVERSAL, Icons.Rounded.RecordVoiceOver, R.string.voice_mode_universal),
-            Triple(VoiceEntryMode.DOUBAO_DUPLEX, Icons.Rounded.GraphicEq, R.string.voice_mode_doubao),
-        ).filter { it.first in modes }.forEach { (mode, icon, label) ->
-            DropdownMenuItem(
-                modifier = Modifier.heightIn(min = 40.dp),
-                contentPadding = PaddingValues(horizontal = 12.dp),
-                text = { Text(stringResource(label), style = MiuixTheme.textStyles.body2) },
-                leadingIcon = { Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp)) },
-                onClick = { onSelect(mode) },
-            )
-        }
-    }
-}
-
+private const val PendingImagesGroupKey = "pending_images_strip"

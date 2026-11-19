@@ -17,6 +17,29 @@ import org.robolectric.annotation.Config
 @Config(sdk = [36])
 class AgentRuntimeResultStoreTest {
     @Test
+    fun rewriteTargetSurvivesDatabaseReopenInResultHeaderArchiveAndCheckpoint() {
+        val runId = "rewrite-storage-${System.nanoTime()}"
+        val target = "assistant-original-1-0"
+        val handoff = AgentRuntimeWire.EntryHandoff(runId, AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE, "conversation-1")
+        val result = AgentRuntimeWire.RunResult(runId, true, "新的措辞",
+            operation = AgentRuntimeWire.OP_REWRITE_REPLY, rewriteTargetMessageId = target)
+        val request = AgentRuntimeWire.RunRequest(
+            runId = runId, prompt = "原始措辞", handoff = handoff, images = emptyList(),
+            config = AgentModelClient.ModelConfig(baseUrl = "https://example.com/v1", apiKey = "", model = "model", systemPrompt = ""),
+            operation = AgentRuntimeWire.OP_REWRITE_REPLY, rewriteTargetMessageId = target,
+        )
+        assertTrue(AgentRunCheckpointStore.start(context, request))
+        AgentRunArchiveStore.add(context, AgentRunArchiveStore.ArchivedRun(handoff, emptyList(), result, 1L))
+        AgentRuntimeResultStore.add(context, AgentRuntimeWire.CompletedRun(handoff, result, 1L))
+        EtaDatabase.closeForTests()
+
+        assertEquals(target, AgentRuntimeResultStore.pendingPage(context).single().result.rewriteTargetMessageId)
+        assertEquals(target, AgentRuntimeResultStore.readOwned(context, runId, handoff.payload)!!.result.rewriteTargetMessageId)
+        assertEquals(target, AgentRunArchiveStore.list(context).single().result.rewriteTargetMessageId)
+        assertEquals(target, AgentRunCheckpointStore.list(context).single().rewriteTargetMessageId)
+    }
+
+    @Test
     fun emptyLegacyTranscriptFallsBackToSuccessfulAssistantContent() {
         val runId = "legacy-${System.nanoTime()}"
         AgentRuntimeResultStore.add(
@@ -56,7 +79,7 @@ class AgentRuntimeResultStoreTest {
         val completedRun = AgentRuntimeWire.CompletedRun(
             handoff = AgentRuntimeWire.EntryHandoff(
                 id = runId,
-                source = "breeno",
+                source = AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE,
                 payload = "{}",
             ),
             result = AgentRuntimeWire.RunResult(
@@ -70,53 +93,6 @@ class AgentRuntimeResultStoreTest {
         AgentRuntimeResultStore.remove(context, runId)
 
         assertFalse(AgentRuntimeResultStore.add(context, completedRun))
-        assertTrue(AgentRuntimeResultStore.list(context).none { it.result.runId == runId })
-    }
-
-    @Test
-    fun acknowledgedResultSkipsTranscriptEncodingIncludingFallbackRunId() {
-        for (blankResultId in listOf(false, true)) {
-            val runId = "ack-no-encode-${System.nanoTime()}"
-            val unreadableTranscript = object : AbstractList<AgentModelClient.ConversationMessage>() {
-                override val size: Int get() = 1
-                override fun get(index: Int): AgentModelClient.ConversationMessage =
-                    error("Acknowledged transcript must not be read")
-            }
-            val completed = AgentRuntimeWire.CompletedRun(
-                handoff = AgentRuntimeWire.EntryHandoff(runId, "agent_ui", "conversation-1"),
-                result = AgentRuntimeWire.RunResult(
-                    runId = if (blankResultId) "" else runId,
-                    ok = true, content = "obsolete", transcript = unreadableTranscript,
-                ),
-                createdAt = System.currentTimeMillis(),
-            )
-            AgentRuntimeResultStore.remove(context, runId)
-            assertFalse(AgentRuntimeResultStore.add(context, completed))
-            assertTrue(AgentRuntimeResultStore.list(context).none { it.result.runId == runId })
-        }
-    }
-
-    @Test
-    fun acknowledgementDuringEncodingStillPreventsLateWriteBack() {
-        val runId = "ack-during-encode-${System.nanoTime()}"
-        var acknowledged = false
-        val transcript = object : AbstractList<AgentModelClient.ConversationMessage>() {
-            override val size: Int get() = 1
-            override fun get(index: Int): AgentModelClient.ConversationMessage {
-                if (!acknowledged) {
-                    acknowledged = true
-                    AgentRuntimeResultStore.remove(context, runId)
-                }
-                return AgentModelClient.ConversationMessage("assistant", "delivered")
-            }
-        }
-        val completed = AgentRuntimeWire.CompletedRun(
-            handoff = AgentRuntimeWire.EntryHandoff(runId, "agent_ui", "conversation-1"),
-            result = AgentRuntimeWire.RunResult(runId, true, "delivered", transcript = transcript),
-            createdAt = System.currentTimeMillis(),
-        )
-        assertFalse(AgentRuntimeResultStore.add(context, completed))
-        assertTrue(acknowledged)
         assertTrue(AgentRuntimeResultStore.list(context).none { it.result.runId == runId })
     }
 
@@ -138,7 +114,7 @@ class AgentRuntimeResultStoreTest {
         val completedRun = AgentRuntimeWire.CompletedRun(
             handoff = AgentRuntimeWire.EntryHandoff(
                 id = runId,
-                source = "breeno",
+                source = AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE,
                 payload = "{}",
             ),
             result = AgentRuntimeWire.RunResult(
@@ -215,7 +191,7 @@ class AgentRuntimeResultStoreTest {
     }
 
     @Test
-    fun capacityPruningRemovesTheMatchingTerminalCheckpoint() {
+    fun unacknowledgedResultsAndCheckpointsAreNotEvictedByCount() {
         val now = System.currentTimeMillis()
         repeat(9) { index ->
             val runId = "capacity-$index"
@@ -228,14 +204,14 @@ class AgentRuntimeResultStoreTest {
             )
         }
 
-        assertEquals(8, AgentRuntimeResultStore.list(context).size)
-        assertTrue(AgentRuntimeResultStore.list(context).none { it.result.runId == "capacity-0" })
-        assertTrue(AgentRunCheckpointStore.list(context).none { it.runId == "capacity-0" })
-        assertEquals(8, AgentRunCheckpointStore.list(context).size)
+        assertEquals(9, AgentRuntimeResultStore.list(context).size)
+        assertTrue(AgentRuntimeResultStore.list(context).any { it.result.runId == "capacity-0" })
+        assertTrue(AgentRunCheckpointStore.list(context).any { it.runId == "capacity-0" })
+        assertEquals(9, AgentRunCheckpointStore.list(context).size)
     }
 
     @Test
-    fun agePruningRemovesTheMatchingTerminalCheckpoint() {
+    fun unacknowledgedResultsAndCheckpointsAreNotEvictedByAge() {
         val runId = "expired-result"
         createCheckpoint(runId)
 
@@ -249,8 +225,8 @@ class AgentRuntimeResultStoreTest {
             )
         )
 
-        assertTrue(AgentRuntimeResultStore.list(context).isEmpty())
-        assertTrue(AgentRunCheckpointStore.list(context).isEmpty())
+        assertEquals(runId, AgentRuntimeResultStore.list(context).single().result.runId)
+        assertEquals(runId, AgentRunCheckpointStore.list(context).single().runId)
     }
 
     private fun createCheckpoint(runId: String) {

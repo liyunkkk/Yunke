@@ -169,60 +169,6 @@ class SkillPackageInstaller internal constructor(
         }
     }
 
-    /** 扫描本地目录发现可安装 Skill（含子目录）。 */
-    fun inspectLocalDirectory(
-        directory: File,
-        isCancelled: () -> Boolean = { false },
-    ): SkillArchiveInspectionResult {
-        return try {
-            val scanRoot = directory.canonicalFile
-            val candidates = discoverCandidates(scanRoot, scanRoot, isCancelled)
-            if (candidates.isEmpty()) {
-                SkillArchiveInspectionResult.Failure(
-                    SkillInstallError(SkillInstallErrorCode.NO_SKILL_FOUND, "目录中没有找到 SKILL.md")
-                )
-            } else {
-                SkillArchiveInspectionResult.Success(candidates.map { it.publicModel })
-            }
-        } catch (e: SkillInstallException) {
-            SkillArchiveInspectionResult.Failure(e.error)
-        }
-    }
-
-    /** 安装本地目录中的单个 Skill。目录必须只包含一个 Skill。 */
-    fun installLocalDirectory(
-        directory: File,
-        replaceUserSkill: Boolean = false,
-        expectedReplacementId: String? = null,
-        isCancelled: () -> Boolean = { false },
-    ): SkillInstallResult {
-        val scanRoot = directory.canonicalFile
-        return try {
-            val candidates = discoverCandidates(scanRoot, scanRoot, isCancelled)
-            when {
-                candidates.isEmpty() -> fail(
-                    SkillInstallErrorCode.NO_SKILL_FOUND,
-                    "目录中没有找到 SKILL.md"
-                )
-                candidates.size > 1 -> fail(
-                    SkillInstallErrorCode.MULTIPLE_SKILLS_FOUND,
-                    "本地目录必须只包含一个 Skill，当前发现 ${candidates.size} 个"
-                )
-            }
-            val operationDir = createOperationDirectory()
-                ?: fail(SkillInstallErrorCode.IO_ERROR, "无法创建安装工作目录")
-            installCandidates(
-                operation = ArchiveOperation(directory = operationDir),
-                candidates = candidates,
-                replaceUserSkills = replaceUserSkill,
-                isCancelled = isCancelled,
-                conflictArchiveSha256 = null,
-            )
-        } catch (e: SkillInstallException) {
-            SkillInstallResult.Failure(e.error)
-        }
-    }
-
     private fun installCandidates(
         operation: ArchiveOperation,
         candidates: List<PreparedCandidate>,
@@ -253,22 +199,6 @@ class SkillPackageInstaller internal constructor(
                 SkillInstallErrorCode.DUPLICATE_SKILL_ID,
                 "所选 Skill 使用了重复名称：${duplicateIds.sorted().joinToString()}",
             )
-        }
-        candidates.forEach { candidate ->
-            val compatibility = SkillCompatibilityChecker.evaluate(
-                id = candidate.id,
-                name = candidate.name,
-                description = candidate.description,
-                compatibility = candidate.compatibility,
-                metadata = candidate.metadata,
-                body = candidate.body,
-            )
-            if (!compatibility.available) {
-                fail(
-                    SkillInstallErrorCode.INCOMPATIBLE_SKILL,
-                    "${candidate.id}：${compatibility.reason ?: "当前环境无法运行该 Skill"}",
-                )
-            }
         }
 
         val installedEntries = indexService.listSkillsForManagement(forceRefresh = true)
@@ -430,9 +360,6 @@ class SkillPackageInstaller internal constructor(
                 description = metadata.description,
                 relativePath = relativePath,
                 directory = directory,
-                compatibility = metadata.compatibility,
-                metadata = metadata.metadata,
-                body = metadata.body,
             )
         }.sortedBy { it.relativePath }
     }
@@ -466,14 +393,7 @@ class SkillPackageInstaller internal constructor(
                 "Skill description 必填且不能超过 $MAX_SKILL_DESCRIPTION_LENGTH 字符",
             )
         }
-        val body = raw.substringAfter("---", "").substringAfter("---", "").trim()
-        return ValidatedSkillMetadata(
-            name = name,
-            description = description,
-            compatibility = parsed["compatibility"]?.trim(),
-            metadata = parsed["metadata"]?.let { SkillParser.parseIndentedBlock(it) } ?: emptyMap(),
-            body = body,
-        )
+        return ValidatedSkillMetadata(name = name, description = description)
     }
 
     private fun strictFrontmatter(raw: String): String? {
@@ -782,9 +702,6 @@ class SkillPackageInstaller internal constructor(
         val description: String,
         val relativePath: String,
         val directory: File,
-        val compatibility: String? = null,
-        val metadata: Map<String, String> = emptyMap(),
-        val body: String = "",
     ) {
         val publicModel: SkillArchiveCandidate
             get() = SkillArchiveCandidate(
@@ -798,9 +715,6 @@ class SkillPackageInstaller internal constructor(
     private data class ValidatedSkillMetadata(
         val name: String,
         val description: String,
-        val compatibility: String? = null,
-        val metadata: Map<String, String> = emptyMap(),
-        val body: String = "",
     )
 
     private data class ArchiveOperation(

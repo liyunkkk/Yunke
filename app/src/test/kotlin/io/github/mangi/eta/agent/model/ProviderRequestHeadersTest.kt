@@ -1,6 +1,7 @@
 package io.github.mangi.eta.agent.model
 
 import io.github.mangi.eta.data.model.CustomHeader
+import io.github.mangi.eta.data.model.ProviderAuthModes
 import okhttp3.Headers
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
@@ -10,13 +11,77 @@ import org.junit.Test
 
 class ProviderRequestHeadersTest {
     @Test
+    fun codexUsesEtaOriginatorAndTheRuntimeSession() {
+        val builder = Headers.Builder()
+        ProviderRequestHeaders.mergeInto(builder, "https://chatgpt.com/backend-api/codex", emptyList(),
+            sessionId = "conversation-fixture", authMode = ProviderAuthModes.OPENAI_CHATGPT)
+        val headers = builder.build()
+        assertEquals("eta", headers["originator"])
+        assertEquals("conversation-fixture", headers["session-id"])
+        assertEquals("responses=experimental", headers["OpenAI-Beta"])
+    }
+
+    @Test
+    fun grokSubscriptionDeclaresProtocolVersionAndManagedModelRouting() {
+        val builder = Headers.Builder()
+        ProviderRequestHeaders.mergeInto(
+            builder, "https://cli-chat-proxy.grok.com/v1", emptyList(),
+            authMode = ProviderAuthModes.XAI_GROK, model = "grok-fixture",
+        )
+        val headers = builder.build()
+        assertEquals("xai-grok-cli", headers["X-XAI-Token-Auth"])
+        assertEquals("grok-fixture", headers["x-grok-model-override"])
+        assertEquals("Eta", headers["User-Agent"])
+        assertEquals("1.0.77", headers["x-grok-client-version"])
+    }
+
+    @Test
+    fun grokCatalogUsesVersionHeaderWithoutAModelOverride() {
+        val builder = Headers.Builder()
+        ProviderRequestHeaders.mergeInto(
+            builder, "https://cli-chat-proxy.grok.com/v1", emptyList(),
+            authMode = ProviderAuthModes.XAI_GROK,
+        )
+        assertEquals("1.0.77", builder.build()["x-grok-client-version"])
+        assertNull(builder.build()["x-grok-model-override"])
+    }
+
+    @Test
+    fun grokRoutingHeadersAreNotAddedToApiKeyOrCodexConnections() {
+        for (mode in listOf(ProviderAuthModes.API_KEY, ProviderAuthModes.OPENAI_CHATGPT)) {
+            val builder = Headers.Builder()
+            ProviderRequestHeaders.mergeInto(
+                builder, "https://api.x.ai/v1", emptyList(), authMode = mode, model = "fixture",
+            )
+            val headers = builder.build()
+            assertNull(headers["x-grok-client-version"])
+            assertNull(headers["x-grok-model-override"])
+            assertNull(headers["X-XAI-Token-Auth"])
+        }
+    }
+
+    @Test
+    fun subscriptionRejectsCustomAuthenticationAndRoutingHeaders() {
+        listOf("Authorization", "Cookie", "X-Grok-Client-Version", "X-Grok-Model-Override", "OpenAI-Project", "ChatGPT-Account-ID", "Originator", "Session-Id").forEach { name ->
+            val failure = runCatching {
+                ProviderRequestHeaders.mergeInto(
+                    Headers.Builder(), "https://api.openai.com/v1", listOf(CustomHeader(name, "secret-fixture")),
+                    authMode = ProviderAuthModes.OPENAI_CHATGPT,
+                )
+            }.exceptionOrNull()
+            assertTrue(name, failure is IllegalArgumentException)
+            assertTrue(failure?.message?.contains("secret-fixture") == false)
+        }
+    }
+
+    @Test
     fun openCodeSessionIsStableAndIsolatedFromOtherConversations() {
         val first = headers("https://opencode.ai/zen/go/v1", "conversation-1")
         val retry = headers("https://opencode.ai/zen/go/v1", "conversation-1")
         val next = headers("https://opencode.ai/zen/go/v1", "conversation-2")
         assertEquals(first["x-opencode-session"], retry["x-opencode-session"])
         assertNotEquals(first["x-opencode-session"], next["x-opencode-session"])
-        assertEquals("Yunke", first["User-Agent"])
+        assertEquals("Eta", first["User-Agent"])
     }
 
     @Test
@@ -57,25 +122,6 @@ class ProviderRequestHeadersTest {
             val error = CustomHeaderFilter.validationError(headers)
             assertTrue(error != null && !error.contains("secret"))
         }
-    }
-
-    @Test
-    fun chatgptCodexSendsSessionId() {
-        val result = headers("https://chatgpt.com/backend-api/codex", "conversation-1")
-        assertEquals("conversation-1", result["session-id"])
-        assertEquals("conversation-1", result["thread-id"])
-        assertEquals("codex_cli_rs", result["Originator"])
-    }
-
-    @Test
-    fun sessionIdentityFollowsTheConversationOnAnyHost() {
-        val first = headers("https://gateway.example/v1", "conversation-1")
-        val again = headers("https://gateway.example/v1", "conversation-1")
-        val other = headers("https://gateway.example/v1", "conversation-2")
-        assertEquals("conversation-1", first["session-id"])
-        assertEquals("conversation-1", first["thread-id"])
-        assertEquals(first["session-id"], again["session-id"])
-        assertNotEquals(first["session-id"], other["session-id"])
     }
 
     private fun headers(url: String, session: String): Headers = Headers.Builder().also {

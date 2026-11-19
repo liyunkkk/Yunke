@@ -3,7 +3,7 @@ package io.github.mangi.eta.agent.runtime
 import io.github.mangi.eta.agent.model.AgentModelClient
 import java.util.UUID
 
-/** 补充指令接续原用户逻辑轮次；执行 run 可以更换，turnId 不变。 */
+/** 用完整增量 transcript 构造已完成 run 的后续用户回合。 */
 internal object AgentContinuationBuilder {
     fun build(
         request: AgentRuntimeWire.RunRequest,
@@ -11,15 +11,15 @@ internal object AgentContinuationBuilder {
         supplement: String,
         newRunId: String = "run-${UUID.randomUUID()}",
         createdAt: Long = System.currentTimeMillis(),
-        requestId: String = "",
-        imagesJson: String = "[]",
     ): AgentRuntimeWire.RunRequest {
-        val baseHistory = request.history +
-            AgentModelClient.buildUserHistoryMessage(request.prompt, request.images).copy(turnId = request.effectiveTurnId) +
-            response.transcript.map { message ->
-                if (message.turnId.isBlank() && !io.github.mangi.eta.agent.model.AgentContextCompactor.isCompressionSummary(message))
-                    message.copy(turnId = request.effectiveTurnId) else message
-            }
+        require(request.operation == AgentRuntimeWire.OP_CHAT) { "该运行不是可继续的对话回合" }
+        val uiPayload = request.handoff?.takeIf { it.source == AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE }
+            ?.let { AgentUiHandoffPayload.from(it.payload) }
+        val baseHistory = response.contextSnapshot?.messages ?: (request.history +
+            AgentModelClient.buildUserHistoryMessage(request.prompt, request.images).copy(
+                messageId = uiPayload?.promptMessageId(request.runId) ?: "user-${request.runId}",
+            ) +
+            response.transcript)
         val handoff = request.handoff?.let { original ->
             if (original.source != AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE) {
                 return@let original.copy(id = newRunId)
@@ -29,8 +29,6 @@ internal object AgentContinuationBuilder {
                 index = (payload.supplements.maxOfOrNull { it.index } ?: 0) + 1,
                 text = supplement,
                 createdAt = createdAt,
-                requestId = requestId,
-                imagesJson = imagesJson,
             )
             original.copy(
                 id = newRunId,
@@ -42,31 +40,14 @@ internal object AgentContinuationBuilder {
         }
         return request.copy(
             runId = newRunId,
-            turnId = request.effectiveTurnId,
+            operation = AgentRuntimeWire.OP_CHAT,
+            rewriteTargetMessageId = null,
             modelSessionId = request.effectiveModelSessionId,
             prompt = supplement,
-            images = continuationImages(supplement, imagesJson, request.config.supportsVision, request.config.supportsVideo),
+            images = emptyList(),
             history = baseHistory,
             handoff = handoff,
         )
-    }
-
-    private fun continuationImages(text: String, raw: String, vision: Boolean, video: Boolean): List<AgentModelClient.ModelImage> {
-        if (io.github.mangi.eta.agent.model.AgentSupplementMedia.persistedImages(raw).isEmpty()) return emptyList()
-        val persisted = io.github.mangi.eta.agent.model.AgentSupplementMedia.userMessage(text, raw)
-        val hydrated = io.github.mangi.eta.agent.media.AgentHistoryImageHydrator.hydrate(
-            AgentModelClient.ConversationMessage(role = "user", content = text,
-                contentJson = persisted.getJSONArray("content").toString()), vision, video)
-        val parts = org.json.JSONArray(hydrated.contentJson)
-        return (0 until parts.length()).mapNotNull { index ->
-            val part = parts.optJSONObject(index) ?: return@mapNotNull null
-            val type = part.optString("type")
-            if (type != "image_url" && type != "video_url") return@mapNotNull null
-            AgentModelClient.ModelImage(reference = part.getJSONObject(type).getString("url"),
-                mimeType = if (type == "video_url") "video/mp4" else "image/jpeg",
-                bytes = (part.getJSONObject(type).getString("url").substringAfter("base64,", "").length.toLong() * 3 / 4).toInt(),
-                source = "steering")
-        }
     }
 
 }

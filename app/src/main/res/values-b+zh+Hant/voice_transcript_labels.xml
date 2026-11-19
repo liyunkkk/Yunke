@@ -1,4 +1,0 @@
-<resources>
-    <string name="voice_recognized_text">辨識：%1$s</string>
-    <string name="voice_reply_text">回覆：%1$s</string>
-</resources>

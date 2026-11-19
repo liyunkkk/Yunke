@@ -8,30 +8,36 @@ const val DEFAULT_INTERFACE_SCALE = 1f
 
 @Serializable
 data class AppearanceSettings(
-    val themeMode: AppearanceThemeMode = AppearanceThemeMode.LIGHT,
-    val monetEnabled: Boolean = true,
-    val paletteStyle: AppearancePaletteStyle = AppearancePaletteStyle.NEUTRAL,
+    val uiStyle: AppearanceUiStyle = AppearanceUiStyle.COUI,
+    val themeMode: AppearanceThemeMode = AppearanceThemeMode.SYSTEM,
+    val monetEnabled: Boolean = false,
+    val paletteStyle: AppearancePaletteStyle = AppearancePaletteStyle.TONAL_SPOT,
     val accentColor: AppearanceAccentColor = AppearanceAccentColor.SYSTEM,
     val pureBlackEnabled: Boolean = false,
     val blurEnabled: Boolean = true,
+    val progressiveBlurEnabled: Boolean = true,
     val topBarBlurStyle: AppearanceTopBarBlurStyle = AppearanceTopBarBlurStyle.GAUSSIAN,
     val swipeDismissEnabled: Boolean = true,
-    val predictiveBackEnabled: Boolean = false,
+    val predictiveBackEnabled: Boolean = true,
     val interfaceScale: Float = DEFAULT_INTERFACE_SCALE,
-    val morphLoadingIndicator: Boolean = true,
-    val morphLoadingBeforeResponseOnly: Boolean = false,
-    val messageTimestampsEnabled: Boolean = false,
-    /**
-     * 本轮已给出正文回答、且生成停下之后，回答之前的内容怎么收（档位见 [AnswerFoldLevel]）。
-     *
-     * 用户手动点开/收起过的分组始终优先于本策略；[AnswerFoldLevel.NONE] 则完全不自动收起。
-     */
-    val answerFoldLevel: AnswerFoldLevel = AnswerFoldLevel.AGGRESSIVE,
 ) {
     fun normalized(): AppearanceSettings = copy(
-        monetEnabled = true,
         interfaceScale = normalizeInterfaceScale(interfaceScale),
     )
+}
+
+@Serializable
+enum class AppearanceUiStyle(val persistedValue: String) {
+    COUI("coui"),
+    MIUIX("miuix");
+
+    val isCoui: Boolean
+        get() = this == COUI
+
+    companion object {
+        fun fromPersistedValue(value: String?): AppearanceUiStyle =
+            entries.firstOrNull { it.persistedValue == value } ?: COUI
+    }
 }
 
 @Serializable
@@ -42,7 +48,7 @@ enum class AppearanceThemeMode(val persistedValue: String) {
 
     companion object {
         fun fromPersistedValue(value: String?): AppearanceThemeMode =
-            entries.firstOrNull { it.persistedValue == value } ?: LIGHT
+            entries.firstOrNull { it.persistedValue == value } ?: SYSTEM
     }
 }
 
@@ -56,11 +62,12 @@ enum class AppearancePaletteStyle(val persistedValue: String) {
     FRUIT_SALAD("fruit_salad"),
     MONOCHROME("monochrome"),
     FIDELITY("fidelity"),
-    CONTENT("content");
+    CONTENT("content"),
+    CMF("cmf");
 
     companion object {
         fun fromPersistedValue(value: String?): AppearancePaletteStyle =
-            entries.firstOrNull { it.persistedValue == value } ?: NEUTRAL
+            entries.firstOrNull { it.persistedValue == value } ?: TONAL_SPOT
     }
 }
 
@@ -90,32 +97,6 @@ enum class AppearanceTopBarBlurStyle(val persistedValue: String) {
     companion object {
         fun fromPersistedValue(value: String?): AppearanceTopBarBlurStyle =
             entries.firstOrNull { it.persistedValue == value } ?: GAUSSIAN
-    }
-}
-
-/**
- * 「回答出现后收起本轮内容」的分级。枚举顺序即设置页选项顺序。
- *
- * 三档共用同一套收起时机：只在整轮停下（非生成、非暂停、非压缩中）后生效，
- * 且手动点过的分组永远优先。差别只在收起的范围：
- */
-@Serializable
-enum class AnswerFoldLevel(val persistedValue: String) {
-    /**
-     * 激进：只保留用户消息与本轮最后一条正文回复；中间的文字回复、提示、重连等
-     * 与思考/工具步骤并成同一条工作过程卡片，点开可读全部内容。
-     */
-    AGGRESSIVE("aggressive"),
-
-    /** 普通：只把思考与工具步骤收进「已完成 N 个步骤」卡片，中间文字回复照常显示。 */
-    NORMAL("normal"),
-
-    /** 不折叠：始终摊开，只有运行中/尾部跟随等旧有默认展开规则。 */
-    NONE("none");
-
-    companion object {
-        fun fromPersistedValue(value: String?): AnswerFoldLevel =
-            entries.firstOrNull { it.persistedValue == value } ?: AGGRESSIVE
     }
 }
 

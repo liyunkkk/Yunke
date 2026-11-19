@@ -5,8 +5,6 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.provider.Settings
-import io.github.mangi.eta.config.Prefs
-import io.github.mangi.eta.ui.haptics.TouchHaptics
 
 /**
  * Agent 前台操作的触感语义。
@@ -43,7 +41,6 @@ internal object AgentHapticFeedback {
     }
 
     fun perform(context: Context, type: Type) {
-        if (!Prefs.isEnabled(Prefs.Keys.HAPTIC_TOUCH_FEEDBACK)) return
         if (!isSystemHapticEnabled(context)) return
         val vibrator = context.getSystemService(VibratorManager::class.java)
             ?.defaultVibrator
@@ -56,10 +53,7 @@ internal object AgentHapticFeedback {
                 .firstOrNull() == true
             val effect = if (supportsPrimitive) {
                 VibrationEffect.startComposition()
-                    .addPrimitive(
-                        type.primitiveId,
-                        TouchHaptics.currentIntensity().primitiveScale(type.primitiveScale),
-                    )
+                    .addPrimitive(type.primitiveId, type.primitiveScale)
                     .compose()
             } else {
                 VibrationEffect.createPredefined(type.fallbackEffectId)

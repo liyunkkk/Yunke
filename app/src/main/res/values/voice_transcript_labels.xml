@@ -1,4 +1,0 @@
-<resources>
-    <string name="voice_recognized_text">Recognized: %1$s</string>
-    <string name="voice_reply_text">Reply: %1$s</string>
-</resources>

@@ -1,110 +1,82 @@
 package io.github.mangi.eta.ui.pages.providers
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material.icons.rounded.Menu
+import androidx.compose.material.icons.rounded.TravelExplore
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.nestedscroll.nestedScroll
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.state.ToggleableState
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntOffset
-import kotlin.math.roundToInt
 import androidx.compose.ui.unit.dp
-import androidx.navigationevent.NavigationEventInfo
-import androidx.navigationevent.compose.NavigationBackHandler
-import androidx.navigationevent.compose.rememberNavigationEventState
+import com.itos.coui.layout.CouiPageDefaults
+import com.itos.coui.layout.Item
+import com.itos.coui.radiobutton.RadioButton
+import com.itos.coui.text.CouiTextKind
+import com.itos.coui.text.Text as CouiText
 import io.github.mangi.eta.EtaApp
 import io.github.mangi.eta.R
+import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.data.model.ProviderSetting
 import io.github.mangi.eta.data.model.ProviderSourceTypes
 import io.github.mangi.eta.data.model.typeLabel
 import io.github.mangi.eta.data.repository.ProviderRepository
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
+import io.github.mangi.eta.ui.app.LocalUiStyle
 import io.github.mangi.eta.ui.components.MiuixDialogActions
-import io.github.mangi.eta.ui.haptics.TouchHaptics
-import io.github.mangi.eta.ui.components.MiuixScaffold
-import io.github.mangi.eta.ui.layout.horizontalCutoutPadding
+import io.github.mangi.eta.ui.components.MiuixScaffoldPage
+import io.github.mangi.eta.ui.components.coui.CouiConfirmDialog
+import io.github.mangi.eta.ui.components.coui.CouiIconDivider
+import io.github.mangi.eta.ui.components.coui.CouiPageBottomSpacer
+import io.github.mangi.eta.ui.components.coui.CouiPreference
+import io.github.mangi.eta.ui.components.coui.CouiScaffoldPage
+import io.github.mangi.eta.ui.components.coui.CouiSearchBarBox
+import io.github.mangi.eta.ui.components.coui.CouiSettingsIcon
+import io.github.mangi.eta.ui.components.currentGlassOverlayBackdrop
 import io.github.mangi.eta.ui.navigation.AppRoute
 import io.github.mangi.eta.ui.navigation.NewProviderType
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
-import top.yukonga.miuix.kmp.basic.ButtonDefaults
-import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.Checkbox
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.InputField
-import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextButton
-import top.yukonga.miuix.kmp.overlay.OverlayDialog
-import top.yukonga.miuix.kmp.window.WindowDialog
+import top.yukonga.miuix.kmp.glass.GlassDialog
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import top.yukonga.miuix.kmp.utils.overScrollVertical
-import top.yukonga.miuix.kmp.utils.scrollEndHaptic
 
 @Composable
 internal fun ModelProviderListScreen(
     onNavigate: (AppRoute) -> Unit,
     onBack: () -> Unit,
-    currentProviderId: String? = null,
 ) {
-    val context = LocalContext.current
-    val view = LocalView.current
     val scope = rememberCoroutineScope()
-    // These factories create cold mapped flows; recollecting on each emission/search edit
-    // needlessly repeats the database/model mapping during the page's first frames.
-    // 进入列表时读一次头像表，拖动/选择等交互不重复读。
-    LaunchedEffect(Unit) { io.github.mangi.eta.data.provider.ProviderLogoStore.refresh(context) }
-    val providers by remember { ProviderRepository.providersFlow() }.collectAsState(initial = emptyList())
-    val storedProviderId by remember { RuntimeConfigRepository.selectedProviderIdFlow() }.collectAsState(initial = null)
-    val selectedProviderId = currentProviderId?.takeIf { it.isNotBlank() } ?: storedProviderId
+    val providers by ProviderRepository.providersFlow().collectAsState(initial = emptyList())
+    val selectedProviderId by RuntimeConfigRepository.selectedProviderIdFlow().collectAsState(initial = null)
     var searchQuery by remember { mutableStateOf("") }
-    var selectionMode by remember { mutableStateOf(false) }
-    var selectedProviderIds by remember { mutableStateOf(setOf<String>()) }
-    var showBatchDeleteDialog by remember { mutableStateOf(false) }
-    var isDeleting by remember { mutableStateOf(false) }
+    var providerToDelete by remember { mutableStateOf<ProviderSetting?>(null) }
+    var retainedProviderToDelete by remember { mutableStateOf<ProviderSetting?>(null) }
+    if (providerToDelete != null) retainedProviderToDelete = providerToDelete
 
     LaunchedEffect(Unit) {
         RuntimeConfigRepository.ensureDefaults(EtaApp.serviceInstance)
@@ -119,66 +91,107 @@ internal fun ModelProviderListScreen(
                 provider.typeLabel.contains(query, ignoreCase = true)
         }
     }
-    val selectableProviders = remember(filteredProviders) {
-        filteredProviders.filterNot(ProviderSetting::isBuiltIn)
-    }
 
-    // 拖动重排状态：只记当前拖动项与位移，落位后写回 sort_order。
-    var dragIndex by remember { mutableStateOf<Int?>(null) }
-    var dragOffsetY by remember { mutableFloatStateOf(0f) }
-    var rowHeightPx by remember { mutableFloatStateOf(0f) }
-    val reorderScope = rememberCoroutineScope()
+    when (LocalUiStyle.current) {
+        AppearanceUiStyle.COUI -> {
+            val colors = CouiPageDefaults.themeColors()
+            CouiScaffoldPage(title = stringResource(R.string.ui_model_provider_e8c7f5), onBack = onBack) {
+                CouiSearchBarBox(
+                    query = searchQuery,
+                    onQueryChange = { searchQuery = it },
+                    placeholder = stringResource(R.string.ui_search_provider_74e049),
+                )
 
-    LaunchedEffect(selectionMode, selectedProviderIds, providers) {
-        if (!selectionMode) return@LaunchedEffect
-        val existingIds = providers.filterNot { it.isBuiltIn }.mapTo(mutableSetOf()) { it.id }
-        val pruned = selectedProviderIds.filter { it in existingIds }.toSet()
-        if (pruned != selectedProviderIds) selectedProviderIds = pruned
-        if (existingIds.isEmpty()) {
-            selectionMode = false
-            selectedProviderIds = emptySet()
-        }
-    }
+                ProviderSection(title = stringResource(R.string.ui_add_new_provider_74df54)) {
+                    CouiPreference(
+                        title = "从 models.dev 添加",
+                        summary = "浏览 models.dev 社区目录并选择模型",
+                        icon = {
+                            CouiSettingsIcon(
+                                icon = Icons.Rounded.TravelExplore,
+                                tint = colors.accent,
+                            )
+                        },
+                        onClick = { onNavigate(AppRoute.CommunityCatalog) },
+                    )
+                    CouiIconDivider()
+                    CouiPreference(
+                        title = stringResource(R.string.ui_added_openai_compatible_6bd471),
+                        summary = stringResource(R.string.ui_support_chatgpt_deepseek_kimi_glm_qwen_etc_b31d02),
+                        icon = { ProviderBrandIcon(ProviderSourceTypes.OPENAI) },
+                        onClick = { onNavigate(AppRoute.ModelProviderNew(NewProviderType.OpenAiCompatible)) },
+                    )
+                    CouiIconDivider()
+                    CouiPreference(
+                        title = stringResource(R.string.ui_new_anthropic_db6098),
+                        summary = stringResource(R.string.ui_support_anthropic_claude_official_or_compatible_api_de3f80),
+                        icon = { ProviderBrandIcon(ProviderSourceTypes.ANTHROPIC) },
+                        onClick = { onNavigate(AppRoute.ModelProviderNew(NewProviderType.Anthropic)) },
+                    )
+                    CouiIconDivider()
+                    CouiPreference(
+                        title = "新增 Gemini",
+                        summary = "支持 Google AI Studio 与 Vertex AI",
+                        icon = { ProviderBrandIcon(ProviderSourceTypes.GEMINI) },
+                        onClick = { onNavigate(AppRoute.ModelProviderNew(NewProviderType.Gemini)) },
+                    )
+                }
 
-    val selectionBackState = rememberNavigationEventState(NavigationEventInfo.None)
-    NavigationBackHandler(
-        state = selectionBackState,
-        isBackEnabled = selectionMode,
-        onBackCompleted = {
-            selectionMode = false
-            selectedProviderIds = emptySet()
-        },
-    )
+                ProviderSection(
+                    title = pluralStringResource(
+                        R.plurals.provider_configured_count,
+                        filteredProviders.size,
+                        filteredProviders.size,
+                    ),
+                ) {
+                    if (filteredProviders.isEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 24.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            CouiText(
+                                text = if (searchQuery.isBlank()) {
+                                    stringResource(R.string.provider_empty)
+                                } else {
+                                    stringResource(R.string.provider_no_matches)
+                                },
+                                kind = CouiTextKind.ItemSummary,
+                                color = colors.summary,
+                            )
+                        }
+                    } else {
+                        filteredProviders.forEachIndexed { index, provider ->
+                            ProviderListItem(
+                                provider = provider,
+                                isSelected = provider.id == selectedProviderId,
+                                onOpen = { onNavigate(AppRoute.ModelProviderDetail(provider.id)) },
+                                onDelete = if (!provider.isBuiltIn) {
+                                    { providerToDelete = provider }
+                                } else {
+                                    null
+                                },
+                                onSelect = {
+                                    scope.launch {
+                                        RuntimeConfigRepository.setSelectedProviderId(provider.id)
+                                        RuntimeConfigRepository.syncToRemotePreferences(EtaApp.serviceInstance)
+                                    }
+                                },
+                            )
+                            if (index < filteredProviders.lastIndex) {
+                                CouiIconDivider()
+                            }
+                        }
+                    }
+                }
 
-    MiuixScaffold(
-        title = stringResource(R.string.ui_model_provider_e8c7f5),
-        onBack = {
-            if (selectionMode) {
-                selectionMode = false
-                selectedProviderIds = emptySet()
-            } else {
-                onBack()
+                CouiPageBottomSpacer()
             }
-        },
-    ) { paddingValues, scrollBehavior, sidePadding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .horizontalCutoutPadding()
-                .padding(top = paddingValues.calculateTopPadding()),
-        ) {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .scrollEndHaptic()
-                    .overScrollVertical()
-                    .nestedScroll(scrollBehavior.nestedScrollConnection),
-                contentPadding = PaddingValues(
-                    start = sidePadding,
-                    end = sidePadding,
-                ),
-                overscrollEffect = null,
-            ) {
+        }
+
+        AppearanceUiStyle.MIUIX -> {
+            MiuixScaffoldPage(title = stringResource(R.string.ui_model_provider_e8c7f5), onBack = onBack) {
                 item(key = "search") {
                     InputField(
                         query = searchQuery,
@@ -190,102 +203,59 @@ internal fun ModelProviderListScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 12.dp)
-                            .padding(top = 12.dp, bottom = 8.dp),
+                            .padding(top = 8.dp, bottom = 4.dp),
                     )
                 }
 
                 item(key = "create_section") {
                     ProviderSection(title = stringResource(R.string.ui_add_new_provider_74df54)) {
                         ArrowPreference(
+                            title = "从 models.dev 添加",
+                            summary = "浏览 models.dev 社区目录并选择模型",
+                            startAction = {
+                                Box(
+                                    modifier = Modifier
+                                        .padding(end = 8.dp)
+                                        .size(24.dp),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.TravelExplore,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(22.dp),
+                                        tint = MiuixTheme.colorScheme.primary,
+                                    )
+                                }
+                            },
+                            onClick = { onNavigate(AppRoute.CommunityCatalog) },
+                        )
+                        ArrowPreference(
                             title = stringResource(R.string.ui_added_openai_compatible_6bd471),
                             summary = stringResource(R.string.ui_support_chatgpt_deepseek_kimi_glm_qwen_etc_b31d02),
                             startAction = {
                                 ProviderBrandIcon(ProviderSourceTypes.OPENAI)
                             },
-                            onClick = {
-                                TouchHaptics.click(view)
-                                onNavigate(AppRoute.ModelProviderAuthMethod(NewProviderType.OpenAiCompatible))
-                            },
+                            onClick = { onNavigate(AppRoute.ModelProviderNew(NewProviderType.OpenAiCompatible)) },
                         )
-
                         ArrowPreference(
                             title = stringResource(R.string.ui_new_anthropic_db6098),
                             summary = stringResource(R.string.ui_support_anthropic_claude_official_or_compatible_api_de3f80),
                             startAction = {
                                 ProviderBrandIcon(ProviderSourceTypes.ANTHROPIC)
                             },
-                            onClick = {
-                                TouchHaptics.click(view)
-                                onNavigate(AppRoute.ModelProviderNew(NewProviderType.Anthropic))
-                            },
+                            onClick = { onNavigate(AppRoute.ModelProviderNew(NewProviderType.Anthropic)) },
                         )
-
                         ArrowPreference(
-                            title = stringResource(R.string.ui_new_antigravity),
-                            summary = stringResource(R.string.ui_new_antigravity_summary),
-                            startAction = {
-                                ProviderBrandIcon(ProviderSourceTypes.ANTIGRAVITY)
-                            },
-                            onClick = {
-                                TouchHaptics.click(view)
-                                onNavigate(AppRoute.ModelProviderNew(NewProviderType.Antigravity))
-                            },
+                            title = "新增 Gemini",
+                            summary = "支持 Google AI Studio 与 Vertex AI",
+                            startAction = { ProviderBrandIcon(ProviderSourceTypes.GEMINI) },
+                            onClick = { onNavigate(AppRoute.ModelProviderNew(NewProviderType.Gemini)) },
                         )
-
-                        ArrowPreference(
-                            title = stringResource(R.string.ui_new_doubao_speech),
-                            summary = stringResource(R.string.ui_new_doubao_speech_summary),
-                            startAction = {
-                                ProviderBrandIcon(ProviderSourceTypes.DOUBAO_SPEECH)
-                            },
-                            onClick = {
-                                TouchHaptics.click(view)
-                                onNavigate(AppRoute.ModelProviderNew(NewProviderType.DoubaoSpeech))
-                            },
-                        )
-
-                    }
-                }
-
-                item(key = "list_title") {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Box(modifier = Modifier.weight(1f)) {
-                            SmallTitle(
-                                pluralStringResource(
-                                    R.plurals.provider_configured_count,
-                                    filteredProviders.size,
-                                    filteredProviders.size,
-                                ),
-                            )
-                        }
-                        if (selectionMode && selectableProviders.isNotEmpty()) {
-                            Text(
-                                text = stringResource(R.string.page_select_all_3e44b2),
-                                style = MiuixTheme.textStyles.body2,
-                                color = MiuixTheme.colorScheme.primary,
-                                modifier = Modifier
-                                    .clickable {
-                                        TouchHaptics.click(view)
-                                        selectedProviderIds = if (
-                                            selectableProviders.isNotEmpty() &&
-                                            selectedProviderIds.containsAll(selectableProviders.map { it.id })
-                                        ) {
-                                            emptySet()
-                                        } else {
-                                            selectableProviders.mapTo(mutableSetOf()) { it.id }
-                                        }
-                                    }
-                                    .padding(end = 16.dp),
-                            )
-                        }
                     }
                 }
 
                 item(key = "list_section") {
-                    ProviderSection(title = null) {
+                    ProviderSection(title = pluralStringResource(R.plurals.provider_configured_count, filteredProviders.size, filteredProviders.size)) {
                         if (filteredProviders.isEmpty()) {
                             Box(
                                 modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
@@ -302,213 +272,71 @@ internal fun ModelProviderListScreen(
                                 )
                             }
                         } else {
-                            val dragging = dragIndex
-                            val dragTarget = dragging?.let { from ->
-                                if (rowHeightPx <= 0f) from else {
-                                    (from + dragOffsetY / rowHeightPx).roundToInt()
-                                        .coerceIn(0, filteredProviders.lastIndex)
-                                }
-                            }
-                            filteredProviders.forEachIndexed { index, provider ->
-                                val shift = when {
-                                    dragging == null -> 0f
-                                    index == dragging -> dragOffsetY
-                                    dragging < index && dragTarget != null && index <= dragTarget -> -rowHeightPx
-                                    dragging > index && dragTarget != null && index >= dragTarget -> rowHeightPx
-                                    else -> 0f
-                                }
-                                val isDragged = index == dragging
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .zIndex(if (isDragged) 1f else 0f)
-                                        .graphicsLayer { translationY = shift }
-                                        .alpha(if (isDragged) 0.92f else 1f)
-                                        .onSizeChanged { size -> if (rowHeightPx <= 0f) rowHeightPx = size.height.toFloat() },
-                                ) {
-                                    ProviderListItem(
-                                        provider = provider,
-                                        isCurrent = provider.id == selectedProviderId,
-                                        selectionMode = selectionMode,
-                                        checked = provider.id in selectedProviderIds,
-                                        onOpen = {
-                                            TouchHaptics.click(view)
-                                            onNavigate(AppRoute.ModelProviderDetail(provider.id))
-                                        },
-                                        onToggleChecked = {
-                                            TouchHaptics.click(view)
-                                            if (!provider.isBuiltIn) {
-                                                selectedProviderIds = if (provider.id in selectedProviderIds) {
-                                                    selectedProviderIds - provider.id
-                                                } else {
-                                                    selectedProviderIds + provider.id
-                                                }
-                                            }
-                                        },
-                                        onEnterSelection = {
-                                            TouchHaptics.longPress(view)
-                                            if (!provider.isBuiltIn) {
-                                                selectionMode = true
-                                                selectedProviderIds = setOf(provider.id)
-                                            }
-                                        },
-                                        dragHandleModifier = if (selectionMode) Modifier else Modifier
-                                            .pointerInput(filteredProviders.map { it.id }) {
-                                                // 外层行的 combinedClickable 已占用长按（进入多选），
-                                                // 所以手柄用即时拖动，不能再用 AfterLongPress。
-                                                detectDragGestures(
-                                                    onDragStart = {
-                                                        dragIndex = index
-                                                        dragOffsetY = 0f
-                                                        TouchHaptics.longPress(view)
-                                                    },
-                                                    onDrag = { change, amount ->
-                                                        change.consume()
-                                                        dragOffsetY += amount.y
-                                                    },
-                                                    onDragEnd = {
-                                                        val from = dragIndex
-                                                        dragIndex = null
-                                                        val drop = dragOffsetY
-                                                        dragOffsetY = 0f
-                                                        if (from != null && rowHeightPx > 0f) {
-                                                            val to = (from + drop / rowHeightPx).roundToInt()
-                                                                .coerceIn(0, filteredProviders.lastIndex)
-                                                            if (to != from) {
-                                                                val ids = filteredProviders.map { it.id }.toMutableList()
-                                                                val moved = ids.removeAt(from)
-                                                                ids.add(to, moved)
-                                                                reorderScope.launch {
-                                                                    ProviderRepository.reorderProviders(ids)
-                                                                }
-                                                            }
-                                                        }
-                                                    },
-                                                    onDragCancel = {
-                                                        dragIndex = null
-                                                        dragOffsetY = 0f
-                                                    },
-                                                )
-                                            },
-                                    )
-                                }
+                            filteredProviders.forEach { provider ->
+                                ProviderListItem(
+                                    provider = provider,
+                                    isSelected = provider.id == selectedProviderId,
+                                    onOpen = { onNavigate(AppRoute.ModelProviderDetail(provider.id)) },
+                                    onDelete = if (!provider.isBuiltIn) {
+                                        { providerToDelete = provider }
+                                    } else {
+                                        null
+                                    },
+                                    onSelect = {
+                                        scope.launch {
+                                            RuntimeConfigRepository.setSelectedProviderId(provider.id)
+                                            RuntimeConfigRepository.syncToRemotePreferences(EtaApp.serviceInstance)
+                                        }
+                                    },
+                                )
                             }
                         }
                     }
                 }
-
-                item(key = "bottom_spacer") {
-                    Spacer(
-                        modifier = Modifier
-                            .height(if (selectionMode) 88.dp else 24.dp)
-                            .navigationBarsPadding(),
-                    )
-                }
             }
+        }
+    }
 
-            AnimatedVisibility(
-                visible = selectionMode,
-                modifier = Modifier.align(Alignment.BottomCenter),
-                enter = slideInVertically { it } + fadeIn(),
-                exit = slideOutVertically { it } + fadeOut(),
-            ) {
-                ProviderSelectionBar(
-                    selectedCount = selectedProviderIds.size,
-                    enabled = !isDeleting,
-                    onDelete = {
-                        TouchHaptics.click(view)
-                        showBatchDeleteDialog = true
-                    },
-                    onExit = {
-                        TouchHaptics.click(view)
-                        selectionMode = false
-                        selectedProviderIds = emptySet()
-                    },
+    val activeDeleteTarget = providerToDelete ?: retainedProviderToDelete
+    val onConfirmDelete: () -> Unit = {
+        scope.launch {
+            activeDeleteTarget?.let { provider ->
+                ProviderRepository.deleteProvider(provider.id)
+                RuntimeConfigRepository.syncToRemotePreferences(EtaApp.serviceInstance)
+            }
+            providerToDelete = null
+        }
+    }
+    when (LocalUiStyle.current) {
+        AppearanceUiStyle.COUI -> {
+            if (providerToDelete != null) {
+                CouiConfirmDialog(
+                    visible = true,
+                    title = stringResource(R.string.ui_remove_provider_9f848f),
+                    message = stringResource(R.string.provider_delete_summary, activeDeleteTarget?.name.orEmpty()),
+                    confirmText = stringResource(R.string.ui_delete_3755f5),
+                    destructive = true,
+                    onConfirm = onConfirmDelete,
+                    onDismissRequest = { providerToDelete = null },
                 )
             }
         }
-    }
-
-    if (showBatchDeleteDialog) {
-        WindowDialog(
-            show = true,
-            onDismissRequest = { if (!isDeleting) showBatchDeleteDialog = false },
-            title = stringResource(R.string.ui_remove_provider_9f848f),
-            summary = pluralStringResource(
-                R.plurals.provider_batch_delete_summary,
-                selectedProviderIds.size,
-                selectedProviderIds.size,
-            ),
-        ) {
-            MiuixDialogActions(
-                confirmText = if (isDeleting) {
-                    context.getString(R.string.page_deleting_6f941d)
-                } else {
-                    context.getString(R.string.page_delete_3755f5)
-                },
-                cancelEnabled = !isDeleting,
-                confirmEnabled = !isDeleting && selectedProviderIds.isNotEmpty(),
-                destructive = true,
-                onCancel = { showBatchDeleteDialog = false },
-                onConfirm = {
-                    scope.launch {
-                        isDeleting = true
-                        try {
-                            ProviderRepository.deleteProviders(selectedProviderIds)
-                            RuntimeConfigRepository.syncToRemotePreferences(EtaApp.serviceInstance)
-                            showBatchDeleteDialog = false
-                            selectionMode = false
-                            selectedProviderIds = emptySet()
-                        } catch (cancelled: CancellationException) {
-                            throw cancelled
-                        } finally {
-                            isDeleting = false
-                        }
-                    }
-                },
-            )
-        }
-    }
-}
-
-@Composable
-private fun ProviderSelectionBar(
-    selectedCount: Int,
-    enabled: Boolean,
-    onDelete: () -> Unit,
-    onExit: () -> Unit,
-) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .navigationBarsPadding()
-            .padding(horizontal = 12.dp)
-            .padding(bottom = 12.dp),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            TextButton(
-                text = stringResource(R.string.ui_delete_3755f5),
-                enabled = selectedCount > 0 && enabled,
-                modifier = Modifier.weight(1f),
-                colors = ButtonDefaults.textButtonColorsPrimary(
-                    color = MiuixTheme.colorScheme.error,
-                    textColor = MiuixTheme.colorScheme.onError,
-                ),
-                onClick = onDelete,
-            )
-            TextButton(
-                text = stringResource(R.string.action_cancel),
-                enabled = enabled,
-                modifier = Modifier.weight(1f),
-                colors = ButtonDefaults.textButtonColorsPrimary(),
-                onClick = onExit,
-            )
+        AppearanceUiStyle.MIUIX -> {
+            GlassDialog(
+                show = providerToDelete != null,
+                backdrop = currentGlassOverlayBackdrop(),
+                title = stringResource(R.string.ui_remove_provider_9f848f),
+                summary = stringResource(R.string.provider_delete_summary, activeDeleteTarget?.name.orEmpty()),
+                onDismissRequest = { providerToDelete = null },
+                onDismissFinished = { if (providerToDelete == null) retainedProviderToDelete = null },
+            ) {
+                MiuixDialogActions(
+                    confirmText = stringResource(R.string.ui_delete_3755f5),
+                    destructive = true,
+                    onCancel = { providerToDelete = null },
+                    onConfirm = onConfirmDelete,
+                )
+            }
         }
     }
 }
@@ -517,102 +345,131 @@ private fun ProviderSelectionBar(
 @Composable
 private fun ProviderListItem(
     provider: ProviderSetting,
-    isCurrent: Boolean,
-    selectionMode: Boolean,
-    checked: Boolean,
+    isSelected: Boolean,
     onOpen: () -> Unit,
-    onToggleChecked: () -> Unit,
-    onEnterSelection: () -> Unit,
-    dragHandleModifier: Modifier = Modifier,
+    onDelete: (() -> Unit)?,
+    onSelect: () -> Unit,
 ) {
-    val selectable = !provider.isBuiltIn
     val opacity = if (provider.isEnabled) 1f else 0.6f
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .combinedClickable(
-                onClick = {
-                    when {
-                        selectionMode && selectable -> onToggleChecked()
-                        selectionMode -> Unit
-                        else -> onOpen()
+    val subtitle = listOfNotNull(
+        provider.typeLabel,
+        pluralStringResource(R.plurals.provider_models_count, provider.models.size, provider.models.size),
+        stringResource(R.string.ui_built_in_09ceea).takeIf { provider.isBuiltIn },
+        stringResource(R.string.ui_disabled_0fe5a9).takeIf { !provider.isEnabled },
+    ).joinToString(" · ")
+
+    when (LocalUiStyle.current) {
+        AppearanceUiStyle.COUI -> {
+            val colors = CouiPageDefaults.themeColors()
+            Item(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .combinedClickable(onClick = onOpen, onLongClick = onDelete)
+                    .graphicsLayer { alpha = opacity },
+                icon = { ProviderIcon(provider) },
+                title = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        CouiText(
+                            text = provider.name,
+                            kind = CouiTextKind.ItemTitle,
+                            color = if (isSelected) colors.accent else colors.title,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
+                        if (isSelected) {
+                            TagChip(text = stringResource(R.string.ui_current_25e74d), tone = TagChipTone.Emphasized)
+                        }
                     }
                 },
-                onLongClick = {
-                    if (selectable) {
-                        if (selectionMode) onToggleChecked() else onEnterSelection()
+                summary = {
+                    if (provider.baseUrl.isNotBlank()) {
+                        CouiText(
+                            text = provider.baseUrl,
+                            kind = CouiTextKind.ItemSummary,
+                            color = colors.summary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    CouiText(
+                        text = subtitle,
+                        kind = CouiTextKind.GroupFooter,
+                        color = colors.summary,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                },
+                trailing = {
+                    Box(
+                        modifier = Modifier
+                            .padding(start = 12.dp)
+                            .size(32.dp)
+                            .clickable(
+                                enabled = provider.isEnabled,
+                                role = Role.RadioButton,
+                                onClick = onSelect,
+                            ),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        RadioButton(
+                            modifier = Modifier.size(24.dp),
+                            selected = isSelected,
+                            enabled = provider.isEnabled,
+                        )
                     }
                 },
             )
-            .padding(horizontal = 16.dp, vertical = 12.dp)
-            .graphicsLayer { alpha = opacity },
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        ProviderIcon(provider)
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = provider.name,
-                style = MiuixTheme.textStyles.headline1,
-                color = MiuixTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                text = provider.baseUrl,
-                style = MiuixTheme.textStyles.body2,
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(top = 2.dp),
-            )
-            Text(
-                text = listOfNotNull(
-                    provider.typeLabel,
-                    pluralStringResource(R.plurals.provider_models_count, provider.models.size, provider.models.size),
-                    stringResource(R.string.ui_built_in_09ceea).takeIf { provider.isBuiltIn },
-                    stringResource(R.string.ui_current_25e74d).takeIf { isCurrent },
-                ).joinToString(" · "),
-                style = MiuixTheme.textStyles.footnote1,
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                modifier = Modifier.padding(top = 6.dp),
-            )
-            if (!provider.isEnabled) {
+        }
+        AppearanceUiStyle.MIUIX -> {
+            BasicComponent(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .combinedClickable(onClick = onOpen, onLongClick = onDelete)
+                    .graphicsLayer { alpha = opacity },
+                startAction = { ProviderIcon(provider) },
+                endActions = {
+                    Checkbox(
+                        state = ToggleableState(isSelected),
+                        onClick = if (provider.isEnabled) onSelect else null,
+                        enabled = provider.isEnabled,
+                    )
+                },
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(
+                        text = provider.name,
+                        fontSize = MiuixTheme.textStyles.headline1.fontSize,
+                        fontWeight = FontWeight.Medium,
+                        color = if (isSelected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    if (isSelected) {
+                        TagChip(text = stringResource(R.string.ui_current_25e74d), tone = TagChipTone.Emphasized)
+                    }
+                }
                 Text(
-                    text = stringResource(R.string.ui_disabled_0fe5a9),
-                    style = MiuixTheme.textStyles.footnote1,
+                    text = provider.baseUrl,
+                    style = MiuixTheme.textStyles.body2,
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.padding(top = 2.dp),
                 )
-            }
-        }
-        if (!selectionMode) {
-            // 拖动手柄：长按行本身是多选入口，所以重排走这个手柄，两者不冲突。
-            Box(
-                modifier = dragHandleModifier
-                    .padding(start = 8.dp)
-                    .size(40.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Menu,
-                    contentDescription = stringResource(R.string.ui_reorder_handle),
-                    tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                    modifier = Modifier.size(18.dp),
+                Text(
+                    text = subtitle,
+                    style = MiuixTheme.textStyles.footnote1,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    modifier = Modifier.padding(top = 4.dp),
                 )
             }
-        }
-        if (selectionMode && selectable) {
-            Checkbox(
-                state = if (checked) ToggleableState.On else ToggleableState.Off,
-                onClick = onToggleChecked,
-            )
-        } else if (!selectionMode && isCurrent) {
-            Icon(
-                imageVector = Icons.Rounded.Check,
-                contentDescription = stringResource(R.string.ui_current_25e74d),
-                tint = MiuixTheme.colorScheme.primary,
-                modifier = Modifier.padding(start = 8.dp),
-            )
         }
     }
 }

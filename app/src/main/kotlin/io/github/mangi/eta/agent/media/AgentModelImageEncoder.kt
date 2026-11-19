@@ -18,13 +18,12 @@ import kotlin.math.min
 import kotlin.math.sqrt
 
 internal const val MAX_AGENT_IMAGE_BYTES = 12 * 1024 * 1024
-internal const val MAX_AGENT_VIDEO_BYTES = 32 * 1024 * 1024
+internal const val CHAT_PREVIEW_MAX_LONG_EDGE = 1_920
 
 /** 仅负责为工具截图和聊天预览生成独立的图片副本。 */
 internal object AgentModelImageEncoder {
-    // WebP 无损模式的 quality 表示编码努力，不会丢失像素信息。
-    private const val SCREEN_WEBP_EFFORT = 75
-    private const val PREVIEW_JPEG_QUALITY = 80
+    private const val MODEL_JPEG_QUALITY = 95
+    private const val PREVIEW_JPEG_QUALITY = 88
 
     private data class EncodingProfile(
         val format: Bitmap.CompressFormat,
@@ -43,55 +42,54 @@ internal object AgentModelImageEncoder {
     private data class TargetSize(val width: Int, val height: Int)
 
     private val screenProfile = EncodingProfile(
-        format = Bitmap.CompressFormat.WEBP_LOSSLESS,
-        mimeType = "image/webp",
-        quality = SCREEN_WEBP_EFFORT,
+        format = Bitmap.CompressFormat.PNG,
+        mimeType = "image/png",
+        quality = 100,
     )
+    private val attachmentProfile = EncodingProfile(
+        format = Bitmap.CompressFormat.JPEG,
+        mimeType = "image/jpeg",
+        quality = MODEL_JPEG_QUALITY,
+    )
+    // 聊天图片支持点击全屏缩放查看文字细节（如聊天记录与终端长截图），保留高清边长上限。
     private val previewProfile = EncodingProfile(
-        maxLongEdge = 512,
-        maxPixels = 256_000L,
+        maxLongEdge = CHAT_PREVIEW_MAX_LONG_EDGE,
+        maxPixels = 1_800_000L,
         format = Bitmap.CompressFormat.JPEG,
         mimeType = "image/jpeg",
         quality = PREVIEW_JPEG_QUALITY,
     )
     private val toolVisionProfile = EncodingProfile(
-        maxLongEdge = 1_600,
-        maxPixels = 1_500_000L,
         format = Bitmap.CompressFormat.JPEG,
         mimeType = "image/jpeg",
-        quality = 82,
+        quality = MODEL_JPEG_QUALITY,
     )
 
-    fun screen(
+    fun attachment(
         bytes: ByteArray,
         source: String,
         mimeHint: String,
     ): AgentModelClient.ModelImage? {
         if (!bytes.hasSupportedImageMagic()) return null
+        val bounds = inspectBounds(bytes, mimeHint)
         val encoded = transcodeBytes(
             bytes = bytes,
             source = source,
-            bounds = inspectBounds(bytes, mimeHint),
-            profile = screenProfile,
+            bounds = bounds,
+            profile = attachmentProfile,
         )
-        // Root screencap 已经是压缩图片；只在无损 WebP 确实更小时替换它。
-        return encoded?.takeIf { it.bytes < bytes.size }
+        // 普通附件保持 JPEG 兼容路径；截图不经过这里的解码与重编码。
+        return encoded
     }
 
     fun screen(
         bitmap: Bitmap,
         source: String,
     ): AgentModelClient.ModelImage =
-        encodeBitmap(bitmap, source, screenProfile, flattenAlpha = false)
+        // Bitmap 尚无文件编码，仅序列化一次 PNG；不缩放、不铺底、不转换像素。
+        encodeBitmap(bitmap, source, screenProfile, flattenAlpha = false).copy(preserveOriginal = true)
 
-    /** 助理入口截图直接进入网络请求，使用视觉模型尺寸避免全屏无损图撑大请求体。 */
-    fun screenContext(
-        bitmap: Bitmap,
-        source: String,
-    ): AgentModelClient.ModelImage =
-        encodeBitmap(bitmap, source, toolVisionProfile, flattenAlpha = true)
-
-    /** 文件工具图片仅在发送模型前缩放压缩，保持多图请求的体积可控。 */
+    /** 文件工具图片在发送模型前统一编码为 JPEG。 */
     fun toolVision(
         bytes: ByteArray,
         source: String,
@@ -315,42 +313,6 @@ internal fun String.normalizedAgentImageMimeType(): String =
                 !it.equals("image/*", ignoreCase = true)
         }
         ?: "image/jpeg"
-
-internal fun ByteArray.sniffAgentImageMimeType(): String {
-    if (size >= 2 && this[0] == 0xFF.toByte() && this[1] == 0xD8.toByte()) return "image/jpeg"
-    if (
-        size >= 4 &&
-        this[0] == 0x89.toByte() && this[1] == 0x50.toByte() &&
-        this[2] == 0x4E.toByte() && this[3] == 0x47.toByte()
-    ) {
-        return "image/png"
-    }
-    if (
-        size >= 3 &&
-        this[0] == 'G'.code.toByte() && this[1] == 'I'.code.toByte() &&
-        this[2] == 'F'.code.toByte()
-    ) {
-        return "image/gif"
-    }
-    if (
-        size >= 12 &&
-        this[0] == 'R'.code.toByte() && this[1] == 'I'.code.toByte() &&
-        this[2] == 'F'.code.toByte() && this[3] == 'F'.code.toByte() &&
-        this[8] == 'W'.code.toByte() && this[9] == 'E'.code.toByte() &&
-        this[10] == 'B'.code.toByte() && this[11] == 'P'.code.toByte()
-    ) {
-        return "image/webp"
-    }
-    if (
-        size >= 12 &&
-        this[4] == 'f'.code.toByte() && this[5] == 't'.code.toByte() &&
-        this[6] == 'y'.code.toByte() && this[7] == 'p'.code.toByte()
-    ) {
-        val brand = String(this, 8, 4, Charsets.US_ASCII).lowercase()
-        return if (brand in setOf("avif", "avis")) "image/avif" else "image/heic"
-    }
-    return "image/png"
-}
 
 internal fun ByteArray.hasSupportedImageMagic(): Boolean {
     if (size < 8) return false

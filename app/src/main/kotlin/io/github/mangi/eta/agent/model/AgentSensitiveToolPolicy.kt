@@ -3,16 +3,9 @@ package io.github.mangi.eta.agent.model
 /** 标记原始参数或结果不得进入持久会话的工具。 */
 internal object AgentSensitiveToolPolicy {
     fun isSensitive(toolName: String): Boolean =
-        toolName.startsWith("mcp_") || toolName in sensitiveTools
+        toolName.startsWith("mcp_") || toolName in sensitiveTools || toolName in io.github.mangi.eta.agent.context.PersonalSearchTools.names || toolName in AgentPhoneToolCatalog.names
 
     private val sensitiveTools = setOf(
-        "delegate_task",
-        "manage_agent_workspace",
-        "workspace_file",
-        "get_task_result",
-        "cancel_task",
-        "continue_task",
-        "supervise_task",
         "get_setting",
         "wifi_credentials",
         "recent_notifications",
@@ -37,9 +30,11 @@ internal object AgentSensitiveToolPolicy {
         "search_messages",
         "search_downloads",
         "search_coloros_notes",
+        "search_notes",
         "search_coloros_recordings",
         "search_recording_summaries",
         "search_coloros_memories",
+        "search_system_memories",
         "search_saved_places",
         "search_personal_orders",
         "search_qq_chat_images",
@@ -48,11 +43,7 @@ internal object AgentSensitiveToolPolicy {
         "set_setting",
         "memory_get",
         "memory_write",
-        // 参数可能携带供应商密钥与端点；原始结果不进入持久会话。
-        "eta_manage_models",
-        // 参数可能携带 MCP 服务器的端点与 Bearer 密钥；原始结果不进入持久会话。
-        "eta_configure_mcp",
-        // 参数是手机上的本地目录，结果含本机 Skill 的文件路径；原始结果不进入持久会话。
-        "skills_install_local",
+        "character_memory_get",
+        "character_memory_write",
     )
 }

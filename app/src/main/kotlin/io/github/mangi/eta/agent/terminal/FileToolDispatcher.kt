@@ -1,12 +1,9 @@
 package io.github.mangi.eta.agent.terminal
 
+import io.github.mangi.eta.agent.tool.requiredText
 import org.json.JSONObject
 
 internal object FileToolDispatcher {
-    // Exact edits and writes intentionally accept empty replacement/content strings.
-    private fun JSONObject.requiredText(key: String): String =
-        (opt(key) as? String) ?: throw org.json.JSONException("$key 必须是字符串")
-
     fun execute(backend: FileToolBackend, name: String, args: JSONObject): String {
         val operations = AgentFileOperations(backend)
         val path = if (args.has("path")) args.requiredText("path") else ""

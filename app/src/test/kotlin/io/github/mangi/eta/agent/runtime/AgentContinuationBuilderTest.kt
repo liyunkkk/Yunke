@@ -2,10 +2,25 @@ package io.github.mangi.eta.agent.runtime
 
 import io.github.mangi.eta.agent.model.AgentModelClient
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AgentContinuationBuilderTest {
+    @Test
+    fun rewriteAndCompactionCannotBecomeAnOrdinaryToolEnabledContinuation() {
+        listOf(AgentRuntimeWire.OP_REWRITE_REPLY, AgentRuntimeWire.OP_COMPACT).forEach { operation ->
+            val request = AgentRuntimeWire.RunRequest(
+                runId = "run-old", prompt = "原角色回复", config = modelConfig(), images = emptyList(),
+                operation = operation, rewriteTargetMessageId = "assistant-old",
+                handoff = AgentRuntimeWire.EntryHandoff("run-old", AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE, "conversation"),
+            )
+            assertThrows(IllegalArgumentException::class.java) {
+                AgentContinuationBuilder.build(request, AgentModelClient.ModelResponse.Text("改写正文"), "继续")
+            }
+        }
+    }
+
     @Test
     fun continuationPreservesPromptImagesAndFullTranscript() {
         val image = AgentModelClient.ModelImage(
@@ -51,8 +66,6 @@ class AgentContinuationBuilderTest {
 
         assertEquals("conversation-1", continuation.effectiveModelSessionId)
         assertEquals("run-next", continuation.runId)
-        assertEquals("run-old", continuation.effectiveTurnId)
-        assertTrue(continuation.history.drop(1).all { it.turnId == "run-old" })
         assertEquals("继续检查", continuation.prompt)
         assertTrue(continuation.images.isEmpty())
         assertEquals(
@@ -60,6 +73,7 @@ class AgentContinuationBuilderTest {
             continuation.history.map { it.role },
         )
         assertTrue(continuation.history[1].contentJson.contains("未写入持久会话"))
+        assertEquals("user-run-old", continuation.history[1].messageId)
         assertTrue(!continuation.history[1].contentJson.contains("base64"))
         assertEquals("call-1", continuation.history[3].toolCallId)
         assertEquals("run-next", continuation.handoff?.id)
@@ -85,26 +99,17 @@ class AgentContinuationBuilderTest {
             request, AgentModelClient.ModelResponse.Text("完成"), "继续", newRunId = "next-run",
         )
         assertEquals("entry-run", continuation.effectiveModelSessionId)
-        assertEquals("entry-run", continuation.effectiveTurnId)
-        val again = AgentContinuationBuilder.build(continuation,
-            AgentModelClient.ModelResponse.Text("more"), "追加", newRunId = "third-run")
-        assertEquals("entry-run", again.effectiveTurnId)
     }
 
     @Test
-    fun explicitLogicalTurnSurvivesMultipleReplacementRuns() {
-        val original = AgentRuntimeWire.RunRequest(
-            runId = "execution-1", turnId = "logical-turn", prompt = "start",
-            config = modelConfig(), images = emptyList(),
+    fun continuationHistoryPreservesTheInitialSupplementMessageIdentifier() {
+        val payload = AgentUiHandoffPayload("conversation", promptSupplement = AgentUiHandoffPayload.Supplement(7, "续接正文", 1L))
+        val request = AgentRuntimeWire.RunRequest(
+            runId = "run-old", prompt = "续接正文", config = modelConfig(), images = emptyList(),
+            handoff = AgentRuntimeWire.EntryHandoff("run-old", AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE, payload.toJson()),
         )
-        val response = AgentModelClient.ModelResponse.Text("partial", transcript = listOf(
-            AgentModelClient.ConversationMessage("assistant", "partial"),
-        ))
-        val next = AgentContinuationBuilder.build(original, response, "supplement 1", newRunId = "execution-2")
-        val last = AgentContinuationBuilder.build(next, response, "supplement 2", newRunId = "execution-3")
-        assertEquals("logical-turn", last.effectiveTurnId)
-        assertEquals(setOf("logical-turn"), last.history.map { it.turnId }.toSet())
-        assertEquals("execution-3", last.runId)
+        val continuation = AgentContinuationBuilder.build(request, AgentModelClient.ModelResponse.Text("完成"), "继续")
+        assertEquals("user-run-old-supplement-7", continuation.history.single().messageId)
     }
 
     private fun modelConfig(): AgentModelClient.ModelConfig =

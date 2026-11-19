@@ -114,9 +114,12 @@ class AgentLocalSkillInstallIntegrationTest {
         assertFalse(json.getBoolean("scriptsExecuted"))
         assertEquals("demo-skill", json.getJSONArray("installed").getJSONObject(0).getString("id"))
         assertFalse(json.getJSONArray("installed").getJSONObject(0).has("description"))
-        assertTrue(requestedUrls.any { COMMIT_SHA in it })
+        assertTrue(requestedUrls.any { "/commits/$COMMIT_SHA" in it })
         assertTrue(requestedUrls.any { "codeload.github.com/example/skills/zip/$COMMIT_SHA" in it })
-        indexService.listSkillsForManagement(forceRefresh = true)
+        assertTrue(
+            indexService.listSkillsForManagement(forceRefresh = true)
+                .any { it.id == "demo-skill" && it.enabled && it.source == "user" },
+        )
 
         val sameTurnList = JSONObject(
             tools.execute(
@@ -149,8 +152,6 @@ class AgentLocalSkillInstallIntegrationTest {
         assertEquals("NEXT_TURN_REQUIRED", sameTurnResource.getString("code"))
         tools.close()
 
-        val nextTurnEntries = indexService.listSkillsForManagement(forceRefresh = true)
-            .filter { it.id == "demo-skill" && it.installed }
         val nextTurnTools = AgentLocalTools(
             context = context,
             logger = NoOpLogger,
@@ -158,7 +159,6 @@ class AgentLocalSkillInstallIntegrationTest {
             skillLoader = SkillLoader(skillsRoot),
             skillResourceReader = SkillResourceReader(skillsRoot),
             runAvailableSkillIds = setOf("demo-skill"),
-            runSkillEntries = nextTurnEntries,
         )
         val nextTurnRead = JSONObject(
             nextTurnTools.execute(

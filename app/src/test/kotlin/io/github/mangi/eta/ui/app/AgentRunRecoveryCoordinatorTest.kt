@@ -18,7 +18,7 @@ class AgentRunRecoveryCoordinatorTest {
             locallyObservedRunIds = emptySet(),
         )
 
-        assertEquals(listOf("run-active"), plan.reattach.map { it.runId })
+        assertEquals("run-active", plan.reattach.single().runId)
         assertTrue(plan.interrupted.isEmpty())
     }
 
@@ -83,98 +83,24 @@ class AgentRunRecoveryCoordinatorTest {
             locallyObservedRunIds = emptySet(),
         )
 
-        assertEquals(listOf("run-active"), plan.reattach.map { it.runId })
-        assertTrue(plan.interrupted.isEmpty())
-    }
-
-
-    @Test
-    fun multipleActiveRunsAreAllReattached() {
-        val plan = AgentRunRecoveryCoordinator.plan(
-            checkpoints = listOf(checkpoint("run-a"), checkpoint("run-b"), checkpoint("run-stale")),
-            completedRuns = emptyList(),
-            activeStateKnown = true,
-            terminalStateKnown = true,
-            activeRunIds = setOf("run-a", "run-b"),
-            locallyObservedRunIds = emptySet(),
-        )
-
-        assertEquals(listOf("run-a", "run-b"), plan.reattach.map { it.runId })
-        assertEquals(listOf("run-stale"), plan.interrupted.map { it.runId })
-    }
-
-    @Test
-    fun failedSubscriberWithRetainedBindingCanRecoverCompletedResult() {
-        val bindings = mutableMapOf("run-detached" to "conversation-1")
-        val subscriberJobs = mutableMapOf("run-detached" to Unit)
-        subscriberJobs.remove("run-detached")
-        val result = completed("run-detached")
-        val plan = AgentRunRecoveryCoordinator.plan(
-            checkpoints = listOf(checkpoint("run-detached")),
-            completedRuns = listOf(result),
-            activeStateKnown = true,
-            terminalStateKnown = true,
-            activeRunIds = emptySet(),
-            locallyObservedRunIds = subscriberJobs.keys.toSet(),
-        )
-
-        assertTrue("Routing identity may survive a detached subscriber", bindings.containsKey("run-detached"))
-        assertEquals(result, plan.completed.single().result)
+        assertEquals("run-active", plan.reattach.single().runId)
         assertTrue(plan.interrupted.isEmpty())
     }
 
     @Test
-    fun detachedSubscriberCanReattachAfterRuntimeBecomesAvailable() {
-        val unknown = AgentRunRecoveryCoordinator.plan(
-            checkpoints = listOf(checkpoint("run-detached")),
-            completedRuns = emptyList(),
-            activeStateKnown = false,
-            terminalStateKnown = false,
-            activeRunIds = emptySet(),
-            locallyObservedRunIds = emptySet(),
-        )
-        assertTrue(unknown.completed.isEmpty())
-        assertTrue(unknown.reattach.isEmpty())
-        assertTrue(unknown.interrupted.isEmpty())
-
-        val available = AgentRunRecoveryCoordinator.plan(
-            checkpoints = listOf(checkpoint("run-detached")),
-            completedRuns = emptyList(),
+    fun mixedConcurrentRunsRecoverWithoutInterruptingOtherActiveRuns() {
+        val plan = AgentRunRecoveryCoordinator.plan(
+            checkpoints = listOf("a", "b", "done", "orphan", "local").map { checkpoint(it) },
+            completedRuns = listOf(completed("done"), completed("local")),
             activeStateKnown = true,
             terminalStateKnown = true,
-            activeRunIds = setOf("run-detached"),
-            locallyObservedRunIds = emptySet(),
+            activeRunIds = setOf("a", "b", "done", "local"),
+            locallyObservedRunIds = setOf("local"),
         )
-        assertEquals(listOf("run-detached"), available.reattach.map { it.runId })
-        assertTrue(available.interrupted.isEmpty())
-    }
 
-    @Test
-    fun registeredSubscriberStillOwnsItsPendingTerminalResult() {
-        val plan = AgentRunRecoveryCoordinator.plan(
-            checkpoints = listOf(checkpoint("run-local")),
-            completedRuns = listOf(completed("run-local")),
-            activeStateKnown = true,
-            terminalStateKnown = true,
-            activeRunIds = emptySet(),
-            locallyObservedRunIds = setOf("run-local"),
-        )
-        assertTrue(plan.completed.isEmpty())
-        assertTrue(plan.reattach.isEmpty())
-        assertTrue(plan.interrupted.isEmpty())
-    }
-
-    @Test
-    fun detachedWithoutTerminalKnowledgeIsNotMarkedInterrupted() {
-        val plan = AgentRunRecoveryCoordinator.plan(
-            checkpoints = listOf(checkpoint("run-detached")),
-            completedRuns = emptyList(),
-            activeStateKnown = true,
-            terminalStateKnown = false,
-            activeRunIds = emptySet(),
-            locallyObservedRunIds = emptySet(),
-        )
-        assertTrue(plan.interrupted.isEmpty())
+        assertEquals(listOf("done"), plan.completed.map { it.result.result.runId })
+        assertEquals(listOf("a", "b"), plan.reattach.map { it.runId })
+        assertEquals(listOf("orphan"), plan.interrupted.map { it.runId })
     }
 
     private fun checkpoint(

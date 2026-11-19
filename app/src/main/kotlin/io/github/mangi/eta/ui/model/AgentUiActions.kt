@@ -1,25 +1,21 @@
 package io.github.mangi.eta.ui.model
 
 import io.github.mangi.eta.data.model.ReasoningEffort
-import io.github.mangi.eta.agent.question.AgentQuestionAnswer
 
 sealed interface AgentHomeAction {
-    data class ContextTaskSelected(val taskId: String?) : AgentHomeAction
+    data object LoadEarlierMessages : AgentHomeAction
+    data class HistoryViewportChanged(val atLatest: Boolean) : AgentHomeAction
+    data object RetryConversationLoad : AgentHomeAction
+    data object CompactContext : AgentHomeAction
     data class ReasoningEffortChanged(val effort: ReasoningEffort) : AgentHomeAction
-    data class ModelSelected(val modelId: String, val providerId: String = "") : AgentHomeAction
-
-    /**
-     * 循环切换 GPT 速度档位（NORMAL → FAST → ULTRA_FAST → NORMAL）。
-     * 临时真值由 AppState 路持有，不持久化，UI 只负责派发，不本地假切状态。
-     */
-    data object CycleGptSpeedMode : AgentHomeAction
+    data class ModelSelected(val modelId: String) : AgentHomeAction
     data class SubmitMessage(val text: String) : AgentHomeAction
+    data class InterruptAndSubmitMessage(val text: String) : AgentHomeAction
+    data class SteerQueuedMessage(val id: String) : AgentHomeAction
+    data class RecallQueuedMessage(val id: String, val currentDraftText: String) : AgentHomeAction
+    data class RemoveQueuedMessage(val id: String) : AgentHomeAction
     data object StopRun : AgentHomeAction
-    data object ContinueRun : AgentHomeAction
-    data object AbortPausedRun : AgentHomeAction
-    data class AssistantSelected(val id: String) : AgentHomeAction
     data class ImageAttached(val uri: String) : AgentHomeAction
-    data class VideoAttached(val uri: String) : AgentHomeAction
     data class RemoveImage(val id: String) : AgentHomeAction
     data class FilesAttached(val uris: List<String>) : AgentHomeAction
     data class FolderAttached(val uri: String) : AgentHomeAction
@@ -29,55 +25,20 @@ sealed interface AgentHomeAction {
     data object CancelMessageEdit : AgentHomeAction
     data class DeleteMessage(val id: String) : AgentHomeAction
     data class RegenerateMessage(val id: String) : AgentHomeAction
-    data class BranchMessage(val id: String) : AgentHomeAction
-    data class QuestionDraftChanged(val conversationId: String, val questionId: String, val answer: AgentQuestionAnswer) : AgentHomeAction
-    data class SubmitQuestionAnswer(val conversationId: String, val questionId: String) : AgentHomeAction
+    data class BranchConversation(val conversationId: String, val messageId: String) : AgentHomeAction
+    data class SelectReplyCandidate(val id: String, val index: Int) : AgentHomeAction
     data object OpenTools : AgentHomeAction
     data object OpenSkills : AgentHomeAction
     data object OpenPermissions : AgentHomeAction
     data object OpenSystemEnhance : AgentHomeAction
     data object OpenSettings : AgentHomeAction
     data object OpenBrowser : AgentHomeAction
-    data class EditAssistant(val id: String) : AgentHomeAction
     data object ExpandRunTrace : AgentHomeAction
 }
 
 sealed interface PermissionHealthAction {
     data class OpenItemAction(val itemId: String) : PermissionHealthAction
     data object NavigateBack : PermissionHealthAction
-    /** 强制保持无障碍开关（方案 b）：拨动即派发，真值由 AppState 路持有，UI 不本地假切状态。 */
-    data class ToggleAccessibilityProtection(val enabled: Boolean) : PermissionHealthAction
-}
-
-sealed interface AgentChatAction {
-    data class ContextTaskSelected(val taskId: String?) : AgentChatAction
-    data object NavigateBack : AgentChatAction
-    data class ReasoningEffortChanged(val effort: ReasoningEffort) : AgentChatAction
-    data class ModelSelected(val modelId: String, val providerId: String = "") : AgentChatAction
-
-    /** 循环切换 GPT 速度档位；真值由 AppState 路持有，UI 仅派发。 */
-    data object CycleGptSpeedMode : AgentChatAction
-    data class SubmitMessage(val text: String) : AgentChatAction
-    data object StopRun : AgentChatAction
-    data object ContinueRun : AgentChatAction
-    data object AbortPausedRun : AgentChatAction
-    data class AssistantSelected(val id: String) : AgentChatAction
-    data object OpenBrowser : AgentChatAction
-    data class EditAssistant(val id: String) : AgentChatAction
-    data class ImageAttached(val uri: String) : AgentChatAction
-    data class VideoAttached(val uri: String) : AgentChatAction
-    data class RemoveImage(val id: String) : AgentChatAction
-    data class FilesAttached(val uris: List<String>) : AgentChatAction
-    data class FolderAttached(val uri: String) : AgentChatAction
-    data class FilePathAttached(val path: String) : AgentChatAction
-    data class RemoveFileReference(val id: String) : AgentChatAction
-    data class EditMessage(val id: String) : AgentChatAction
-    data object CancelMessageEdit : AgentChatAction
-    data class DeleteMessage(val id: String) : AgentChatAction
-    data class RegenerateMessage(val id: String) : AgentChatAction
-    data class BranchMessage(val id: String) : AgentChatAction
-    data class QuestionDraftChanged(val conversationId: String, val questionId: String, val answer: AgentQuestionAnswer) : AgentChatAction
-    data class SubmitQuestionAnswer(val conversationId: String, val questionId: String) : AgentChatAction
 }
 
 sealed interface AgentToolsAction {
@@ -85,6 +46,7 @@ sealed interface AgentToolsAction {
     data object OpenPermissions : AgentToolsAction
     data object NavigateBack : AgentToolsAction
     data object OpenBrowser : AgentToolsAction
+    data object OpenWebToolsSettings : AgentToolsAction
 }
 
 sealed interface AgentSkillsAction {

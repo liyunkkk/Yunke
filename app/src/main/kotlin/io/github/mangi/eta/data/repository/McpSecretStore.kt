@@ -57,18 +57,6 @@ internal class McpSecretStore(context: Context) {
         check(preferences.edit().remove(tokenKey(serverId)).commit()) { "MCP 凭据删除失败" }
     }
 
-    @Synchronized
-    fun exportTokens(serverIds: Collection<String>): Map<String, String> =
-        serverIds.mapNotNull { id -> bearerToken(id)?.let { id to it } }.toMap()
-
-    @Synchronized
-    fun replaceAll(tokens: Map<String, String>) {
-        check(preferences.edit().clear().commit()) { "MCP 凭据清空失败" }
-        tokens.forEach { (id, token) ->
-            if (id.isNotBlank() && token.isNotBlank()) setBearerToken(id, token)
-        }
-    }
-
     private fun secretKey(): SecretKey {
         val keyStore = KeyStore.getInstance(KEYSTORE_PROVIDER).apply { load(null) }
         (keyStore.getKey(KEY_ALIAS, null) as? SecretKey)?.let { return it }

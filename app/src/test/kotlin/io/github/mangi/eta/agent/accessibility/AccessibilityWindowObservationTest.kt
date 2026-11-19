@@ -30,7 +30,7 @@ import org.robolectric.shadows.ShadowAccessibilityService
 import org.robolectric.util.ReflectionHelpers
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34], application = Application::class, shadows = [WindowQueryShadow::class])
+@Config(sdk = [33], application = Application::class, shadows = [WindowQueryShadow::class])
 class AccessibilityWindowObservationTest {
     @Test
     fun mainDisplayQueryIgnoresActiveRootFromSecondaryDisplay() = withService { service ->
@@ -90,29 +90,55 @@ class AccessibilityWindowObservationTest {
     }
 
     @Test
-    fun mainThreadObservationReturnsBusyWithoutRemoteReads() = withService { service ->
-        assertEquals(AgentAccessibilityService.NodeSnapshotStatus.BUSY, service.observeNodeSnapshot(1).status)
-        assertEquals(0, WindowQueryShadow.queries)
-    }
-
-    @Test
-    fun unboundServiceRejectsObservationsAndActions() = withService { service ->
-        service.onUnbind(null)
-        assertEquals(AgentAccessibilityService.NodeSnapshotStatus.SERVICE_UNAVAILABLE,
-            query { service.observeNodeSnapshot(1) }.status)
-        assertFalse(service.copyToClipboard("stale").ok)
-    }
-
-    @Test
-    fun secondaryDisplayKeepsYunkeNullRootCandidateFallback() = withService { service ->
-        val top = window(12, 11, null, layer = 2)
-        val behind = window(11, 11, "secondary.app", layer = 1)
-        shadowOf(service).setWindowsOnDisplay(11, listOf(top, behind))
-        val observation = query { service.observeNodeSnapshot(1, displayId = 11, includeNodes = false) }
-        assertEquals(AgentAccessibilityService.NodeSnapshotStatus.AVAILABLE, observation.status)
-        assertEquals("secondary.app", observation.window?.packageName)
-        assertEquals(11, observation.window?.displayId)
-        assertFalse(WindowQueryShadow.queriedOnMain)
+    fun pasteTimeoutDoesNotRestoreClipboardBeforeStartedActionReturns() = withService { service ->
+        val clipboard = service.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("original", "原内容"))
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val root = AccessibilityNodeInfo.obtain().apply {
+            packageName = "editor.app"
+            isEditable = true
+            isFocused = true
+            isEnabled = true
+            isVisibleToUser = true
+            text = ""
+            setTextSelection(0, 0)
+        }
+        shadowOf(root).setOnPerformActionListener { action, _ ->
+            if (action == AccessibilityNodeInfo.ACTION_PASTE) {
+                started.countDown()
+                release.await(6, TimeUnit.SECONDS)
+                true
+            } else false
+        }
+        val window = window(1, 0, "editor.app")
+        shadowOf(window).setRoot(root)
+        shadowOf(service).setWindowsOnDisplay(0, listOf(window))
+        val caller = Executors.newSingleThreadExecutor()
+        val verifier = Executors.newSingleThreadExecutor()
+        try {
+            val result = caller.submit<AgentAccessibilityService.NodeActionResult> { service.pasteText("新内容") }
+            val checked = verifier.submit {
+                try {
+                    assertTrue(started.await(3, TimeUnit.SECONDS))
+                    assertEquals("ACTION_OUTCOME_UNKNOWN", result.get(5, TimeUnit.SECONDS).code)
+                    assertEquals("新内容", clipboard.primaryClip?.getItemAt(0)?.text?.toString())
+                } finally {
+                    release.countDown()
+                }
+            }
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(7)
+            while (started.count > 0 && System.nanoTime() < deadline) {
+                shadowOf(Looper.getMainLooper()).idle()
+                Thread.sleep(1L)
+            }
+            checked.get(2, TimeUnit.SECONDS)
+            assertEquals("原内容", clipboard.primaryClip?.getItemAt(0)?.text?.toString())
+        } finally {
+            release.countDown()
+            caller.shutdownNow()
+            verifier.shutdownNow()
+        }
     }
 
     private fun window(id: Int, displayId: Int, packageName: String?, layer: Int = 1): AccessibilityWindowInfo =

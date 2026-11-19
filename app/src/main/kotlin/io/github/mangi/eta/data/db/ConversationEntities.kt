@@ -18,20 +18,13 @@ internal data class ConversationEntity(
     val reasoningEffort: String = ReasoningEffort.DEFAULT.wireValue,
     @ColumnInfo(name = "history_json") val historyJson: String = "[]",
     @ColumnInfo(name = "applied_runtime_run_ids_json") val appliedRuntimeRunIdsJson: String = "[]",
+    @ColumnInfo(name = "roleplay_json", defaultValue = "''") val roleplayJson: String = "",
+    @ColumnInfo(name = "revisions_json", defaultValue = "''") val revisionsJson: String = "",
     @ColumnInfo(name = "created_at") val createdAt: Long,
     @ColumnInfo(name = "updated_at") val updatedAt: Long,
-    @ColumnInfo(name = "folder_id", defaultValue = "''")
-    val folderId: String = "",
-    @ColumnInfo(name = "is_pinned", defaultValue = "0")
-    val isPinned: Boolean = false,
-    @ColumnInfo(name = "has_completion_marker", defaultValue = "0")
-    val hasCompletionMarker: Boolean = false,
-    @ColumnInfo(name = "provider_id", defaultValue = "''")
-    val providerId: String = "",
-    @ColumnInfo(name = "model_id", defaultValue = "''")
-    val modelId: String = "",
-    @ColumnInfo(name = "assistant_id", defaultValue = "''")
-    val assistantId: String = "",
+    /** 会话最近使用的本地 Model.id；null 表示跟随默认模型。 */
+    @ColumnInfo(name = "model_id") val modelId: String? = null,
+    @ColumnInfo(name = "is_pinned", defaultValue = "0") val isPinned: Boolean = false,
 )
 
 internal data class ConversationMetadata(
@@ -40,24 +33,39 @@ internal data class ConversationMetadata(
     @ColumnInfo(name = "thinking_enabled") val thinkingEnabled: Boolean,
     @ColumnInfo(name = "reasoning_effort") val reasoningEffort: String,
     @ColumnInfo(name = "applied_runtime_run_ids_json") val appliedRuntimeRunIdsJson: String,
+    @ColumnInfo(name = "roleplay_json") val roleplayJson: String = "",
+    @ColumnInfo(name = "revisions_json") val revisionsJson: String = "",
     @ColumnInfo(name = "created_at") val createdAt: Long,
     @ColumnInfo(name = "updated_at") val updatedAt: Long,
-    @ColumnInfo(name = "folder_id") val folderId: String = "",
+    @ColumnInfo(name = "model_id") val modelId: String? = null,
     @ColumnInfo(name = "is_pinned") val isPinned: Boolean = false,
-    @ColumnInfo(name = "has_completion_marker") val hasCompletionMarker: Boolean = false,
-    @ColumnInfo(name = "provider_id") val providerId: String = "",
-    @ColumnInfo(name = "model_id") val modelId: String = "",
-    @ColumnInfo(name = "assistant_id") val assistantId: String = "",
 )
 
-@Serializable
-@Entity(tableName = "conversation_folders")
-internal data class ConversationFolderEntity(
-    @PrimaryKey val id: String,
-    val name: String,
-    @ColumnInfo(name = "sort_index") val sortIndex: Int,
+/** 会话侧栏只读取定长预览，不读取上下文、角色卡与修订正文。 */
+internal data class ConversationIndexRow(
+    val id: String,
+    val title: String,
+    @ColumnInfo(name = "reasoning_effort") val reasoningEffort: String,
     @ColumnInfo(name = "created_at") val createdAt: Long,
+    @ColumnInfo(name = "updated_at") val updatedAt: Long,
+    @ColumnInfo(name = "model_id") val modelId: String?,
+    @ColumnInfo(name = "message_id") val messageId: String?,
+    @ColumnInfo(name = "message_type") val messageType: String?,
+    @ColumnInfo(name = "message_preview") val messagePreview: String?,
+    @ColumnInfo(name = "tool_name") val toolName: String?,
+    @ColumnInfo(name = "has_roleplay") val hasRoleplay: Boolean,
+    @ColumnInfo(name = "is_pinned") val isPinned: Boolean = false,
 )
+
+internal data class ConversationIdentity(
+    val id: String,
+    val title: String,
+    @ColumnInfo(name = "created_at") val createdAt: Long,
+    @ColumnInfo(name = "updated_at") val updatedAt: Long,
+    @ColumnInfo(name = "is_pinned") val isPinned: Boolean = false,
+)
+
+internal data class ConversationMessageContent(val id: String, val content: String)
 
 @Serializable
 @Entity(
@@ -75,7 +83,7 @@ internal data class ConversationContextCheckpointEntity(
     @PrimaryKey
     @ColumnInfo(name = "conversation_id") val conversationId: String,
     @ColumnInfo(name = "history_json") val historyJson: String,
-    @ColumnInfo(name = "cloud_usage_json", defaultValue = "''") val cloudUsageJson: String = "",
+    @ColumnInfo(name = "journal_json", defaultValue = "''") val journalJson: String = "",
 )
 
 @Serializable
@@ -119,6 +127,15 @@ internal data class ConversationMessageEntity(
     @ColumnInfo(name = "output_tokens") val outputTokens: Int? = null,
     @ColumnInfo(name = "reasoning_tokens") val reasoningTokens: Int? = null,
     @ColumnInfo(name = "cached_tokens") val cachedTokens: Int? = null,
+    @ColumnInfo(name = "cache_write_tokens") val cacheWriteTokens: Int? = null,
+    @ColumnInfo(name = "compaction_archive_id") val compactionArchiveId: String? = null,
+    @ColumnInfo(name = "step_count") val stepCount: Int? = null,
+    @ColumnInfo(name = "llm_ms") val llmMs: Long? = null,
+    @ColumnInfo(name = "tool_ms") val toolMs: Long? = null,
+    @ColumnInfo(name = "ttft_ms") val ttftMs: Long? = null,
+    @ColumnInfo(name = "ttft_steps") val ttftSteps: Int? = null,
+    @ColumnInfo(name = "decode_ms") val decodeMs: Long? = null,
+    @ColumnInfo(name = "decode_tokens") val decodeTokens: Int? = null,
     @ColumnInfo(name = "elapsed_seconds") val elapsedSeconds: Int? = null,
     @ColumnInfo(name = "tool_name") val toolName: String? = null,
     @ColumnInfo(name = "tool_status") val toolStatus: String? = null,
@@ -126,10 +143,4 @@ internal data class ConversationMessageEntity(
     @ColumnInfo(name = "result_summary") val resultSummary: String? = null,
     @ColumnInfo(name = "image_count") val imageCount: Int = 0,
     @ColumnInfo(name = "tools_json") val toolsJson: String = "[]",
-    @ColumnInfo(name = "generated_at_millis") val generatedAtMillis: Long? = null,
-    /**
-     * 展示用耗时（步数/模型用时/工具用时/首 token/解码）的紧凑 JSON，见 UsageTimingsJson。
-     * null 或空串 = 旧记录或不带耗时；token 用量仍在上面各自的列，不重复存。
-     */
-    @ColumnInfo(name = "usage_timings_json") val usageTimingsJson: String? = null,
 )

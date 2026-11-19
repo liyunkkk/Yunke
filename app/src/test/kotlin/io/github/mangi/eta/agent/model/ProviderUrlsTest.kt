@@ -27,8 +27,12 @@ class ProviderUrlsTest {
             ProviderUrls.anthropicModelsUrl("https://api.anthropic.com")
         )
         assertEquals(
-            "https://chatgpt.com/backend-api/codex/models?client_version=0.144.1&limit=100",
-            ProviderUrls.openAiModelsUrl("https://chatgpt.com/backend-api/codex")
+            "https://generativelanguage.googleapis.com/v1beta/interactions",
+            ProviderUrls.geminiInteractionsUrl(" https://generativelanguage.googleapis.com/v1beta/ "),
+        )
+        assertEquals(
+            "https://proxy.invalid/google/v1beta/models",
+            ProviderUrls.geminiModelsUrl("https://proxy.invalid/google/v1beta/"),
         )
     }
 }

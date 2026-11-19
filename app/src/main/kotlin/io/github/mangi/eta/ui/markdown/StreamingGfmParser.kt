@@ -1,55 +1,50 @@
 package io.github.mangi.eta.ui.markdown
 
-import com.mikepenz.markdown.model.ReferenceLinkHandlerImpl
-import com.mikepenz.markdown.model.State
-import org.intellij.markdown.flavours.gfm.GFMFlavourDescriptor
+import org.intellij.markdown.parser.CancellationToken
+import org.intellij.markdown.parser.LinkMap
 import org.intellij.markdown.parser.MarkdownParser
 
 /**
  * 面向追加式模型输出的 GFM 解析会话。
  *
- * 每次提交都在调用线程完成一次完整 GFM 解析；调用方应把会话限制在后台串行
- * dispatcher。完整解析让块级语法遵循同一套 CommonMark/GFM 规则，而不是由 UI
- * 猜测节点类型。流尚未结束时，仅在虚拟 EOF 上补齐仍在等待闭合的结构，虚拟字符
- * 不会写回消息，也不会进入最终快照。
+ * 每次提交都在调用线程完成一次完整 GFM 解析，再转换为 [MarkdownDocument]；调用方应把
+ * 会话限制在后台串行 dispatcher。完整解析让块级语法遵循同一套 CommonMark/GFM 规则，
+ * 而不是由 UI 猜测节点类型。流尚未结束时，仅在虚拟 EOF 上补齐仍在等待闭合的结构，
+ * 虚拟字符不会写回消息，也不会进入最终快照。
  */
-internal class StreamingGfmParserSession {
-    private val flavour = GFMFlavourDescriptor()
-    private val parser = MarkdownParser(flavour)
-    private val referenceLinkHandler = ReferenceLinkHandlerImpl()
-    private var acceptedSource = ""
-    private val preparedSession = PreparedMarkdownSession()
-    private var previousComplete: Boolean? = null
+internal class StreamingGfmParserSession(
+    mathCache: MarkdownMathLayoutCache = markdownMathLayoutCache,
+) {
+    private val documentBuilder = MarkdownDocumentBuilder(mathCache)
 
-    fun parse(source: String, isComplete: Boolean, renderSpec: PreparedMarkdownSpec? = null): StreamingGfmSnapshot {
-        val source = NumericCitationMarkup.strip(source)
-        if (!source.startsWith(acceptedSource)) {
-            // 会话恢复或上游修正消息时重新建立基线；解析器本身没有可泄漏到新文档
-            // 的语法状态，后续快照仍保持追加式处理。
-            acceptedSource = ""
-            preparedSession.clear()
-        }
-        acceptedSource = source
-        // A terminal parse must rebuild reference-dependent inputs, even for unchanged text.
-        if (previousComplete != isComplete) preparedSession.clear()
-        previousComplete = isComplete
-
+    fun parse(
+        source: String,
+        isComplete: Boolean,
+        style: MarkdownInlineStyle = MarkdownInlineStyle.Default,
+    ): StreamingGfmSnapshot {
+        val normalizedSource = TexMathDelimiters.normalize(source)
         val renderedSource = StreamingGfmProjection.project(
-            source = source,
+            source = normalizedSource,
             isComplete = isComplete,
         )
-        val root = parser.buildMarkdownTreeFromString(renderedSource)
+        val parser = MarkdownParser(
+            flavour = ChatGfmFlavourDescriptor(originalSource = source),
+            assertionsEnabled = false,
+            cancellationToken = CancellationToken.NonCancellable,
+        )
+        val root = parser.buildMarkdownTreeFromString(renderedSource as CharSequence)
+        // 引用式链接的定义可能出现在文末，只在终态整体解析一次；流式期间引用暂按原文显示。
+        val links = if (isComplete) LinkMap.buildLinkMap(root, renderedSource) else null
         return StreamingGfmSnapshot(
             originalSource = source,
             renderedSource = renderedSource,
             isComplete = isComplete,
-            renderSpec = renderSpec,
-            preparedBlocks = preparedSession.prepare(root, renderedSource, renderSpec),
-            state = State.Success(
-                node = root,
-                content = renderedSource,
-                linksLookedUp = false,
-                referenceLinkHandler = referenceLinkHandler,
+            document = documentBuilder.build(
+                root = root,
+                renderedSource = renderedSource,
+                originalSource = source,
+                links = links,
+                style = style,
             ),
         )
     }
@@ -59,28 +54,10 @@ internal data class StreamingGfmSnapshot(
     val originalSource: String,
     val renderedSource: String,
     val isComplete: Boolean,
-    val state: State.Success,
-    val preparedBlocks: List<PreparedMarkdownBlock> = emptyList(),
-    val renderSpec: PreparedMarkdownSpec? = null,
-)
-
-/** Returns a snapshot to publish, or null when the visible AST would not change. */
-internal fun nextStreamingSnapshot(
-    current: StreamingGfmSnapshot?,
-    parsed: StreamingGfmSnapshot,
-): StreamingGfmSnapshot? {
-    if (current == null) return parsed
-    if (current.originalSource != parsed.originalSource ||
-        current.renderedSource != parsed.renderedSource
-    ) {
-        return parsed
-    }
-    if (current.renderSpec != parsed.renderSpec) return parsed
-    if (current.isComplete != parsed.isComplete) {
-        return if (parsed.renderSpec != null) parsed
-            else current.copy(isComplete = parsed.isComplete)
-    }
-    return null
+    val document: MarkdownDocument,
+) {
+    fun completedDocumentFor(content: String): MarkdownDocument? =
+        document.takeIf { isComplete && originalSource == content }
 }
 
 /**
@@ -114,6 +91,7 @@ internal object StreamingGfmProjection {
     }
 
     private fun ambiguousTableStart(source: String): Int? {
+        if (hasOpenDisplayMathBlock(source)) return null
         val lines = source.toLineSlices()
         if (lines.isEmpty()) return null
 
@@ -173,6 +151,7 @@ internal object StreamingGfmProjection {
         var index = 0
 
         while (index < source.length) {
+            if (source.isUnclosedTexMathTailAt(index)) break
             if (source[index] == '\\') {
                 index += 2
                 continue
@@ -190,6 +169,14 @@ internal object StreamingGfmProjection {
             if (inlineCodeTicks != 0) {
                 index += 1
                 continue
+            }
+            if (source[index] == '$' && openLinkStart == null) {
+                val mathEnd = source.consumeMathSpanOrTailAt(index)
+                if (mathEnd < 0) break
+                if (mathEnd > index) {
+                    index = mathEnd
+                    continue
+                }
             }
 
             val char = source[index]
@@ -233,6 +220,7 @@ internal object StreamingGfmProjection {
         var index = 0
 
         while (index < source.length) {
+            if (source.isUnclosedTexMathTailAt(index)) break
             if (source[index] == '\\') {
                 index += 2
                 continue
@@ -251,6 +239,14 @@ internal object StreamingGfmProjection {
             if (inlineCodeTicks != 0) {
                 index += 1
                 continue
+            }
+            if (source[index] == '$') {
+                val mathEnd = source.consumeMathSpanOrTailAt(index)
+                if (mathEnd < 0) break
+                if (mathEnd > index) {
+                    index = mathEnd
+                    continue
+                }
             }
 
             val delimiter = source.delimiterAt(index)
@@ -362,22 +358,129 @@ internal object StreamingGfmProjection {
         val length: Int,
         val isClosing: Boolean,
     )
-}
 
+    private fun hasOpenDisplayMathBlock(source: String): Boolean {
+        var openFence: Fence? = null
+        var openDisplayMath = false
+        for (line in source.toLineSlices()) {
+            val marker = line.fenceMarker()
+            if (marker != null) {
+                val current = openFence
+                if (current == null && !openDisplayMath) {
+                    openFence = marker
+                    continue
+                } else if (
+                    current != null &&
+                    marker.marker == current.marker &&
+                    marker.length >= current.length &&
+                    marker.isClosing
+                ) {
+                    openFence = null
+                    continue
+                }
+            }
+            if (openFence != null) continue
 
-/**
- * Grok 等模型会在段首堆 `[[10]](<url>) [[9]](<url>)`。
- * 链文本只是数字，渲染成 [10] [9] … [1]，观感很差。显示前去掉这类编号引用。
- */
-internal object NumericCitationMarkup {
-    private val CLUSTER = Regex(
-        """(?:[ 	]*\[\[(\d{1,3})\]\](?:\(<[^>
-]*>\)|\([^)
-]*\)))+[ 	]*""",
-    )
-
-    fun strip(source: String): String {
-        if (!source.contains("[[")) return source
-        return CLUSTER.replace(source, "")
+            val trimmedStart = line.text.trimStart(' ')
+            val indent = line.text.length - trimmedStart.length
+            if (!openDisplayMath) {
+                if (indent <= 3 && trimmedStart.startsWith("\\[")) return true
+                if (indent <= 3 && trimmedStart.startsWith("$$") && !trimmedStart.startsWith("$$$")) {
+                    val afterOpen = trimmedStart.substring(2)
+                    if (!afterOpen.endsWithUnescapedDoubleDollar()) {
+                        openDisplayMath = true
+                    }
+                }
+            } else if (line.text.endsWithUnescapedDoubleDollar()) {
+                openDisplayMath = false
+            }
+        }
+        return openDisplayMath
     }
+
+    private fun String.isUnclosedTexMathTailAt(index: Int): Boolean {
+        if (!startsWith("\\(", index) && !startsWith("\\[", index)) return false
+        if (index > 0 && this[index - 1] == '\\') return false
+        if (startsWith("\\[", index)) {
+            val lineStart = lastIndexOf('\n', index - 1) + 1
+            return substring(lineStart, index).isBlank()
+        }
+        var cursor = index + 2
+        while (cursor < length) {
+            if (this[cursor] == '\n') {
+                val nextEnd = indexOf('\n', cursor + 1).let { if (it < 0) length else it }
+                if (substring(cursor + 1, nextEnd).isBlank()) return false
+            }
+            cursor += 1
+        }
+        return true
+    }
+
+    /**
+     * 返回跳过已闭合数学公式后的下一个下标；若命中末尾正在流式输入的未闭合公式则返回 `-1`。
+     */
+    private fun String.consumeMathSpanOrTailAt(index: Int): Int {
+        val run = runLengthAt(index, '$')
+        if (run > 2) return index + run
+        if (run == 2) {
+            var cursor = index + 2
+            while (cursor + 1 < length) {
+                if (this[cursor] == '\\') {
+                    cursor += 2
+                    continue
+                }
+                if (this[cursor] == '$' && this[cursor + 1] == '$' && getOrNull(cursor + 2) != '$') {
+                    return if (substring(index + 2, cursor).isNotBlank()) cursor + 2 else index + 2
+                }
+                cursor += 1
+            }
+            return -1
+        }
+
+        val prev = getOrNull(index - 1)
+        val next = getOrNull(index + 1)
+        if (next == null || next.isWhitespace() || prev.isAsciiWordOrDollar()) {
+            return index + 1
+        }
+        var cursor = index + 1
+        while (cursor < length) {
+            if (this[cursor] == '\\') {
+                cursor += 2
+                continue
+            }
+            if (this[cursor] == '\n') {
+                val nextEnd = indexOf('\n', cursor + 1).let { if (it < 0) length else it }
+                if (substring(cursor + 1, nextEnd).isBlank()) return index + 1
+            }
+            if (this[cursor] == '$') {
+                val closeRun = runLengthAt(cursor, '$')
+                if (closeRun != 1) return index + 1
+                val closePrev = getOrNull(cursor - 1)
+                val closeNext = getOrNull(cursor + 1)
+                val canClose = closePrev != null && !closePrev.isWhitespace() && !closeNext.isAsciiWordOrDollar()
+                return if (canClose && substring(index + 1, cursor).isNotBlank()) cursor + 1 else index + 1
+            }
+            cursor += 1
+        }
+        val tail = substring(index + 1)
+        val looksLikeStreamingFormula = '\n' !in tail && tail.any {
+            it == '\\' || it == '^' || it == '_' || it == '{' || it == '[' || it == '='
+        }
+        return if (looksLikeStreamingFormula) -1 else index + 1
+    }
+
+    private fun String.endsWithUnescapedDoubleDollar(): Boolean {
+        val trimmed = trimEnd(' ', '\t', '\r')
+        if (trimmed.length < 2 || !trimmed.endsWith("$$") || trimmed.endsWith("$$$")) return false
+        var backslashes = 0
+        var cursor = trimmed.length - 3
+        while (cursor >= 0 && trimmed[cursor] == '\\') {
+            backslashes += 1
+            cursor -= 1
+        }
+        return backslashes % 2 == 0
+    }
+
+    private fun Char?.isAsciiWordOrDollar(): Boolean =
+        this != null && (this in 'a'..'z' || this in 'A'..'Z' || this in '0'..'9' || this == '_' || this == '$')
 }

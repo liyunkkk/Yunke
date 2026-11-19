@@ -15,8 +15,23 @@ class AgentAccessibilityHealthProvider : ContentProvider() {
     override fun onCreate(): Boolean = true
 
     override fun call(method: String, arg: String?, extras: Bundle?): Bundle {
+        val callingUid = Binder.getCallingUid()
         if (
-            Binder.getCallingUid() != Process.SYSTEM_UID ||
+            (callingUid == Process.SYSTEM_UID || callingUid == Process.ROOT_UID) &&
+            method == AccessibilityProtectionProtocol.VIRTUAL_DISPLAY_SURFACE_METHOD &&
+            AccessibilityProtectionProtocol.hasSupportedVersion(extras)
+        ) {
+            val token = extras?.getString(AccessibilityProtectionProtocol.EXTRA_SURFACE_TOKEN).orEmpty()
+            val surface = io.github.mangi.eta.agent.virtualdisplay.VirtualDisplaySurfaceRegistry.consume(token)
+            return Bundle().apply {
+                putInt(AccessibilityProtectionProtocol.EXTRA_PROTOCOL_VERSION, AccessibilityProtectionProtocol.VERSION)
+                if (surface != null) {
+                    putParcelable(AccessibilityProtectionProtocol.EXTRA_SURFACE, surface)
+                }
+            }
+        }
+        if (
+            callingUid != Process.SYSTEM_UID ||
             method != AccessibilityProtectionProtocol.HEALTH_METHOD ||
             !AccessibilityProtectionProtocol.hasSupportedVersion(extras)
         ) {
@@ -24,14 +39,8 @@ class AgentAccessibilityHealthProvider : ContentProvider() {
                 AccessibilityProtectionProtocol.HEALTH_STATUS_REJECTED,
             )
         }
-        // 只有「已连接且真的能枚举默认屏窗口」才算 CONNECTED：否则后端会据此重绑，
-        // 这正是重装 APK 后实例存在但窗口缓存为空时的唯一自愈途径。
-        val healthy = accessibilityConnectionHealthy(
-            instanceAvailable = AgentAccessibilityService.isAvailable(),
-            defaultDisplayWindowsUsable = AgentAccessibilityService.defaultDisplayWindowsUsable(),
-        )
         return AccessibilityProtectionProtocol.healthResult(
-            if (healthy) {
+            if (AgentAccessibilityService.isAvailable()) {
                 AccessibilityProtectionProtocol.HEALTH_STATUS_CONNECTED
             } else {
                 AccessibilityProtectionProtocol.HEALTH_STATUS_DISCONNECTED

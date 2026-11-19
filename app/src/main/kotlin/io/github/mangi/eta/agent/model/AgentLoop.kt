@@ -1,21 +1,24 @@
 package io.github.mangi.eta.agent.model
 
-import io.github.mangi.eta.agent.question.AgentQuestionCoordinator
 import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.agent.runtime.AgentRunController
-import io.github.mangi.eta.agent.runtime.AgentRuntimePolicy
 import io.github.mangi.eta.agent.runtime.AgentTokenUsage
-import io.github.mangi.eta.data.model.ErrorReconnectPolicy
+import io.github.mangi.eta.agent.roleplay.RoleplayRunContext
+import io.github.mangi.eta.agent.subagent.AgentSubagentToolCatalog
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.supervisorScope
 import org.json.JSONArray
 import org.json.JSONObject
 
 /**
  * 单次 Agent run 的纯编排循环。
  *
- * 一次 assistant 响应及其完整工具批次构成一个请求 round，不等于压缩的用户逻辑 turn。
- * 暂停、追加、终止保留同一 turnId；请求计数和 UI 文本块标识不参与划分用户轮次。
- * 流式正文中途的 steering 会打断当前模型请求、保留已写出的内容，再注入补充指令发起后续请求；
- * 工具批次仍跑完，不取消正在执行的工具。循环不设置本地轮次上限，由模型自然结束、取消或错误终止。
+ * 一次 assistant 响应及其完整工具批次构成一个 turn；
+ * steering 只在 turn 结束后注入，不能用取消网络或关闭工具资源来模拟。循环不设置本地轮次上限，
+ * 由模型自然结束、取消或错误终止。
  */
 internal class AgentLoop(
     private val config: AgentModelClient.ModelConfig,
@@ -28,49 +31,20 @@ internal class AgentLoop(
     private val onEvent: (AgentEvent) -> Unit,
     private val toolsForRound: (() -> JSONArray)? = null,
     private val modelRetry: AgentModelRetry = AgentModelRetry(),
-    private val reconnectTiming: ReconnectTiming = SystemReconnectTiming,
-    private val waitForReconnect: (AgentRunController, Long) -> Unit = { controller, delay ->
-        controller.awaitRetryDelay(delay)
-    },
     private val sessionId: String = java.util.UUID.randomUUID().toString(),
-    private val compactPolicy: CompactPolicy = CompactPolicy.Disabled,
+    private val transcript: JSONArray = JSONArray(),
     private val systemCount: Int = 0,
-    private val compactionArchive: AgentCompactionArchive? = null,
-    private val turnId: String = java.util.UUID.randomUUID().toString(),
-    private val toolDiagnostics: AgentToolCallDiagnostics = AgentToolCallDiagnostics(),
-    /** 会话上一张可信云端回执折算到本次请求的输入量；只作为第一个锚点，本轮回执到达后被替换。 */
-    private val calibratedInputTokens: Int? = null,
-    private val onHistoryCompacted: () -> Unit = {},
-    private val onHistorySnapshot: ((Int, List<AgentModelClient.ConversationMessage>) -> String)? = null,
-    private val compactHistory: ((
-        List<AgentModelClient.ConversationMessage>,
-        CompactPolicy,
-    ) -> List<AgentModelClient.ConversationMessage>)? = null,
-    /** Explicit permission to send an unknown context; never a usage receipt or calibration. */
-    allowUnmeasuredContextSend: Boolean = false,
+    private val operationId: String = sessionId,
+    private val onContextSnapshot: (AgentContextSnapshot) -> Unit = {},
+    private val onTranscript: (List<AgentModelClient.ConversationMessage>) -> Unit = {},
+    private val purpose: ProviderRequestPurpose = ProviderRequestPurpose.CHAT,
+    private val roleplayContext: RoleplayRunContext? = null,
+    initialSupplementIndex: Int = 0,
 ) {
-    data class CompactPolicy(
-        val enabled: Boolean,
-        val contextWindow: Int,
-        val keepRecentMessages: Int,
-        val compressModelConfig: AgentModelClient.ModelConfig?,
-        val keepStartOverride: Int? = null,
-    ) {
-        companion object {
-            val Disabled = CompactPolicy(
-                enabled = false,
-                contextWindow = 128_000,
-                keepRecentMessages = AgentContextCompactor.DEFAULT_KEEP_RECENT,
-                compressModelConfig = null,
-            )
-        }
-    }
     data class Result(
         val content: String,
         val reasoningContent: String,
         val sensitiveToolCallIds: Set<String>,
-        /** 整轮展示用耗时与步数；不参与计费、压缩与上下文判定。 */
-        val timings: AgentTokenUsage? = null,
     )
 
     private data class ToolOutcome(
@@ -78,125 +52,43 @@ internal class AgentLoop(
         val result: AgentModelClient.ToolResult,
     )
 
-    private var auxiliaryRound = 1
-    private val auxiliaryVision = AuxiliaryVision.create(config, runController, sessionId) {
-        onEvent(it.copy(round = auxiliaryRound))
-    }
-
-    private var toolCallValidator = AgentToolCallValidator(tools)
-    private val delegationArgumentRepair = AgentDelegationArgumentRepair()
-    private val invalidToolArgumentsGuard = AgentInvalidToolArgumentsGuard()
-    private var shellFailureState = AgentShellFailureGuard.State()
-    private var toolDiagnosticAttempt: AgentToolCallDiagnostics.Attempt? = null
-    private var shellFailureStopMessage: String? = null
-    private var delegationRepairNotifiedRound: Int? = null
+    private var availableToolNames = emptySet<String>()
     private val accumulatedReasoning = StringBuilder()
+    private val thinkingBlockStartMs = mutableMapOf<Pair<Int, Int>, Long>()
     private val sensitiveToolCallIds = linkedSetOf<String>()
+    private val toolBatchLock = Any()
     private var pendingToolImageMessage: JSONObject? = null
-    private val incompleteText = sortedMapOf<Int, String>()
-    private var responseStored = false
+    private val turnMetrics = TurnMetricsAccumulator()
+    private var precedingTools: JSONArray? = null
+    private val context = AgentContextSession(
+        config, messages, systemCount, operationId, provider, runController,
+        { sensitiveToolCallIds }, onEvent, onContextSnapshot, { transcript.length() },
+        roleplay = roleplayContext != null,
+        mainToolsProvider = { precedingTools ?: tools },
+        mainSessionId = sessionId,
+        messageProjector = { source -> roleplayContext?.projectMessages(source) ?: source },
+        enableCacheReuse = true,
+    )
+    private var supplementIndex = initialSupplementIndex
 
-    private fun rememberIncompleteText(event: ProviderEvent) {
-        when (event) {
-            is ProviderEvent.BlockDelta -> if (event.kind == AssistantBlockKind.TEXT) {
-                incompleteText[event.index] = incompleteText[event.index].orEmpty() + event.delta
-            }
-            is ProviderEvent.BlockEnd -> if (event.kind == AssistantBlockKind.TEXT && event.replaceContent) {
-                incompleteText[event.index] = event.content
-            }
-            else -> Unit
-        }
+    fun contextSnapshot(): AgentContextSnapshot? = context.snapshot()
+
+    private fun appendMessage(message: JSONObject) {
+        messages.put(message)
+        transcript.put(message)
     }
 
-    fun preserveIncompleteResponse() {
-        if (responseStored) return
-        val text = incompleteText.values.joinToString("").trim()
-        if (text.isNotBlank()) {
-            messages.put(JSONObject().put("role", "assistant").put("content", text)
-                .put(AgentTurnIdentity.JSON_KEY, turnId))
-            responseStored = true
-        }
-    }
-    private var lastUsage: AgentTokenUsage? = null
-    /** 整轮（本次用户请求内所有 step）的展示用耗时与 token 累加器。 */
-    private val turnMetrics = AgentTurnMetrics()
-    /** 整轮累计统计，随 Result 返回给 UI；不再额外发用量事件。 */
-    private var turnTimings: AgentTokenUsage? = null
-    private var hasDisplayCloudReceipt = false
-    private val requestBudget = AgentRequestBudgetPolicy()
-    private val silentBudget = AgentSilentContextBudget()
-    // A committed summary starts a new unknown context epoch. Pruning or failed summaries do not.
-    private var unmeasuredContextSendAllowed = allowUnmeasuredContextSend
-    private var suppressThinkingForNextRequest = false
-    private val continuationBlocks = AgentContinuationBlocks()
-    private val continuationReasoning = AgentContinuationReasoning()
-    private val interruptedTextPrefix = StringBuilder()
-    private var continuingInterruptedRequest = false
-    private var supplementStartsNewBlock = false
-    private var compactionFailure = ""
-    private var currentRoundTools = tools
-    private var manualBudgetAttempt = false
-    private var budgetKeepRecent = compactPolicy.keepRecentMessages
-    private var budgetCompressModelConfig = compactPolicy.compressModelConfig
-    private var overflowPending = false
-    private var overflowRecoveryAttempts = 0
-    private var lastFailedCompaction: Pair<String, Int>? = null
-    private var skipIneffectiveAutoCompact = false
-    private var skippedAutoChars: Long = -1L
-    private var skippedAutoCloud: Int = Int.MIN_VALUE
-    private var lastAutoLogReason: String = ""
-    private var lastAutoLogNanos: Long = 0L
-    /** 圆环上的云端实测曾到过 80%。后面的回执即使变小，也在下次请求前压缩。 */
-    private var autoCompactLatched = false
-    private var latchedCloudTokens = 0
-    /** 上游在输出上限处截断且正文为空时，同一 round 内的自动重发预算，不跨 round 累积。 */
-    private var emptyOutputLimitRetries = 0
-    private var emptyOutputLimitRound = 0
-    /** 非截断的空响应（如 finish_reason=step）在同一 round 内的重发计数，与输出上限截断分开累计。 */
-    private var emptyResponseRetries = 0
-    private var emptyResponseRound = 0
-    private var invalidArgumentsInBatch = 0
-    private var shellFailuresInBatch = 0
-    private var postToolReconnect: ModelErrorReconnect? = null
-    private var postToolReconnectBinding: AutoCloseable? = null
-    private var postToolRetryCount = 0
-    private var localOnlyRecovery = AgentRecoveryContext.isActive(messages)
-    private val toolReplayGuard = AgentToolReplayGuard(messages)
+    private var publishedTranscriptSize = 0
 
-    private fun finishPostToolReconnect(status: String) {
-        val current = postToolReconnect ?: return
-        try {
-            current.finish(status)
-        } finally {
-            try { postToolReconnectBinding?.close() }
-            finally {
-                postToolReconnectBinding = null
-                postToolReconnect = null
-                postToolRetryCount = 0
-            }
-        }
+    private fun publishTranscript() {
+        if (publishedTranscriptSize == transcript.length()) return
+        onTranscript(AgentConversationCodec.transcript(transcript, 0, sensitiveToolCallIds))
+        publishedTranscriptSize = transcript.length()
     }
 
-    private fun retryPostToolFailure(round: Int, code: String, message: String) {
-        val failure = AgentModelFailure(code, false, message)
-        val policy = ErrorReconnectPolicy.fromPersistedValue(config.errorReconnectPolicy)
-        if (policy == ErrorReconnectPolicy.NONE) throw failure
-        val state = postToolReconnect ?: ModelErrorReconnect(round, policy.windowMillis,
-            reconnectTiming, onEvent, failure, listOf(config.apiKey)).also {
-            postToolReconnect = it
-            postToolReconnectBinding = it.bind(runController)
-            it.start()
-        }
-        state.updateReason(failure)
-        state.check()
-        postToolRetryCount = postToolRetryCount % 3 + 1
-        val backoff = 2_000L shl (postToolRetryCount - 1)
-        val delay = minOf(backoff, state.remainingMs() ?: backoff)
-        onEvent(AgentEvent.ModelRetryScheduled(round, postToolRetryCount, 3, delay.toInt(), code,
-            AgentHttpFailureDiagnostics.safe(message, listOf(config.apiKey), 600)))
-        waitForReconnect(runController, delay)
-        runController.throwIfCancelled()
-        state.check()
+    fun compactOnly(): Result {
+        context.compact(force = true)
+        return Result("", "", emptySet())
     }
 
     fun reasoningSnapshot(): String = accumulatedReasoning.toString().trim()
@@ -204,133 +96,56 @@ internal class AgentLoop(
     fun sensitiveToolCallIdsSnapshot(): Set<String> = sensitiveToolCallIds.toSet()
 
     fun run(): Result {
-        // Only annotate messages created by this run. The current user entry is initially last.
-        messages.optJSONObject(messages.length() - 1)?.put(AgentTurnIdentity.JSON_KEY, turnId)
-        // UI 手里有上一张可信回执时，用它折算到本次请求的值校准发送上限。
-        // 自动压缩不看它：80% 只看本次 run 收到的真实回执（圆环上的数）。
-        silentBudget.seed(localRequestTokens(), calibratedInputTokens,
-            config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow)
         var round = 1
 
-        try {
-        roundLoop@ while (true) {
+        while (true) {
             runController.throwIfCancelled()
-            postToolReconnect?.check()
-            appendPendingSteeringMessage()
-            currentRoundTools = delegationArgumentRepair.availableTools(toolsForRound?.invoke() ?: tools)
-            try {
-                auxiliaryRound = round
-                auxiliaryVision.prepare(messages)
-            } catch (failure: Exception) {
-                runController.throwIfCancelled()
-                if (runController.hasPausedInterrupt || runController.hasPendingImmediateSteering) {
-                    runController.consumePausedInterrupt()
-                    continue
-                }
-                throw failure
-            }
-            maybeCompactBeforeRound(round)
-            var reductions = 0
-            while (requestOverBudget() || overflowPending) {
-                if (reductions++ < 2 && overflowRecoveryAttempts <= 1 && tryBudgetCompaction(round)) {
-                    overflowPending = false
-                    continue
-                }
-                runController.pause()
-                onEvent(AgentEvent.ContextCompacted(round, false, messages.length(), messages.length(),
-                    blocked = true, reason = compactionFailure.ifBlank {
-                        "上下文空间不足；受保护历史未删除。可保持暂停、仅本次允许压缩较早步骤，或停止后选择更大窗口模型。"
-                    }))
-                runController.throwIfCancelled()
-                reductions = 0
-                appendPendingSteeringMessage()
-                currentRoundTools = delegationArgumentRepair.availableTools(toolsForRound?.invoke() ?: tools)
-                try {
-                    auxiliaryRound = round
-                    auxiliaryVision.prepare(messages)
-                } catch (failure: Exception) {
-                    runController.throwIfCancelled()
-                    if (runController.hasPausedInterrupt || runController.hasPendingImmediateSteering) {
-                        runController.consumePausedInterrupt()
-                        continue@roundLoop
-                    }
-                    throw failure
-                }
-                maybeCompactBeforeRound(round)
-                if (manualBudgetAttempt) overflowRecoveryAttempts = 0
-            }
+            if (purpose.allowsTools) appendPendingSteeringMessage()
 
-            // The manual override covers this preparation boundary, including its bounded
-            // hard-pressure reductions above. Later rounds/overflow must use the automatic
-            // policy again, including a null compressor (not the previous manual model).
-            manualBudgetAttempt = false
-            budgetKeepRecent = compactPolicy.keepRecentMessages
-            budgetCompressModelConfig = compactPolicy.compressModelConfig
-            val roundTools = currentRoundTools
-            toolCallValidator = AgentToolCallValidator(roundTools)
-            incompleteText.clear()
-            responseStored = false
-            // 本步（本次模型请求）的计时锚点。重试会在 RequestStarted 里重设，
-            // 因此 llmMs 只包含「真正在等模型」的那段时间。
+            // 带签名的工具链沿用发出调用时的请求前缀，工具链完成后再刷新目录。
+            val roundTools = if (SignedToolContext.hasPendingResponse(messages)) {
+                precedingTools ?: tools
+            } else if (purpose.allowsTools) {
+                toolsForRound?.invoke() ?: tools
+            } else {
+                JSONArray()
+            }
+            precedingTools = roundTools
+            availableToolNames = (0 until roundTools.length()).mapNotNullTo(mutableSetOf()) { index ->
+                roundTools.optJSONObject(index)?.optJSONObject("function")?.optString("name")
+            }
+            publishTranscript()
+            if (purpose.allowsTools) context.compact()
+            val requestMessages = AssistantScreenContextProjection.project(
+                roleplayContext?.projectMessages(messages) ?: messages,
+            )
+            var roundInputTokens: Int? = null
+            var roundUsage: AgentTokenUsage? = null
             var stepStartedAtMs = monotonicNowMs()
             var firstTokenAtMs: Long? = null
             val reasoningLengthBeforeRound = accumulatedReasoning.length
-            val continuationText = AgentContinuationTextEvents(
-                if (continuingInterruptedRequest) interruptedTextPrefix.toString() else "")
-            continuationReasoning.beginRequest(continuingInterruptedRequest)
-            continuationBlocks.beginRequest(continuingInterruptedRequest && !supplementStartsNewBlock)
-            supplementStartsNewBlock = false
-            continuingInterruptedRequest = false
-            // Snapshot BEFORE callbacks can append this response to messages. Retries
-            // reuse the same request; partial/output-only usage cannot move this anchor.
-            val requestLocal = localRequestTokens()
-            // Raw history size at snapshot time, for the bounded request-context diagnostic only.
-            val requestMessageCount = messages.length()
-            val requestHistoryTokens = AgentConversationCodec.transcript(messages, systemCount, sensitiveToolCallIds)
-                .sumOf { AgentContextBudget.countMessage(it).toLong() }
-                .coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
-            // UI history calibration retains its original raw DTO basis, including old receipts.
-            val requestFixedTokens = AgentRequestTokenEstimate.fixed(messages, systemCount, roundTools)
-            // Finish the raw metadata pass before retaining the hydrated copy (lower peak memory).
-            // Reuse exactly one hydrated/filtered snapshot for projection and transport.
-            if (localOnlyRecovery) AgentRecoveryContext.append(messages)
-            val filteredMessages = AgentRequestMediaPolicy.filter(messages, config.supportsVision, config.supportsVideo)
-            val publishLocalEstimate = requestBudget.consumeLocalBoundary()
-            // Display estimates arrive from the SAME final body serialized by the provider.
-            // Keep the silent/local boundary and cloud calibration on their original basis.
-            var preparedRequestTokens: Int? = null
-            silentBudget.requestStarted(requestLocal)
-            requestBudget.requestStarted()
-            lastUsage = null // A new request must not inherit missing fields from the preceding bill.
             val completedRound = try {
                 modelRetry.complete(
                     initialRound = round,
-                    request = ProviderRequest(requestConfigForRound(),
-                        filteredMessages, roundTools, sessionId, toolDiagnostics = toolDiagnostics,
-                        reconnectLocalToolsOnly = localOnlyRecovery),
+                    request = ProviderRequest(config, requestMessages, roundTools, sessionId, purpose),
                     provider = provider,
                     controller = runController,
-                    onEvent = onEvent,
-                    onAttemptStarted = { attemptRound, requestMessages ->
-                        runCatching { onHistorySnapshot?.let { publish ->
-                            // Preserve durable media from the unfiltered history. Reconnect adds only
-                            // committed TEXT and its continue prompt to the fixed request prefix.
-                            val full = AgentConversationCodec.transcript(messages, systemCount, sensitiveToolCallIds)
-                            val suffixMessages = JSONArray()
-                            for (index in filteredMessages.length() until requestMessages.length()) {
-                                val message = JSONObject(requestMessages.getJSONObject(index).toString())
-                                if (message.optString(AgentTurnIdentity.JSON_KEY).isBlank()) {
-                                    message.put(AgentTurnIdentity.JSON_KEY, turnId)
-                                }
-                                suffixMessages.put(message)
-                            }
-                            val suffix = AgentConversationCodec.transcript(suffixMessages, 0, sensitiveToolCallIds)
-                            publish(attemptRound, full + suffix)
-                        }.orEmpty() }.getOrDefault("")
+                    onEvent = { event ->
+                        if (event is AgentEvent.RoundStarted) {
+                            roundInputTokens = null
+                            roundUsage = null
+                            stepStartedAtMs = monotonicNowMs()
+                            firstTokenAtMs = null
+                        }
+                        onEvent(event)
                     },
                     onProviderEvent = { attemptRound, providerEvent ->
+                        if (!purpose.allowsTools && (providerEvent is ProviderEvent.HostedToolStarted ||
+                                providerEvent is ProviderEvent.SearchSuggestions ||
+                                providerEvent is ProviderEvent.BlockStart && providerEvent.kind == AssistantBlockKind.TOOL_CALL)) {
+                            throw AgentModelFailure("REPLY_REWRITE_TOOL_CALL", false, "改写回复时模型请求了工具，已停止；原回复未改变。")
+                        }
                         if (providerEvent is ProviderEvent.RequestStarted) {
-                            lastUsage = null
                             stepStartedAtMs = monotonicNowMs()
                             firstTokenAtMs = null
                         }
@@ -340,138 +155,52 @@ internal class AgentLoop(
                         ) {
                             firstTokenAtMs = monotonicNowMs()
                         }
-                        if (providerEvent is ProviderEvent.RequestEstimate) {
-                            preparedRequestTokens = providerEvent.tokens
-                            // Existing UI reducer keeps cloud receipts authoritative, including
-                            // receipts from previous runs. Never feed this into silentBudget.
-                            if (publishLocalEstimate && !hasDisplayCloudReceipt && providerEvent.tokens > 0) {
-                                onEvent(AgentEvent.UsageReceived(attemptRound,
-                                    AgentTokenUsage(inputTokens = providerEvent.tokens), projected = true,
-                                    requestHistoryTokens = requestHistoryTokens,
-                                    requestOverheadTokens = requestFixedTokens))
-                            }
-                        }
                         if (providerEvent is ProviderEvent.Usage) {
-                            val previous = lastUsage
-                            val incoming = providerEvent.usage
-                            lastUsage = AgentTokenUsage(
-                                contextTokens = incoming.contextTokens ?: previous?.contextTokens,
-                                inputTokens = incoming.inputTokens ?: previous?.inputTokens,
-                                outputTokens = incoming.outputTokens ?: previous?.outputTokens,
-                                reasoningTokens = incoming.reasoningTokens ?: previous?.reasoningTokens,
-                                cachedTokens = incoming.cachedTokens ?: previous?.cachedTokens,
-                                cacheCreationTokens = incoming.cacheCreationTokens ?: previous?.cacheCreationTokens,
-                            )
-                            if ((lastUsage?.inputTokens ?: 0) > 0) hasDisplayCloudReceipt = true
-                            // Partial fields merge only within this request. A plausible input
-                            // immediately replaces the cloud anchor; queue pressure in this callback,
-                            // never send a confirmation request or compact an open output/tool batch.
-                            // The separate silent anchor survives a later usage-less request.
-                            silentBudget.measured(lastUsage?.inputTokens,
-                                config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow,
-                                cachedTokens = lastUsage?.cachedTokens)
-                            noteRingPressure(attemptRound)
+                            roundUsage = providerEvent.usage
+                            roundInputTokens = providerEvent.contextInputTokens ?: roundInputTokens
                         }
-                        continuationReasoning.visibleEvent(if (providerEvent is ProviderEvent.Usage) ProviderEvent.Usage(requireNotNull(lastUsage)) else providerEvent)?.let { visibleEvent ->
-                            if (visibleEvent is ProviderEvent.BlockDelta &&
-                                visibleEvent.kind == AssistantBlockKind.THINKING
-                            ) {
-                                accumulatedReasoning.append(visibleEvent.delta)
-                            }
-                            continuationText.map(visibleEvent).forEach { textEvent ->
-                                rememberIncompleteText(textEvent)
-                                continuationBlocks.map(attemptRound, textEvent).toAgentEvent(attemptRound)?.let { event ->
-                                    onEvent(if (event is AgentEvent.UsageReceived && !event.projected) {
-                                        event.copy(requestHistoryTokens = requestHistoryTokens, requestOverheadTokens = requestFixedTokens)
-                                    } else event)
-                                }
-                            }
+                        if (providerEvent is ProviderEvent.BlockStart &&
+                            providerEvent.kind == AssistantBlockKind.THINKING
+                        ) {
+                            thinkingBlockStartMs[attemptRound to providerEvent.index] = monotonicNowMs()
+                        }
+                        if (providerEvent is ProviderEvent.BlockDelta &&
+                            providerEvent.kind == AssistantBlockKind.THINKING
+                        ) {
+                            thinkingBlockStartMs.putIfAbsent(attemptRound to providerEvent.index, monotonicNowMs())
+                            accumulatedReasoning.append(providerEvent.delta)
+                        }
+                        if (providerEvent !is ProviderEvent.Usage) {
+                            providerEvent.toAgentEvent(attemptRound)?.let(onEvent)
                         }
                     },
                     discardAttemptReasoning = { accumulatedReasoning.setLength(reasoningLengthBeforeRound) },
-                    validateResponse = toolReplayGuard::validate,
-                    requestReconnect = postToolReconnect,
-                    onRecoveryActivated = {
-                        localOnlyRecovery = true
-                        AgentRecoveryContext.append(messages)
-                    },
-                    onCancelledResponse = { response ->
-                        val calls = AgentConversationCodec.parseToolCalls(response.assistantMessage)
-                        val sensitiveCalls = calls.filter { AgentSensitiveToolPolicy.isSensitive(it.name) }
-                        sensitiveCalls.forEach { sensitiveToolCallIds += it.id }
-                        if (sensitiveCalls.isNotEmpty()) {
-                            messages.put(AgentConversationCodec.assistantHistoryMessage(
-                                source = response.assistantMessage,
-                                toolCalls = calls,
-                            ).put(AgentTurnIdentity.JSON_KEY, turnId))
-                            responseStored = true
-                        }
-                    },
-                ).also { postToolReconnect?.check() }
-            } catch (failure: AgentModelFailure) {
-                if (failure.code != "CONTEXT_WINDOW_EXCEEDED") throw failure
-                overflowPending = true
-                overflowRecoveryAttempts++
-                compactionFailure = "提供方确认上下文超限。只在缩减成功后有限重试；否则保持暂停，不删除受保护历史。"
-                continue
+                ).also { response ->
+                    rejectContentFilter(response.response)
+                    if (purpose == ProviderRequestPurpose.CHAT) validateChatResponse(response.response)
+                }
+            } finally {
+                // 同一回合的重试仍需原始观察；整个回合结束后才移除截图。
+                discardPendingToolImageMessage()
             }
-            localOnlyRecovery = localOnlyRecovery || completedRound.reconnectLocalToolsOnly
-            if (localOnlyRecovery) AgentRecoveryContext.append(messages)
-            // Failed/overflowed requests keep their image observation until a successful request.
-            discardPendingToolImageMessage()
-            overflowRecoveryAttempts = 0
-            // Transport retries use a distinct display round; its fallback must not
-            // duplicate text already retained in the previous display block.
-            if (completedRound.round != round) interruptedTextPrefix.setLength(0)
+            val completedAtMs = monotonicNowMs()
+            val stepLlmMs = (completedAtMs - stepStartedAtMs).coerceAtLeast(0L)
+            val stepTtftMs = firstTokenAtMs?.let { (it - stepStartedAtMs).coerceAtLeast(0L) }
+            val stepDecodeMs = firstTokenAtMs?.let { (completedAtMs - it).coerceAtLeast(0L) }
+            context.observeInputTokens(roundInputTokens)
             round = completedRound.round
             val providerResponse = completedRound.response
-            toolReplayGuard.remember(providerResponse.assistantMessage)
-            toolDiagnosticAttempt = completedRound.toolDiagnosticAttempt
-            // One bounded record per successful request round. Local estimates stay labeled as
-            // estimates and sit next to the same round's cloud receipt so the gap is attributable.
-            emitRequestContext(
-                attempt = toolDiagnosticAttempt,
-                requestMessageCount = requestMessageCount,
-                requestLocal = requestLocal,
-                requestHistoryTokens = requestHistoryTokens,
-                requestFixedTokens = requestFixedTokens,
-                preparedRequestTokens = preparedRequestTokens,
-                filteredMessages = filteredMessages,
-                roundTools = roundTools,
-                usage = lastUsage,
-            )
 
-            // 本步耗时：请求发出（或最后一次重试）→ 响应结束。工具与等待用户都不在这里，
-            // 所以 llmMs 不会被工具时间稀释，TPS 才可信。
-            val stepCompletedAtMs = monotonicNowMs()
-            val stepLlmMs = (stepCompletedAtMs - stepStartedAtMs).coerceAtLeast(0L)
-            val stepTtftMs = firstTokenAtMs?.let { (it - stepStartedAtMs).coerceAtLeast(0L) }
-            val stepDecodeMs = firstTokenAtMs?.let { (stepCompletedAtMs - it).coerceAtLeast(0L) }
-
-            // Keep a fully returned response before observing a concurrent user stop.
-            continuationText.finish().forEach { textEvent ->
-                continuationBlocks.map(round, textEvent).toAgentEvent(round)?.let(onEvent)
-            }
+            runController.throwIfCancelled()
             val assistantMessage = providerResponse.assistantMessage
-            val originalContent = assistantMessage.opt("content")
-            if (originalContent is String && originalContent != "null") {
-                assistantMessage.put("content", continuationText.normalize(originalContent))
-            }
             val toolCalls = AgentConversationCodec.parseToolCalls(assistantMessage)
-            toolCalls.forEachIndexed { index, call -> toolDiagnosticAttempt?.parsed(call, index) }
-            toolCalls.filter { AgentSensitiveToolPolicy.isSensitive(it.name) }
-                .forEach { sensitiveToolCallIds += it.id }
-            val assistantReasoning = continuationReasoning.visibleCompletedReasoning(
-                assistantMessage.optString("reasoning_content"))
-            val content = assistantMessage.optString("content").trim()
-            // 已写出的正文会结束或推进本轮；空正文截断的重发预算只在同一轮内累计。
-            if (content.isNotBlank() && content != "null") {
-                emptyOutputLimitRetries = 0
-                emptyResponseRetries = 0
+            if (!purpose.allowsTools && toolCalls.isNotEmpty()) {
+                throw AgentModelFailure("REPLY_REWRITE_TOOL_CALL", false, "改写回复时模型请求了工具，已停止；原回复未改变。")
             }
-            val hasAssistantPayload = (content.isNotBlank() && content != "null") ||
-                assistantReasoning.isNotBlank() ||
-                toolCalls.isNotEmpty()
+            if (purpose == ProviderRequestPurpose.REPLY_REWRITE && providerResponse.stopReason != AssistantStopReason.END_TURN) {
+                throw AgentModelFailure("REPLY_REWRITE_INCOMPLETE", false, "模型未返回完整的改写回复；原回复未改变。")
+            }
+            val assistantReasoning = assistantMessage.optString("reasoning_content")
             if (
                 assistantReasoning.isNotBlank() &&
                 accumulatedReasoning.length == reasoningLengthBeforeRound
@@ -479,870 +208,265 @@ internal class AgentLoop(
                 accumulatedReasoning.append(assistantReasoning)
             }
 
-            // 移植上游 62d69026：拒答或内容过滤会在流中途截断回复，半截正文、思考块与
-            // 工具调用都不能进入上下文。带着被截断的签名块继续请求，会被上游判定为改动了
-            // thinking 块，同一会话随后每轮都会 400。因此不写历史、不执行工具，直接结束。
-            if (providerResponse.stopReason == AssistantStopReason.CONTENT_FILTER) {
-                val explanation = assistantMessage.optJSONObject("stop_details")
-                    ?.let { details ->
-                        details.optString("explanation").takeUnless { details.isNull("explanation") }
-                    }
-                    ?.trim()
-                    ?.takeIf { it.isNotEmpty() }
-                throw AgentModelFailure(
-                    "MODEL_CONTENT_FILTER",
-                    false,
-                    buildString {
-                        append("模型服务商拦截了本次回复，未完成的内容已丢弃。")
-                        explanation?.let { append("服务商说明：").append(it) }
-                        append("请修改或删除触发拦截的请求后重试，或换用其他模型。")
-                    },
-                )
-            }
-
-            val pausedInterrupt = runController.consumePausedInterrupt()
-            val completeToolCallsOnResume = pausedInterrupt &&
-                toolCalls.isNotEmpty() &&
-                providerResponse.stopReason == AssistantStopReason.TOOL_USE
-            if (providerResponse.stopReason == AssistantStopReason.INTERRUPTED ||
-                (pausedInterrupt && !completeToolCallsOnResume)) {
-                continuingInterruptedRequest = true
-                // Resume keeps the user's reasoning configuration. Only the first
-                // reasoning block's UI projection is hidden, not the model's thinking.
-                // 半截正文留在当前轮次历史里，继续时模型才能接着写。
-                // 未完成的工具调用不执行；已经完整给出的 TOOL_USE 在恢复后走正常批次。
-                val interruptedText = assistantMessage.optString("content")
-                    .takeIf { it != "null" }.orEmpty()
-                if (hasAssistantPayload) {
-                    interruptedTextPrefix.append(interruptedText)
-                    messages.put(
-                        AgentConversationCodec.assistantHistoryMessage(
-                            source = assistantMessage,
-                            toolCalls = emptyList(),
-                        ).put(AgentTurnIdentity.JSON_KEY, turnId),
-                    )
-                    responseStored = true
-                }
-                // 思考期暂停没有可续写的正文：这一轮的 reasoning_content 不会回到模型手里，
-                // 只给一条通用续写指令会让它重新读整轮对话，所以换成接续思考的指令。
-                // 完全没有产出时不追加任何指令，恢复后就是原请求重发。
-                if (responseStored && !runController.isCancelled) {
-                    appendContinuePromptAfterInterrupt(thinkingOnly = interruptedText.isBlank())
-                }
-                runController.throwIfCancelled()
-                appendPendingSteeringMessage()
-                continue
-            }
-            // 空正文截断重发时要按实例定位这条刚写入的消息，避免删掉别的历史。
-            var storedAssistantMessage: JSONObject? = null
-            if (hasAssistantPayload) {
-                val historyMessage = AgentConversationCodec.assistantHistoryMessage(
+            appendMessage(
+                AgentConversationCodec.assistantHistoryMessage(
                     source = assistantMessage,
                     toolCalls = toolCalls,
-                ).put(AgentTurnIdentity.JSON_KEY, turnId)
-                storedAssistantMessage = historyMessage
-                messages.put(historyMessage)
-                responseStored = true
-                onEvent(
-                    AgentEvent.AssistantReceived(
-                        round = round,
-                        contentChars = assistantMessage.optString("content").length,
-                        reasoningContent = assistantReasoning,
-                        toolNames = toolCalls.map { it.name },
-                    )
+                ).put("_eta_message_id", "assistant-$operationId-$round")
+            )
+            onEvent(
+                AgentEvent.AssistantReceived(
+                    round = round,
+                    contentChars = assistantMessage.optString("content").length,
+                    reasoningContent = assistantReasoning,
+                    toolNames = toolCalls.map { it.name },
                 )
-            } else if (runController.hasPendingSteering) {
-                appendPendingSteeringMessage()
-                interruptedTextPrefix.setLength(0)
-                round += 1
-                continue
-            }
-
-            // 累计用量（token + 耗时）盖到刚发出的这条助手消息上。UI 只读它来画统计胶囊，
-            // 不参与计费、压缩与上下文判定。
+            )
             val accumulatedUsage = turnMetrics.recordStep(
                 stepLlmMs = stepLlmMs,
                 stepTtftMs = stepTtftMs,
                 stepDecodeMs = stepDecodeMs,
-                stepUsage = lastUsage,
+                stepUsage = roundUsage,
+                stepPromptTokens = roundInputTokens,
             )
-            // 耗时不再额外发一条 UsageReceived：那会改变用量事件计数与压缩判定。
-            // 整轮累计值随最终结果返回，由 UI 挂到最后一条回答上。
-            turnTimings = accumulatedUsage
+            if (!accumulatedUsage.isEmpty) {
+                onEvent(AgentEvent.UsageReceived(round = round, usage = accumulatedUsage))
+            }
 
-            runController.throwIfCancelled()
             if (toolCalls.isNotEmpty()) {
-                invalidArgumentsInBatch = 0
-                shellFailuresInBatch = 0
-                val finishedContent = assistantMessage.optString("content").trim()
-                val finishedNaturally = providerResponse.stopReason != AssistantStopReason.TOOL_USE &&
-                    providerResponse.stopReason != AssistantStopReason.OUTPUT_LIMIT &&
-                    finishedContent.isNotBlank() &&
-                    finishedContent != "null"
-                if (finishedNaturally) {
-                    // No tool was executed: remove the batch before maintenance can inspect history.
-                    val historyAssistantIndex = messages.length() - 1
-                    messages.put(historyAssistantIndex, AgentConversationCodec.assistantHistoryMessage(
-                        source = assistantMessage, toolCalls = emptyList(),
-                    ).put(AgentTurnIdentity.JSON_KEY, turnId))
-                } else {
-                val outcomes = mutableListOf<ToolOutcome>()
-                try {
-                    val askUserCalls = toolCalls.count { it.name == AgentQuestionCoordinator.TOOL_NAME }
-                    val askUserBatchBlocked = askUserCalls > 1 ||
-                        (askUserCalls == 1 && toolCalls.any { it.name != AgentQuestionCoordinator.TOOL_NAME })
-                    if (askUserBatchBlocked) {
-                        // ask_user 只能单独出现。混合批次或多个 ask_user 全部配对拒绝，零执行。
-                        toolCalls.forEach { call ->
-                            outcomes += rejectedToolOutcome(
-                                round = round,
-                                toolCall = call,
-                                code = "ASK_USER_BATCH_BARRIER",
-                                message = "ask_user 必须是本批唯一的工具调用。本批未执行任何工具，请只保留一个 ask_user 后重试。",
-                            )
-                        }
-                    } else when (providerResponse.stopReason) {
-                        AssistantStopReason.TOOL_USE ->
-                            toolCalls.forEachIndexed { index, call -> outcomes += executeTool(round, call, index) }
-                        AssistantStopReason.OUTPUT_LIMIT ->
-                            toolCalls.forEach { call ->
-                                outcomes += rejectedToolOutcome(
-                                    round = round,
-                                    toolCall = call,
-                                    code = "TRUNCATED_TOOL_CALL",
-                                    message = "模型输出达到长度上限，工具参数可能不完整；本次调用未执行，请重新提交完整参数。",
-                                )
-                            }
-                        else ->
-                            toolCalls.forEach { call ->
-                                outcomes += rejectedToolOutcome(
-                                    round = round,
-                                    toolCall = call,
-                                    code = "UNEXPECTED_TOOL_CALL",
-                                    message = "模型在 ${providerResponse.stopReason.name} 终止状态下返回了工具调用；" +
-                                        "本批调用未执行，请重新规划。",
-                                )
-                            }
-                    }
-                } finally {
-                    appendToolOutcomes(round, outcomes)
+                val outcomes = executeToolBatch(round, toolCalls, providerResponse.stopReason)
+                outcomes.forEach { outcome ->
+                    appendMessage(AgentConversationCodec.toolResultMessage(outcome.call, outcome.result))
                 }
-                // Rebuild a model request only after the entire tool batch is paired.
-                val invalidStop = invalidToolArgumentsGuard.stopMessage
-                val shellStop = shellFailureStopMessage
-                if (invalidStop != null && invalidArgumentsInBatch > 0) {
-                    retryPostToolFailure(round, AgentInvalidToolArgumentsGuard.STOP_CODE, invalidStop)
-                } else if (shellStop != null && shellFailuresInBatch > 0) {
-                    retryPostToolFailure(round, AgentShellFailureGuard.STOP_CODE, shellStop)
-                } else if (postToolReconnect != null && invalidArgumentsInBatch == 0 && shellFailuresInBatch == 0) {
-                    finishPostToolReconnect("succeeded")
-                    invalidToolArgumentsGuard.clearExhaustion()
-                    shellFailureStopMessage = null
-                }
-                interruptedTextPrefix.setLength(0)
-                round += 1
-                continue
-                }
-            }
-
-            // 上游在输出上限处截断、只回了思考没有正文：本轮没有任何可续写的内容。
-            // 必须在 steering 封口和自然结束边界之前重发，否则重试期间用户无法再插话。
-            // 同一 round 内重发次数有界；重发是一次全新响应，不走中断续写的前缀投影。
-            val truncatedWithoutBody = (content.isBlank() || content == "null") &&
-                providerResponse.stopReason == AssistantStopReason.OUTPUT_LIMIT &&
-                toolCalls.isEmpty()
-            if (truncatedWithoutBody) {
-                if (emptyOutputLimitRound != round) {
-                    emptyOutputLimitRound = round
-                    emptyOutputLimitRetries = 0
-                }
-                if (emptyOutputLimitRetries < MAX_EMPTY_OUTPUT_LIMIT_RETRIES) {
-                    emptyOutputLimitRetries += 1
-                    // 只回思考的空响应不进历史，也不进累积推理。
-                    discardEmptyOutputLimitAttempt(storedAssistantMessage)
-                    accumulatedReasoning.setLength(reasoningLengthBeforeRound)
-                    continue
-                }
-            }
-
-            // Natural completion is not an interrupted reply. Drain queued maintenance
-            // at this safe boundary; never insert a continuation or make an extra call.
-            maybeCompactBeforeRound(round)
-
-            // 正文回合结束后再注入 steering：已写出的内容留在历史里，下一轮带上补充指令。
-            var hasSupplement: Boolean
-            do {
-                while (runController.hasPendingCompact) maybeCompactBeforeRound(round)
-                hasSupplement = appendPendingSteeringOrSeal()
-            } while (!hasSupplement && runController.hasPendingCompact)
-            if (hasSupplement) {
-                interruptedTextPrefix.setLength(0)
+                publishTranscript()
+                appendToolImages(round, outcomes)
+                publishTranscript()
                 round += 1
                 continue
             }
 
+            publishTranscript()
+
+            // assistant 已自然结束时再检查 steering。这样补充消息不会丢掉刚完成的回答。
+            if (purpose.allowsTools && appendPendingSteeringOrSeal()) {
+                round += 1
+                continue
+            }
+
+            val content = assistantMessage.optString("content").trim()
             if (content.isBlank() || content == "null") {
                 val finishReason = assistantMessage.optString("finish_reason")
-                val modelLabel = "${config.providerType}/${config.modelDisplayName.trim().ifBlank { config.model }}"
-                if (truncatedWithoutBody) {
-                    val outputTokens = lastUsage?.outputTokens
-                    throw AgentOutputLimitException(
-                        "模型接口第 $round 轮在输出上限处截断且未返回正文" +
-                            "（finish_reason=${finishReason.ifBlank { "unknown" }}" +
-                            "，模型=$modelLabel" +
-                            (outputTokens?.let { "，输出 token=$it" } ?: "") +
-                            "），已自动重试 $emptyOutputLimitRetries 次仍为空",
-                    )
-                }
-                // 非截断的空响应（多为偶发空回合，如 finish_reason=step）同样有界重试：
-                // 与「输出上限截断」各自计数、各自文案，保留原路径的语义与次数。
-                if (emptyResponseRound != round) {
-                    emptyResponseRound = round
-                    emptyResponseRetries = 0
-                }
-                if (emptyResponseRetries < MAX_EMPTY_RESPONSE_RETRIES) {
-                    emptyResponseRetries += 1
-                    // 空响应不进历史，也不进累积推理。
-                    discardEmptyOutputLimitAttempt(storedAssistantMessage)
-                    accumulatedReasoning.setLength(reasoningLengthBeforeRound)
-                    onEvent(
-                        AgentEvent.ModelRetryScheduled(
-                            round = round,
-                            attempt = emptyResponseRetries,
-                            maxAttempts = MAX_EMPTY_RESPONSE_RETRIES,
-                            delayMs = EMPTY_RESPONSE_RETRY_DELAY_MS.toInt(),
-                            reasonCode = EMPTY_RESPONSE_CODE,
-                            reasonDetail = "模型返回空正文" +
-                                finishReason.takeIf { it.isNotBlank() }?.let { "（finish_reason=$it）" }.orEmpty(),
-                        ),
-                    )
-                    runController.awaitRetryDelay(EMPTY_RESPONSE_RETRY_DELAY_MS)
-                    runController.throwIfCancelled()
-                    continue
-                }
-                error(
-                    "模型接口第 $round 轮返回为空" +
-                        finishReason.takeIf { it.isNotBlank() }?.let { "（finish_reason=$it）" }.orEmpty() +
-                        "，已重试 $emptyResponseRetries 次仍为空（模型=$modelLabel）",
-                )
+                error("模型接口第 $round 轮返回为空${finishReason.takeIf { it.isNotBlank() }?.let { "：$it" }.orEmpty()}")
             }
 
-            finishPostToolReconnect("succeeded")
-            onEvent(AgentEvent.RunFinished(round = round, contentChars = content.length, generatedAtMillis = System.currentTimeMillis()))
+            publishTranscript()
+            if (purpose.allowsTools) context.compact(final = true)
+            onEvent(AgentEvent.RunFinished(round = round, contentChars = content.length))
             return Result(
-                content = (interruptedTextPrefix.toString() + assistantMessage.optString("content")).trim(),
+                content = content,
                 reasoningContent = reasoningSnapshot(),
                 sensitiveToolCallIds = sensitiveToolCallIds.toSet(),
-                timings = turnTimings,
             )
-        }
-        } catch (failure: Throwable) {
-            try { finishPostToolReconnect(if (runController.isCancelled) "stopped" else "failed") }
-            catch (cleanupFailure: Throwable) {
-                if (cleanupFailure !== failure) failure.addSuppressed(cleanupFailure)
-            }
-            throw failure
-        } finally {
-            finishPostToolReconnect(if (runController.isCancelled) "stopped" else "failed")
         }
     }
 
     /**
-     * 下一次模型请求前压缩。
-     * 自动压缩在每个请求前及自然结束边界按阈值判断；手动压缩在同一边界消费队列。
-     * 工具批次跑完后才会回到这里，因此不会拆掉当前工具循环。
+     * 拒答或过滤会在流中途截断回复，半截正文、思考块和工具调用都不能进入上下文：
+     * 带着被截断的签名块继续请求会被上游判定为改动了 thinking 块，同一会话随后每轮都会 400。
+     * 因此不写入 history、不执行工具，直接结束本次运行，由用户改写请求或换模型。
      */
-    private fun historyForCompaction() = (systemCount.coerceIn(0, messages.length()) until messages.length())
-        .map { AgentConversationCodec.fromJsonObject(messages.getJSONObject(it)) }
-
-    private fun localRequestTokens(): Int =
-        AgentRequestTokenEstimate.boundary(messages, currentRoundTools, config.supportsVision, config.supportsVideo)
-
-    // Compression and send limits use this silent budget, not the ring display.
-    private fun requestBudgetTokens(): Int = silentBudget.tokens(localRequestTokens())
-
-    /**
-     * Bounded request-shape evidence, emitted only when [AgentToolCallDiagnostics] is already
-     * active. The pre-protocol value remains diagnostic-only, alongside the final-body estimate.
-     * Neither calculation adds a second hydration or changes the wire body.
-     */
-    private fun emitRequestContext(
-        attempt: AgentToolCallDiagnostics.Attempt?,
-        requestMessageCount: Int,
-        requestLocal: Int,
-        requestHistoryTokens: Int,
-        requestFixedTokens: Int,
-        preparedRequestTokens: Int?,
-        filteredMessages: JSONArray,
-        roundTools: JSONArray,
-        usage: AgentTokenUsage?,
-    ) {
-        val active = attempt ?: return
-        runCatching {
-            val filteredTokens = AgentRequestTokenEstimate.filtered(filteredMessages, roundTools)
-            val opaque = AgentRequestContextDiagnostics.replayedOpaque(filteredMessages, config)
-            active.emit(
-                "request_context",
-                AgentRequestContextDiagnostics.localRequestFields(
-                    AgentRequestContextDiagnostics.LocalRequest(
-                        sourceMessages = requestMessageCount,
-                        systemCount = systemCount,
-                        boundaryTokens = requestLocal,
-                        rawHistoryTokens = requestHistoryTokens,
-                        fixedTokens = requestFixedTokens,
-                        filteredTokens = filteredTokens,
-                        filteredBasis = "pre_protocol_diagnostic",
-                        requestBodyTokens = preparedRequestTokens,
-                        cloudInput = usage?.inputTokens,
-                        cloudCached = usage?.cachedTokens,
-                        cloudCacheCreation = usage?.cacheCreationTokens,
-                        cloudOutput = usage?.outputTokens,
-                        opaqueReplayItems = opaque.first,
-                        opaqueEncryptedChars = opaque.second,
-                    ),
-                ),
-            )
-        }
-    }
-
-    private fun storedHistoryChars(): Long {
-        val safeHistory = AgentConversationCodec.transcript(messages, systemCount, sensitiveToolCallIds)
-        return safeHistory.sumOf { AgentConversationCodec.toJsonObject(it).toString().length.toLong() }
-    }
-
-    private fun persistenceCharLimit(): Long {
-        val window = (config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow).toLong()
-        val roomBudget = AgentConversationCodec.MAX_CONVERSATION_CHECKPOINT_CHARS.toLong() - 128_000L
-        // 按窗口放大：1MB Room 上限大约只相当于 20 万拉丁 token，500k 窗口会在一半就误暂停。
-        return maxOf(roomBudget, window * 6)
-    }
-
-    private fun requestOverBudget(): Boolean {
-        val storedChars = storedHistoryChars()
-        val charLimit = persistenceCharLimit()
-        if (storedChars > charLimit) {
-            compactionFailure = compactionFailure.ifBlank {
-                "本轮历史接近本机持久化容量上限；已暂停，未截断受保护原文。可允许压缩较早步骤或停止任务。"
-            }
-            return true
-        }
-        // Hard send limit only, except explicitly permitted unknown contexts. No target
-        // receipt keeps the extra 12% reserve; that reserve
-        // is not an exact guarantee, and a provider CONTEXT_WINDOW_EXCEEDED still retries once.
-        // Automatic 80% scheduling reads same-model cloud input only. Do not open the window to 100%.
-        return overHardInputLimit()
-    }
-
-    /** Frozen target window, output reserve, and whether this run has a target receipt. */
-    private fun hardInputLimit(): Int {
-        val window = config.contextWindow?.takeIf { it > 0 } ?: return 0
-        return AgentCompressionBoundary.inputLimit(
-            window,
-            AgentCompressionBoundary.outputReserve(config),
-            calibrated = silentBudget.hasTargetReceipt(),
+    private fun rejectContentFilter(response: ProviderResponse) {
+        if (response.stopReason != AssistantStopReason.CONTENT_FILTER) return
+        val explanation = response.assistantMessage.optJSONObject("stop_details")
+            ?.let { details -> details.optString("explanation").takeUnless { details.isNull("explanation") } }
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+        throw AgentModelFailure(
+            "MODEL_CONTENT_FILTER",
+            false,
+            buildString {
+                append("模型服务商拦截了本次回复，未完成的内容已丢弃。")
+                explanation?.let { append("服务商说明：").append(it) }
+                append("请修改或删除触发拦截的请求后重试，或换用其他模型。")
+            },
         )
     }
 
-    private fun overHardInputLimit(): Boolean {
-        if ((config.contextWindow ?: 0) <= 0) return false
-        // Seeds and accepted receipts both retain the original hard guard. A stale cloud
-        // display still has an anchor; only an explicitly permitted unknown context is exempt.
-        if (unmeasuredContextSendAllowed && !silentBudget.isCalibrated()) return false
-        val local = localRequestTokens()
-        val calibrated = silentBudget.sendLimitTokens(local)
-        // A previous-run seed has no independently verified target receipt. It may tighten,
-        // but must never relax, the complete target-model request's conservative local bound.
-        val guarded = if (silentBudget.hasTargetReceipt()) calibrated else maxOf(local, calibrated)
-        return guarded > hardInputLimit()
-    }
-
-    /** Same unchanged history and same cloud receipt. Growth or a new receipt clears it. */
-    private fun ineffectiveAutoSameContext(): Boolean {
-        if (!skipIneffectiveAutoCompact) return false
-        val cloud = silentBudget.cloudTokens() ?: Int.MIN_VALUE
-        if (storedHistoryChars() == skippedAutoChars && cloud == skippedAutoCloud) return true
-        skipIneffectiveAutoCompact = false
-        return false
-    }
-
-    private fun markIneffectiveAutoCompact() {
-        skipIneffectiveAutoCompact = true
-        skippedAutoChars = storedHistoryChars()
-        skippedAutoCloud = silentBudget.cloudTokens() ?: Int.MIN_VALUE
-    }
-
-    private fun logAutoDecision(round: Int, reason: String, cloud: Int, cut: Int) {
-        val now = System.nanoTime()
-        if (reason == lastAutoLogReason && now - lastAutoLogNanos < 2_000_000_000L) return
-        lastAutoLogReason = reason
-        lastAutoLogNanos = now
-        val window = config.contextWindow ?: compactPolicy.contextWindow
-        runCatching {
-            io.github.mangi.eta.core.AndroidAgentLogger.info(
-                "auto_compact round=$round reason=$reason cloud=$cloud cut=$cut window=$window",
-            )
-        }
-    }
-
-    private fun noteRingPressure(round: Int) {
-        if (ineffectiveAutoSameContext() || !compactPolicy.enabled || overflowPending) return
-        val window = config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow
-        val cloud = silentBudget.cloudTokens() ?: return
-        val hot = cloud >= AgentContextCompactor.autoPressureTokens(window)
-        if (!hot) {
-            // Once this run has crossed the boundary, a later partial/corrected receipt
-            // must not lose the queued maintenance before the round reaches its safe edge.
-            return
-        }
-        if (autoCompactLatched) {
-            latchedCloudTokens = maxOf(latchedCloudTokens, cloud)
-            return
-        }
-        latchedCloudTokens = cloud
-        autoCompactLatched = true
-        onEvent(AgentEvent.AutoCompactWaiting(round))
-    }
-
-    private fun releaseAutoCompactWait(round: Int) {
-        if (!autoCompactLatched) return
-        autoCompactLatched = false
-        onEvent(AgentEvent.ContextCompacted(round, false, messages.length(), messages.length()))
-    }
-
-    private fun maybeCompactBeforeRound(round: Int) {
-        val override = runController.takePendingCompact()
-        val forced = override != null
-        if (forced) { manualBudgetAttempt = true; lastFailedCompaction = null }
-        if (!forced && (!compactPolicy.enabled || overflowPending)) {
-            logAutoDecision(round, if (!compactPolicy.enabled) "disabled" else "overflow_pending", silentBudget.cloudTokens() ?: -1, -1)
-            releaseAutoCompactWait(round)
-            return
-        }
-        val window = config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow
-        if (!forced && ineffectiveAutoSameContext() && !requestOverBudget()) {
-            logAutoDecision(round, "skip_unchanged", silentBudget.cloudTokens() ?: -1, -1)
-            releaseAutoCompactWait(round)
-            return
-        }
-        // 80% 只看圆环上的云端实测。一旦到过线，就等这次输出结束、下次请求之前再压，
-        // 不因为后面一张更小的回执取消。估算不排队。硬限制仍走 tryBudgetCompaction。
-        if (!forced && storedHistoryChars() > persistenceCharLimit()) {
-            logAutoDecision(round, "storage", silentBudget.cloudTokens() ?: -1, -1)
-            releaseAutoCompactWait(round)
-            return
-        }
-        val cloudTokens = silentBudget.cloudTokens()
-        val dueToRing = autoCompactLatched &&
-            latchedCloudTokens >= AgentContextCompactor.autoPressureTokens(window)
-        if (!forced && !dueToRing && (cloudTokens == null || cloudTokens < AgentContextCompactor.autoPressureTokens(window))) {
-            logAutoDecision(round, if (cloudTokens == null) "no_cloud" else "below", cloudTokens ?: -1, -1)
-            return
-        }
-        if (dueToRing) autoCompactLatched = false
-        var decisionTokens = when {
-            forced -> requestBudgetTokens()
-            dueToRing -> latchedCloudTokens
-            else -> requireNotNull(cloudTokens)
-        }
-        budgetCompressModelConfig = override?.compressModelConfig ?: compactPolicy.compressModelConfig
-        val keep = AgentContextCompactor.coerceKeepRecent(
-            override?.keepRecentMessages ?: compactPolicy.keepRecentMessages,
-        )
-        budgetKeepRecent = keep
-        var history = historyForCompaction()
-        var plan = compactionPlan(history)
-        if (plan.stopReason != null) {
-            // A missing boundary is temporary. New history/receipts must be retried.
-            compactionFailure = plan.stopReason
-            onEvent(AgentEvent.ContextCompacted(round, false, messages.length(), messages.length(), reason = plan.stopReason))
-            return
-        }
-        var cut = plan.cut
-        if (cut <= 0) {
-            if (!forced) logAutoDecision(round, "no_cut", cloudTokens ?: latchedCloudTokens, cut)
-            if (forced) onEvent(AgentEvent.ContextCompacted(round, false, messages.length(), messages.length(),
-                reason = "当前保留范围内没有可压缩的完整历史单元。"))
-            else if (dueToRing) onEvent(AgentEvent.ContextCompacted(round, false, messages.length(), messages.length()))
-            return
-        }
-        val pruned = pruneOversizedToolResults(round, systemCount + cut)
-        if (pruned) {
-            if (!forced && !dueToRing) {
-                // Pruning changed the context, so the receipt no longer describes the next
-                // request. Send it and let the next receipt decide whether to summarize.
-                silentBudget.cloudStale()
-                overflowPending = false
-                skipIneffectiveAutoCompact = false
-                return
-            }
-            // Both the DTO and same-model JSON replay must come from this new snapshot.
-            history = historyForCompaction()
-            plan = compactionPlan(history)
-            if (plan.stopReason != null) {
-                // Do not permanently suppress 80% checks while a batch is closing.
-                compactionFailure = plan.stopReason
-                onEvent(AgentEvent.ContextCompacted(round, false, messages.length(), messages.length(), reason = plan.stopReason))
-                return
-            }
-            cut = plan.cut
-            if (!dueToRing) decisionTokens = requestBudgetTokens()
-        }
-        if (forced && cut <= 0) {
-            onEvent(AgentEvent.ContextCompacted(round, false, messages.length(), messages.length(),
-                reason = "当前保留范围内没有可压缩的完整历史单元。"))
-        }
-        if (!forced) logAutoDecision(round, "accepted", decisionTokens, cut)
-        val reduced = cut > 0 && applyCompaction(round, history, cut, decisionTokens)
-        if (reduced || pruned) {
-            overflowPending = false
-            skipIneffectiveAutoCompact = false
-            // A committed summary clears calibration and permits the new unknown context;
-            // the next accepted receipt restores the hard guard and decides further maintenance.
-        } else if (!forced) {
-            markIneffectiveAutoCompact()
-        }
-    }
-
-    private fun compactionStart(history: List<AgentModelClient.ConversationMessage>): Int = compactionPlan(history).cut
-
-    private fun compactionPlan(history: List<AgentModelClient.ConversationMessage>): AgentCompressionBoundary.RetentionPlan {
-        return runCatching {
-            AgentCompressionBoundary.planRetention(history,
-                config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow,
-                overflowPending,
-                // Only a target-model receipt converts units. A seed from another model does not.
-                billedTokens = if (silentBudget.hasTargetReceipt()) requestBudgetTokens() else null,
-                localTokens = if (silentBudget.hasTargetReceipt()) localRequestTokens() else null,
-                opaqueItems = ::scopedOpaqueItems)
-        }.getOrDefault(AgentCompressionBoundary.RetentionPlan(0))
-    }
-
-    /** Responses transport only. Scope hash ignores endpoint mode, so Chat Completions must not opt in. */
-    private fun scopedOpaqueItems(message: AgentModelClient.ConversationMessage): Int =
-        AgentCompressionBoundary.replayedOpaqueItemCount(message, config)
-
-    private fun tryBudgetCompaction(round: Int): Boolean {
-        if (!compactPolicy.enabled && !manualBudgetAttempt) return false
-        // Storage pressure alone is not a server context measurement.
-        if (!manualBudgetAttempt && !overflowPending && !overHardInputLimit()) return false
-        val history = historyForCompaction()
-        val plan = compactionPlan(history)
-        if (plan.stopReason != null) {
-            compactionFailure = plan.stopReason
-            return false
-        }
-        val cut = plan.cut
-        if (cut <= 0) return false
-        // Commit a pruning-only reduction first. The caller remeasures and takes a
-        // fresh snapshot before attempting a summary if pressure is still high.
-        if (pruneOversizedToolResults(round, systemCount + cut)) return true
-        // Only reached from the hard input/storage or confirmed-provider-overflow guard.
-        return applyCompaction(round, history, cut, hardPressure = true)
-    }
-
-    /** Only prune the selected prefix; the retained tail is always verbatim. */
-    private fun pruneOversizedToolResults(round: Int, endExclusive: Int): Boolean {
-        val archive = compactionArchive ?: return false
-        val replacements = mutableListOf<Pair<Int, JSONObject>>()
-        val checkpoints = mutableListOf<String>()
-        try {
-            for (index in systemCount until endExclusive) {
-                runController.throwIfCancelled()
-                if (Thread.currentThread().isInterrupted) throw io.github.mangi.eta.agent.runtime.AgentRunCancelledException()
-                val original = messages.getJSONObject(index)
-                if (original.optString("role") != "tool" || original.optString("tool_call_id") in sensitiveToolCallIds) continue
-                val text = original.opt("content") as? String ?: continue
-                if (text.codePointCount(0, text.length) <= 8192 || text.contains("[Eta tool output pruned;")) continue
-                val id = archive.save(listOf(AgentConversationCodec.fromJsonObject(original)))
-                archive.record(id, "started")
-                val head = text.offsetByCodePoints(0, 4096)
-                val tail = text.offsetByCodePoints(text.length, -1024)
-                val shorter = text.substring(0, head) + "\n[Eta tool output pruned; original: context-checkpoint:$id; read_compacted_history]\n" + text.substring(tail)
-                val copy = JSONObject(original.toString()).put("content", shorter)
-                if (AgentContextBudget.countTokens(shorter) >= AgentContextBudget.countTokens(text)) continue
-                archive.record(id, "ready")
-                replacements += index to copy
-                checkpoints += id
-            }
-        } catch (failure: Exception) {
-            runController.throwIfCancelled()
-            if (Thread.currentThread().isInterrupted || failure is io.github.mangi.eta.agent.runtime.AgentRunCancelledException) throw failure
-            compactionFailure = failure.message ?: "工具原文存档失败，未应用修剪"
-            return false
-        }
-        if (replacements.isEmpty()) return false
-        runController.throwIfCancelled()
-        replacements.forEach { (index, message) -> messages.put(index, message) }
-        // A tool-body edit is not a new context epoch. Keep the latest cloud bill
-        // and its local anchor; the silent budget accounts for the trimmed delta.
-        // Only a real summary replacement reopens the local display boundary.
-        onHistoryCompacted()
-        onEvent(AgentEvent.ContextCompacted(round, true, messages.length(), messages.length(),
-            history = AgentConversationCodec.transcript(messages, systemCount, sensitiveToolCallIds),
-            compressorLabel = "工具输出预算修剪（原文可回读）", pruningOnly = true))
-        checkpoints.forEach { runCatching { archive.record(it, "committed") } }
-        return true
-    }
-
-    private fun applyCompaction(
-        round: Int,
-        history: List<AgentModelClient.ConversationMessage>,
-        cut: Int,
-        decisionTokens: Int = requestBudgetTokens(),
-        hardPressure: Boolean = false,
-    ): Boolean {
-        val window = config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow
-        // 80% schedules ordinary automatic summaries, not recovery from a hard limit.
-        // A soft no-op must not replace the real archive/summary failure on a later pause.
-        if (!manualBudgetAttempt && !hardPressure && decisionTokens < AgentContextCompactor.autoPressureTokens(window)) {
-            return false
-        }
-        val compressConfig = budgetCompressModelConfig?.let { model ->
-            val window = model.contextWindow?.takeIf { it > 0 }
-                ?: config.contextWindow?.takeIf { it > 0 }
-                ?: compactPolicy.contextWindow.takeIf { it > 0 }
-            if (window == null) model else model.copy(contextWindow = window)
-        } ?: return false
-        val original = messages.toString()
-        val originalCount = messages.length()
-        if (lastFailedCompaction == (original to cut)) return false
-        // The silent budget is not a provider bill; display projections remain boundary-only.
-        onEvent(AgentEvent.ContextCompactionStarted(round, config.modelDisplayName.ifBlank { config.model }))
-        var savedCheckpoint: String? = null
-        var compactionStage = "archive"
-        runCatching { io.github.mangi.eta.core.AndroidAgentLogger.info(
-            "运行中压缩开始：round=$round，选中=$cut，保留=${history.size - cut}，" +
-                "保留估算=${AgentCompressionBoundary.retainedTokens(history, cut)}/${AgentCompressionBoundary.retainedTokens(history, 0)}，" +
-                "不透明回放单元=${history.drop(cut).count { scopedOpaqueItems(it) > 0 }}（不可折算为输入 token），" +
-                "保留上限=${AgentCompressionBoundary.continuationRetentionBudget(window, overflowPending)}，决策=$decisionTokens，本地=${localRequestTokens()}") }
-        val rewritten = try {
-            val prefix = history.take(cut)
-            val tail = history.drop(cut)
-            val durablePrefix = AgentConversationCodec.redactSensitiveMessages(prefix, sensitiveToolCallIds)
-            savedCheckpoint = compactionArchive?.savePreservingRevisionChain(durablePrefix)
-            savedCheckpoint?.let { compactionArchive?.record(it, "started") }
-            savedCheckpoint?.let { compactionArchive?.canAttach(it, prefix.size.coerceAtLeast(tail.size + 1), tail.size) }
-            compactionStage = "summary"
-            val summarySource = durablePrefix + tail
-            val compressed = if (compactHistory != null) {
-                compactHistory.invoke(summarySource, compactPolicy.copy(keepRecentMessages = budgetKeepRecent, compressModelConfig = compressConfig, keepStartOverride = cut))
-            } else AgentContextCompactor.compress(
-                summarySource, AgentContextCompactor.Config(
-                    budgetKeepRecent,
-                    compressConfig,
-                    compactionArchive = compactionArchive,
-                    usageConversationId = sessionId,
-                    sourceModelConfig = config.copy(contextWindow = window),
-                    summaryTokenBudget = AgentCompressionBoundary.summaryProgressBudget(window),
-                    onErrorReconnect = { onEvent(it.copy(round = round)) },
-                ),
-                keepStartOverride = cut, controller = runController,
-                replay = if (compressConfig.providerType == config.providerType && compressConfig.baseUrl == config.baseUrl &&
-                    compressConfig.model == config.model && compressConfig.openAiEndpointMode == config.openAiEndpointMode)
-                    AgentContextCompactor.ReplayContext(
-                        JSONArray().also { a -> for (i in 0 until systemCount) a.put(messages.getJSONObject(i)) },
-                        JSONArray().also { a -> durablePrefix.forEach { a.put(AgentConversationCodec.toJsonObject(it)) } },
-                        currentRoundTools, sessionId,
-                    ) else null,
-            )
-            compactionStage = "validate"
-            require(compressed.size >= tail.size && compressed.takeLast(tail.size) == tail) { "摘要后受保护尾部发生变化" }
-            require(compressed != history) { "没有可压缩历史" }
-            runController.throwIfCancelled()
-            require(messages.toString() == original) { "摘要生成期间上下文已变化，未应用摘要" }
-            val withPointers = savedCheckpoint?.let {
-                requireNotNull(compactionArchive).attachReferences(durablePrefix, it, compressed, tail.size)
-            } ?: compressed
-            require(AgentCompressionBoundary.compactionReduced(
-                history, withPointers, tail.size,
-                AgentCompressionBoundary.summaryProgressBudget(window),
-                countsOpaque = { scopedOpaqueItems(it) > 0 },
-            )) {
-                "摘要及索引未减少上下文，已保留原文"
-            }
-            savedCheckpoint?.let { compactionArchive?.record(it, "ready") }
-            withPointers
-        } catch (failure: Exception) {
-            savedCheckpoint?.let { runCatching { compactionArchive?.record(it, "failed") } }
-            if (runController.isCancelled || Thread.currentThread().isInterrupted || failure is InterruptedException ||
-                failure is io.github.mangi.eta.agent.runtime.AgentRunCancelledException) throw failure
-            lastFailedCompaction = original to cut
-            compactionFailure = failure.message ?: "压缩失败，原文保留"
-            runCatching { io.github.mangi.eta.core.AndroidAgentLogger.warn(
-                "运行中压缩失败：stage=$compactionStage，checkpoint=$savedCheckpoint，round=$round，${failure.javaClass.simpleName}: $compactionFailure") }
-            onEvent(AgentEvent.ContextCompacted(round, false, originalCount, originalCount, reason = compactionFailure))
-            return false
-        }
-        // Never reserialize the kept live tail through the persistence DTO. That would strip
-        // provider-only response items, images, and long tool bodies even in protected mode.
-        val keptJson = (systemCount + cut until messages.length()).map { messages.getJSONObject(it) }
-        val prefixJson = (0 until systemCount).map { messages.getJSONObject(it) }
-        val newPrefix = rewritten.dropLast(history.size - cut)
-        while (messages.length() > 0) messages.remove(messages.length() - 1)
-        prefixJson.forEach(messages::put)
-        newPrefix.forEach { messages.put(AgentConversationCodec.toJsonObject(it)) }
-        keptJson.forEach(messages::put)
-        lastUsage = null
-        requestBudget.contextReplaced()
-        hasDisplayCloudReceipt = false
-        silentBudget.contextReplaced()
-        unmeasuredContextSendAllowed = true
-        autoCompactLatched = false
-        compactionFailure = ""
-        onHistoryCompacted()
-        onEvent(AgentEvent.ContextCompacted(round, true, originalCount, messages.length(),
-            history = AgentConversationCodec.transcript(messages, systemCount, sensitiveToolCallIds),
-            compressorLabel = compressorLabel(compressConfig)))
-        savedCheckpoint?.let { runCatching { compactionArchive?.record(it, "committed") } }
-        runCatching { io.github.mangi.eta.core.AndroidAgentLogger.info(
-            "运行中压缩已提交：checkpoint=$savedCheckpoint，round=$round，消息=$originalCount->${messages.length()}") }
-        return true
-    }
-
-    private fun requestConfigForRound(): AgentModelClient.ModelConfig {
-        val next = if (suppressThinkingForNextRequest) {
-            suppressThinkingForNextRequest = false
-            AgentRuntimePolicy.withoutOptionalThinking(config)
-        } else config
-        return if (localOnlyRecovery) next.copy(hostedWebSearchEnabled = false) else next
-    }
-
-    private fun compressorLabel(config: AgentModelClient.ModelConfig): String {
-        val provider = config.providerName.trim()
-        val model = config.modelDisplayName.trim().ifBlank { config.model.trim() }
-        return when {
-            provider.isNotBlank() && model.isNotBlank() -> "$provider · $model"
-            model.isNotBlank() -> model
-            else -> provider
+    private fun validateChatResponse(response: ProviderResponse) {
+        val message = response.assistantMessage
+        if (AgentConversationCodec.parseToolCalls(message).isNotEmpty()) return
+        val content = message.optString("content").trim()
+        if (content.isNotBlank() && content != "null") return
+        throw when (response.stopReason) {
+            AssistantStopReason.OUTPUT_LIMIT ->
+                AgentModelFailure("MODEL_OUTPUT_LIMIT", false, "模型输出额度已耗尽但未生成正文，请检查输出上限或降低思考强度。")
+            else -> AgentModelFailure("MODEL_EMPTY_RESPONSE", false, "模型未返回正文或工具调用，请检查服务商状态。")
         }
     }
 
     private fun appendPendingSteeringMessage(): Boolean {
-        var appended = false
-        // Drain at a safe boundary, before opening another model request.
-        while (true) {
-            val supplement = runController.pollSteeringInput() ?: break
-            supplementStartsNewBlock = true
-            messages.put(AgentSupplementMedia.userMessage(steeringPrompt(supplement.text), supplement.imagesJson).put(AgentTurnIdentity.JSON_KEY, turnId))
-            appended = true
-        }
-        return appended
+        val supplement = runController.pollSteeringMessage() ?: return false
+        appendMessage(steeringMessage(supplement))
+        context.userAppended()
+        turnMetrics.reset()
+        return true
     }
 
     private fun appendPendingSteeringOrSeal(): Boolean {
-        val supplement = runController.pollSteeringInputOrSeal() ?: return false
-        supplementStartsNewBlock = true
-        messages.put(AgentSupplementMedia.userMessage(steeringPrompt(supplement.text), supplement.imagesJson).put(AgentTurnIdentity.JSON_KEY, turnId))
-        appendPendingSteeringMessage()
+        val supplement = runController.pollSteeringOrSeal() ?: return false
+        appendMessage(steeringMessage(supplement))
+        context.userAppended()
+        turnMetrics.reset()
         return true
     }
 
     private fun steeringPrompt(supplement: String): String =
-        AgentContextCompactor.steeringUserContent(supplement)
+        "用户补充指令：$supplement\n\n请基于当前任务上下文继续执行，不要从头重复已经完成或已经验证过的操作。"
 
-    /**
-     * 中断后追加续写指令。正文被截断时接在 assistant 之后续写；暂停发生在思考阶段时
-     * 换成接续思考的指令，否则恢复的请求只多了一条通用续写要求，而模型看不到自己的
-     * 思考，只能从头重新分析整轮对话。两种情况都保留用户配置的思考开关。
-     */
-    private fun appendContinuePromptAfterInterrupt(thinkingOnly: Boolean) {
-        if (!thinkingOnly) {
-            appendCompactContinueIfNeeded(suppressOptionalThinking = false)
-            return
+    private fun steeringMessage(supplement: String): JSONObject =
+        AgentConversationCodec.userTextMessage(steeringPrompt(supplement))
+            .put("_eta_message_id", "user-$operationId-supplement-${++supplementIndex}")
+            .put("_eta_steering", true)
+
+    private fun executeToolBatch(
+        round: Int,
+        toolCalls: List<AgentModelClient.ToolCall>,
+        stopReason: AssistantStopReason,
+    ): List<ToolOutcome> {
+        if (stopReason != AssistantStopReason.TOOL_USE) {
+            return toolCalls.map { call ->
+                when (stopReason) {
+                    AssistantStopReason.OUTPUT_LIMIT -> rejectedToolOutcome(
+                        round, call, "TRUNCATED_TOOL_CALL",
+                        "模型输出达到长度上限，工具参数可能不完整；本次调用未执行，请重新提交完整参数。",
+                    )
+                    else -> rejectedToolOutcome(
+                        round, call, "UNEXPECTED_TOOL_CALL",
+                        "模型在 ${stopReason.name} 终止状态下返回了工具调用；本批调用未执行，请重新规划。",
+                    )
+                }
+            }
         }
-        val last = messages.optJSONObject(messages.length() - 1) ?: return
-        if (!last.optString("role").equals("assistant", ignoreCase = true)) return
-        messages.put(
-            AgentConversationCodec.userTextMessage(
-                AgentContextCompactor.SEAMLESS_CONTINUE_THINKING_PROMPT,
-            ).put(AgentTurnIdentity.JSON_KEY, turnId),
-        )
+
+        val outcomes = mutableListOf<ToolOutcome>()
+        var index = 0
+        while (index < toolCalls.size) {
+            val current = toolCalls[index]
+            if (current.name == AgentSubagentToolCatalog.TOOL_NAME && current.name in availableToolNames) {
+                val parallelBatch = mutableListOf<AgentModelClient.ToolCall>()
+                while (
+                    index < toolCalls.size &&
+                    toolCalls[index].name == AgentSubagentToolCatalog.TOOL_NAME &&
+                    toolCalls[index].name in availableToolNames
+                ) {
+                    parallelBatch += toolCalls[index].copy(round = round)
+                    index += 1
+                }
+                if (parallelBatch.size == 1) {
+                    outcomes += executeTool(round, parallelBatch.single())
+                } else {
+                    outcomes += executeParallelSubagents(round, parallelBatch)
+                }
+            } else {
+                outcomes += executeTool(round, current.copy(round = round))
+                index += 1
+            }
+        }
+        return outcomes
     }
 
-    private fun appendCompactContinueIfNeeded(suppressOptionalThinking: Boolean = true) {
-        val last = messages.optJSONObject(messages.length() - 1) ?: return
-        if (!last.optString("role").equals("assistant", ignoreCase = true)) return
-        messages.put(
-            AgentConversationCodec.userTextMessage(
-                AgentContextCompactor.SEAMLESS_CONTINUE_PROMPT,
-            ).put(AgentTurnIdentity.JSON_KEY, turnId),
-        )
-        suppressThinkingForNextRequest = suppressOptionalThinking
+    private fun executeParallelSubagents(
+        round: Int,
+        calls: List<AgentModelClient.ToolCall>,
+    ): List<ToolOutcome> {
+        runController.throwIfCancelled()
+        calls.forEach { toolCall ->
+            synchronized(toolBatchLock) {
+                onEvent(
+                    AgentEvent.ToolStarted(
+                        round = round,
+                        toolCallId = toolCall.id,
+                        name = toolCall.name,
+                        argsPreview = traceFormatter.summarizeArguments(toolCall),
+                        command = traceFormatter.displayCommand(toolCall),
+                    ),
+                )
+            }
+        }
+        val outcomes = runBlocking(Dispatchers.IO) {
+            supervisorScope {
+                calls.map { toolCall ->
+                    async {
+                        val toolStartMs = monotonicNowMs()
+                        val result = try {
+                            toolExecutor.execute(toolCall)
+                        } catch (throwable: Exception) {
+                            if (runController.isCancelled) {
+                                AgentModelClient.ToolResult(
+                                    content = JSONObject()
+                                        .put("ok", false)
+                                        .put("code", "SUBAGENT_CANCELLED")
+                                        .put("message", "已停止")
+                                        .toString(),
+                                )
+                            } else {
+                                AgentModelClient.ToolResult(
+                                    content = JSONObject()
+                                        .put("ok", false)
+                                        .put("code", "TOOL_ERROR")
+                                        .put("message", throwable.message ?: throwable.javaClass.simpleName)
+                                        .toString(),
+                                )
+                            }
+                        }
+                        val elapsedMs = (monotonicNowMs() - toolStartMs).coerceAtLeast(0L)
+                        synchronized(toolBatchLock) {
+                            if (result.sensitive || AgentSensitiveToolPolicy.isSensitive(toolCall.name)) {
+                                sensitiveToolCallIds += toolCall.id
+                            }
+                            if (!runController.isCancelled) {
+                                turnMetrics.recordToolMs(elapsedMs)
+                                emitToolFinished(round, toolCall, result)
+                            }
+                        }
+                        ToolOutcome(toolCall, result)
+                    }
+                }.awaitAll()
+            }
+        }
+        runController.throwIfCancelled()
+        return outcomes
     }
 
     private fun executeTool(
         round: Int,
         toolCall: AgentModelClient.ToolCall,
-        toolIndex: Int,
     ): ToolOutcome {
         runController.throwIfCancelled()
-        if (!toolReplayGuard.claimDispatch(toolCall.id)) {
-            return rejectedToolOutcome(round, toolCall, AgentToolReplayGuard.CODE,
-                "此调用标识已派发，本次未执行；请保留原结果，不重复操作。")
-        }
-        if (toolCall.name == AgentDelegationArgumentRepair.TOOL && delegationArgumentRepair.disabled) {
-            // Exhaustion was already reported. Complete protocol pairing without another failed card.
-            return ToolOutcome(toolCall, delegationArgumentRepair.reject("本轮委派已停用", round))
-        }
-        val validationError = toolCallValidator.validate(toolCall)
-        toolDiagnosticAttempt?.validation(toolCall, validationError == null, toolIndex)
-        validationError?.let { validationError ->
-            if (toolCall.name == AgentDelegationArgumentRepair.TOOL && toolCallValidator.declares(toolCall.name)) {
-                val repair = delegationArgumentRepair.reject(validationError, round)
-                sensitiveToolCallIds += toolCall.id
-                if (!delegationArgumentRepair.disabled) {
-                    if (delegationRepairNotifiedRound != round) {
-                        delegationRepairNotifiedRound = round
-                        onEvent(AgentEvent.ModelRetryScheduled(
-                            round = round, attempt = delegationArgumentRepair.attempts,
-                            maxAttempts = AgentDelegationArgumentRepair.MAX_REPAIRS, delayMs = 0,
-                            reasonCode = AgentDelegationArgumentRepair.REPAIR_CODE,
-                            reasonDetail = validationError,
-                        ))
-                    }
-                    // The next regular model round receives this tool result and regenerates ONLY the rejected call.
-                    return ToolOutcome(toolCall, repair)
-                }
-                return rejectedToolOutcome(round, toolCall, "DELEGATION_ARGUMENT_REPAIR_EXHAUSTED",
-                    "委派参数补全失败，本轮已停用新委派；未创建子任务，已有子任务不受影响。请主代理接手。")
-            }
-            val rejection = invalidToolArgumentsGuard.reject(
-                toolName = toolCall.name,
-                declared = toolCallValidator.declares(toolCall.name),
-                validationError = validationError,
-            )
-            invalidArgumentsInBatch++
+        if (toolCall.name !in availableToolNames) {
             return rejectedToolOutcome(
                 round = round,
                 toolCall = toolCall,
-                code = rejection.code,
-                message = rejection.message,
+                code = "TOOL_NOT_AVAILABLE",
+                message = "工具未在本轮能力目录中提供，请使用当前可用工具",
             )
         }
-        if (toolCall.name != AgentDelegationArgumentRepair.TOOL) {
-            invalidToolArgumentsGuard.validated(toolCall.name)
-        }
+        val roundCall = if (toolCall.round == round) toolCall else toolCall.copy(round = round)
         onEvent(
             AgentEvent.ToolStarted(
                 round = round,
-                toolCallId = toolCall.id,
-                name = toolCall.name,
-                argsPreview = traceFormatter.summarizeArguments(toolCall),
-                command = traceFormatter.displayCommand(toolCall),
+                toolCallId = roundCall.id,
+                name = roundCall.name,
+                argsPreview = traceFormatter.summarizeArguments(roundCall),
+                command = traceFormatter.displayCommand(roundCall),
             )
         )
 
-        toolDiagnosticAttempt?.dispatch(toolCall, toolIndex)
-        // 工具耗时单独一路累计；被校验拦下、未真正执行的调用不计。
-        val toolStartedAtMs = monotonicNowMs()
-        val rawResult = try {
-            if (toolCall.name == AgentCompactionArchive.TOOL && compactionArchive != null) {
-                compactionArchive.read(toolCall.argumentsJson)
-            } else toolExecutor.execute(toolCall)
+        val toolStartMs = monotonicNowMs()
+        val result = try {
+            toolExecutor.execute(roundCall)
         } catch (throwable: Exception) {
             runController.throwIfCancelled()
-            if (throwable is io.github.mangi.eta.agent.question.AgentQuestionInterruptedException ||
-                throwable is io.github.mangi.eta.agent.runtime.AgentRunCancelledException) throw throwable
             AgentModelClient.ToolResult(
                 content = JSONObject()
                     .put("ok", false)
@@ -1351,22 +475,13 @@ internal class AgentLoop(
                     .toString(),
             )
         }
-        val toolElapsedMs = (monotonicNowMs() - toolStartedAtMs).coerceAtLeast(0L)
-        turnMetrics.recordToolMs(toolElapsedMs)
-        val shellDecision = AgentShellFailureGuard.observe(shellFailureState, toolCall, rawResult)
-        shellFailureState = shellDecision.state
-        if (shellFailureStopMessage == null) shellFailureStopMessage = shellDecision.stopMessage
-        if (shellDecision.stopMessage != null) shellFailuresInBatch++
-        val result = shellDecision.result
-        // Record what the model actually receives, plus the pre-guard code for comparison.
-        toolDiagnosticAttempt?.result(toolCall, result, toolIndex, rawResult)
-        if (result.sensitive || AgentSensitiveToolPolicy.isSensitive(toolCall.name)) {
-            sensitiveToolCallIds += toolCall.id
+        turnMetrics.recordToolMs((monotonicNowMs() - toolStartMs).coerceAtLeast(0L))
+        if (result.sensitive || AgentSensitiveToolPolicy.isSensitive(roundCall.name)) {
+            sensitiveToolCallIds += roundCall.id
         }
 
-        // Once returned, this result remains evidence even if stop arrived concurrently.
-        emitToolFinished(round, toolCall, result)
-        return ToolOutcome(toolCall, result)
+        emitToolFinished(round, roundCall, result)
+        return ToolOutcome(roundCall, result)
     }
 
     private fun rejectedToolOutcome(
@@ -1411,25 +526,22 @@ internal class AgentLoop(
                 imageCount = result.images.size,
                 imageBytes = result.images.sumOf { it.bytes },
                 success = traceFormatter.isSuccessResult(result),
+                command = result.command,
             )
         )
     }
 
-    private fun appendToolOutcomes(
+    private fun appendToolImages(
         round: Int,
         outcomes: List<ToolOutcome>,
     ) {
-        // Provider 要求同一 assistant 批次的全部 tool result 连续出现；图片观察统一放在批次之后。
-        outcomes.forEach { outcome ->
-            val message = AgentConversationCodec.toolResultMessage(outcome.call, outcome.result).put(AgentTurnIdentity.JSON_KEY, turnId)
-            messages.put(message)
-            toolDiagnosticAttempt?.historyResult(outcome.call, message)
+        // 每个已完成结果立即落盘；图片观察仍统一放在完整工具批次之后。
+        val imageOutcomes = outcomes.filter { outcome -> outcome.result.images.isNotEmpty() }
+        if (imageOutcomes.isEmpty()) {
+            return
         }
 
-        val imageOutcomes = outcomes.filter { outcome -> outcome.result.images.isNotEmpty() }
-        if (imageOutcomes.isEmpty()) return
-
-        // 工具截图是瞬时观察，不是会话资产。下一次推理消费后立即删除。
+        // 工具截图是瞬时观察，不是会话资产。下一次思考消费后立即删除。
         discardPendingToolImageMessage()
         val images = imageOutcomes.flatMap { outcome -> outcome.result.images }
         val toolNames = imageOutcomes
@@ -1437,11 +549,9 @@ internal class AgentLoop(
             .distinct()
             .joinToString(", ")
         pendingToolImageMessage = AgentConversationCodec.userMessage(
-            text = "Latest observation image(s) returned by tool(s): $toolNames.\n" +
-                imageOutcomes.joinToString("\n") { AuxiliaryVision.observationMetadata(it.result.content) } +
-                images.mapIndexed { index, image -> "image ${index + 1}: ${image.width ?: "unknown"} x ${image.height ?: "unknown"} px" }.joinToString("\n", prefix = "\n"),
+            text = "Latest observation image(s) returned by tool(s): $toolNames.",
             images = images,
-        ).put(AgentTurnIdentity.JSON_KEY, turnId).also(messages::put)
+        ).put("_eta_observation", true).also(messages::put)
 
         imageOutcomes.forEach { outcome ->
             onEvent(
@@ -1466,22 +576,9 @@ internal class AgentLoop(
         }
     }
 
-    /** 空正文截断重发前丢弃本轮刚写入的 assistant 消息：历史里不留只回思考的空回合。 */
-    private fun discardEmptyOutputLimitAttempt(storedAssistant: JSONObject?) {
-        val stored = storedAssistant ?: return
-        for (index in messages.length() - 1 downTo 0) {
-            if (messages.optJSONObject(index) === stored) {
-                messages.remove(index)
-                responseStored = false
-                return
-            }
-        }
-    }
-
     private fun ProviderEvent.toAgentEvent(round: Int): AgentEvent? =
         when (this) {
             ProviderEvent.RequestStarted -> AgentEvent.ProviderRequestStarted(round)
-            is ProviderEvent.RequestEstimate -> null // Published above, never a cloud receipt.
             is ProviderEvent.ResponseHeaders -> AgentEvent.ProviderResponseStarted(round, httpCode)
             is ProviderEvent.BlockStart -> AgentEvent.AssistantBlockStart(
                 round = round,
@@ -1489,6 +586,7 @@ internal class AgentLoop(
                 index = index,
                 blockId = blockId,
                 name = name,
+                startedAtEpochMs = if (kind == AssistantBlockKind.THINKING) System.currentTimeMillis() else null,
             )
             is ProviderEvent.BlockDelta -> AgentEvent.AssistantBlockDelta(
                 round = round,
@@ -1505,6 +603,12 @@ internal class AgentLoop(
                 name = name,
                 contentChars = content.length,
                 replacementContent = content.takeIf { replaceContent },
+                elapsedMs = if (kind == AssistantBlockKind.THINKING) {
+                    thinkingBlockStartMs.remove(round to index)
+                        ?.let { startedAt -> (monotonicNowMs() - startedAt).coerceAtLeast(0L) }
+                } else {
+                    null
+                },
             )
             is ProviderEvent.Usage -> AgentEvent.UsageReceived(round = round, usage = usage)
             is ProviderEvent.HostedToolStarted -> AgentEvent.HostedToolStarted(
@@ -1518,6 +622,7 @@ internal class AgentLoop(
                 name = name,
                 success = success,
             )
+            is ProviderEvent.SearchSuggestions -> AgentEvent.SearchSuggestions(round, index, html)
             is ProviderEvent.Completed -> null
         }
 
@@ -1528,20 +633,83 @@ internal class AgentLoop(
             AssistantBlockKind.TOOL_CALL -> AgentEvent.AssistantBlockKind.TOOL_CALL
         }
 
-    /** 单调时钟毫秒；不受系统时间跳变影响，只用于展示用耗时统计。 */
     private fun monotonicNowMs(): Long = System.nanoTime() / 1_000_000L
 
-    private companion object {
-        /** 上游在输出上限处截断且正文为空时，同一 round 内最多自动重发的次数。 */
-        private const val MAX_EMPTY_OUTPUT_LIMIT_RETRIES = 2
+    private class TurnMetricsAccumulator {
+        private var stepCount: Int = 0
+        private var llmMs: Long = 0L
+        private var toolMs: Long = 0L
+        private var ttftMs: Long = 0L
+        private var ttftSteps: Int = 0
+        private var decodeMs: Long = 0L
+        private var decodeTokens: Int = 0
+        private var contextTokens: Int? = null
+        private var inputTokens: Int? = null
+        private var outputTokens: Int? = null
+        private var reasoningTokens: Int? = null
+        private var cachedTokens: Int? = null
+        private var cacheWriteTokens: Int? = null
 
-        /** 非截断空响应（如 finish_reason=step）在同一 round 内最多自动重发的次数。 */
-        private const val MAX_EMPTY_RESPONSE_RETRIES = 2
+        fun reset() {
+            stepCount = 0
+            llmMs = 0L
+            toolMs = 0L
+            ttftMs = 0L
+            ttftSteps = 0
+            decodeMs = 0L
+            decodeTokens = 0
+            contextTokens = null
+            inputTokens = null
+            outputTokens = null
+            reasoningTokens = null
+            cachedTokens = null
+            cacheWriteTokens = null
+        }
 
-        /** 空响应重发前的短固定退避：不改变既有轮次语义，只让上游有机会恢复。 */
-        private const val EMPTY_RESPONSE_RETRY_DELAY_MS = 1_000L
+        fun recordStep(
+            stepLlmMs: Long,
+            stepTtftMs: Long?,
+            stepDecodeMs: Long?,
+            stepUsage: AgentTokenUsage?,
+            stepPromptTokens: Int? = null,
+        ): AgentTokenUsage {
+            stepCount += 1
+            llmMs += stepLlmMs.coerceAtLeast(0L)
+            if (stepTtftMs != null) {
+                ttftMs += stepTtftMs.coerceAtLeast(0L)
+                ttftSteps += 1
+            }
+            val stepOut = stepUsage?.outputTokens
+            if (stepDecodeMs != null && stepOut != null && stepOut > 0) {
+                decodeMs += stepDecodeMs.coerceAtLeast(0L)
+                decodeTokens += stepOut
+            }
+            stepUsage?.contextTokens?.let { contextTokens = it }
+            (stepPromptTokens ?: stepUsage?.inputTokens)?.let { inputTokens = (inputTokens ?: 0) + it }
+            stepUsage?.outputTokens?.let { outputTokens = (outputTokens ?: 0) + it }
+            stepUsage?.reasoningTokens?.let { reasoningTokens = (reasoningTokens ?: 0) + it }
+            stepUsage?.cachedTokens?.let { cachedTokens = (cachedTokens ?: 0) + it }
+            stepUsage?.cacheWriteTokens?.let { cacheWriteTokens = (cacheWriteTokens ?: 0) + it }
+            return AgentTokenUsage(
+                contextTokens = contextTokens,
+                inputTokens = inputTokens,
+                outputTokens = outputTokens,
+                reasoningTokens = reasoningTokens,
+                cachedTokens = cachedTokens,
+                cacheWriteTokens = cacheWriteTokens,
+                requestKind = AgentTokenUsage.REQUEST_KIND_CHAT,
+                stepCount = stepCount.takeIf { it > 0 },
+                llmMs = llmMs.takeIf { stepCount > 0 },
+                toolMs = toolMs.takeIf { it > 0L },
+                ttftMs = ttftMs.takeIf { ttftSteps > 0 },
+                ttftSteps = ttftSteps.takeIf { it > 0 },
+                decodeMs = decodeMs.takeIf { decodeTokens > 0 && it > 0L },
+                decodeTokens = decodeTokens.takeIf { decodeMs > 0L && it > 0 },
+            )
+        }
 
-        /** 空响应重发事件的原因码，供 UI / 诊断区分于传输层重试。 */
-        private const val EMPTY_RESPONSE_CODE = "EMPTY_RESPONSE"
+        fun recordToolMs(elapsedMs: Long) {
+            toolMs += elapsedMs.coerceAtLeast(0L)
+        }
     }
 }

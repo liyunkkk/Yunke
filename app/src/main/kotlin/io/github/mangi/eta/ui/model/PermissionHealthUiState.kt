@@ -2,6 +2,8 @@ package io.github.mangi.eta.ui.model
 
 import androidx.compose.runtime.Immutable
 
+internal const val LOCAL_NETWORK_PERMISSION_ITEM_ID = "local_network"
+
 @Immutable
 data class PermissionHealthUiState(
     val items: List<PermissionHealthItemUi>,
@@ -14,12 +16,6 @@ data class PermissionHealthItemUi(
     val summary: String,
     val status: PermissionStatusUi,
     val primaryActionLabel: String?,
-    /**
-     * 开关行才有值：null = 普通导航行（ArrowPreference，点击进系统设置）；
-     * 非 null = 开关行（SwitchPreference，checked = 该值，点击不导航）。
-     * 默认 null，现有 9 个构造点不用改，向后兼容。
-     */
-    val toggleChecked: Boolean? = null,
 )
 
 @Immutable

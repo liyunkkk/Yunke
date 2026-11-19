@@ -16,6 +16,12 @@ internal object PhoneOperations {
         val markMutation = { mutationStarted = true }
         return try {
                 when (tool) {
+                    in NativePersonalQueries.sources.keys ->
+                        NativePersonalQueries(
+                                access,
+                                userId ?: context.applicationInfo.uid / 100000,
+                            )
+                            .execute(tool, args)
                     "get_night_light",
                     "get_mobile_data",
                     "set_night_light",

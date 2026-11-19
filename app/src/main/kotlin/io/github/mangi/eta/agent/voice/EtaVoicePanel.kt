@@ -1,145 +1,94 @@
 package io.github.mangi.eta.agent.voice
 
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearOutSlowInEasing
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
-import androidx.compose.animation.togetherWith
-import androidx.compose.animation.SizeTransform
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.Chat
-import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.CancelPresentation
-import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.Delete
-import androidx.compose.material.icons.rounded.DesktopWindows
-import androidx.compose.material.icons.rounded.KeyboardArrowDown
-import androidx.compose.material.icons.rounded.KeyboardArrowUp
-import androidx.compose.material.icons.rounded.Translate
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.key
-import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.ClipOp
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.Shadow
-import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerInputScope
+import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import io.github.mangi.eta.ui.components.rememberChatVoiceController
 import androidx.compose.ui.unit.sp
-import io.github.mangi.eta.agent.voice.VoiceEntryMode
-import io.github.mangi.eta.agent.voice.doubao.DoubaoVoiceConfig
-import io.github.mangi.eta.agent.voice.VoiceModeController
-import io.github.mangi.eta.agent.voice.VoiceModeState
 import io.github.mangi.eta.R
-import io.github.mangi.eta.config.Prefs
-import io.github.mangi.eta.data.model.ReasoningEffort
-import io.github.mangi.eta.agent.model.AgentModelClient
-import io.github.mangi.eta.ui.components.AgentChatInputBar
-import io.github.mangi.eta.ui.components.EtaDropdownMenu
 import io.github.mangi.eta.ui.components.AgentConversationMessages
-import io.github.mangi.eta.ui.components.VoiceControlCapsule
-import io.github.mangi.eta.ui.components.VoiceReplyCard
-import io.github.mangi.eta.ui.components.voiceReplyPhaseLabel
-import io.github.mangi.eta.ui.app.AgentConversationRevisionReducer
-import io.github.mangi.eta.ui.model.PendingFileReferenceUi
-import io.github.mangi.eta.ui.model.PendingImageUi
-import io.github.mangi.eta.ui.components.rememberDataUrlBitmap
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
-import io.github.mangi.eta.ui.model.AgentMessageUi
-import io.github.mangi.eta.ui.model.AgentModelPickerUiState
-import io.github.mangi.eta.ui.model.MessageEditUiState
-import io.github.mangi.eta.ui.model.ThinkingMessageUi
-import io.github.mangi.eta.ui.model.ToolActivityMessageUi
-import io.github.mangi.eta.ui.model.UserMessageUi
-import kotlin.math.ceil
-import kotlin.math.max
+import kotlin.math.abs
+import kotlin.math.roundToInt
+import kotlin.math.sign
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.anim.folmeSpring
-import top.yukonga.miuix.kmp.basic.CircularProgressIndicator
-import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.squircle.squircleBackground
-import top.yukonga.miuix.kmp.squircle.squircleClip
-import top.yukonga.miuix.kmp.squircle.squircleBorder
-import top.yukonga.miuix.kmp.squircle.squircleSurface
-import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 internal enum class EtaVoicePhase {
     READY,
@@ -147,243 +96,159 @@ internal enum class EtaVoicePhase {
     ERROR,
 }
 
-internal data class AssistantConversationItem(
-    val id: String,
-    val title: String,
-    val updatedAt: Long = 0L,
-    val isCurrent: Boolean = false,
-)
-
 internal data class EtaVoiceUiState(
     val messages: List<AgentChatMessageUi> = emptyList(),
     val phase: EtaVoicePhase = EtaVoicePhase.READY,
-    val status: EtaVoiceStatus = EtaVoiceStatus.InputRequest,
-    val screenContext: EtaScreenContextUiState = EtaScreenContextUiState(),
-    val conversationId: String? = null,
-    val conversationTitle: String = "",
-    val historyConversations: List<AssistantConversationItem> = emptyList(),
-    val isHistoryMenuVisible: Boolean = false,
-    val pendingImages: List<PendingImageUi> = emptyList(),
-    val pendingFileReferences: List<PendingFileReferenceUi> = emptyList(),
-    val modelPickerState: AgentModelPickerUiState = AgentModelPickerUiState(),
-    val reasoningEffort: ReasoningEffort = ReasoningEffort.OFF,
-    val availableReasoningEfforts: List<ReasoningEffort> = emptyList(),
-    val messageEdit: MessageEditUiState? = null,
 )
 
-/** 浮窗内的消息改写目标：删除/重新生成前先弹同款下拉确认。 */
-internal data class OverlayMessageMutationTarget(
-    val messageId: String,
-    val laterTurnCount: Int,
-)
-
-internal sealed interface EtaVoiceStatus {
-    data object InputRequest : EtaVoiceStatus
-    data object WaitingForAnswer : EtaVoiceStatus
-    data object Reasoning : EtaVoiceStatus
-    data object Completed : EtaVoiceStatus
-    data class RunningTool(val name: String) : EtaVoiceStatus
-    data class Failed(val detail: String?) : EtaVoiceStatus
-    data object Stopped : EtaVoiceStatus
-}
-
-internal enum class EtaScreenContextPhase {
-    CAPTURING,
-    AVAILABLE,
-    UNAVAILABLE,
-    CONSUMED,
-}
-
-internal data class EtaScreenContextUiState(
-    val phase: EtaScreenContextPhase = EtaScreenContextPhase.CONSUMED,
-    val previewDataUrl: String? = null,
-    val selected: Boolean = false,
-)
-
-internal object EtaScreenContextStateReducer {
-    fun select(
-        state: EtaScreenContextUiState,
-        enabled: Boolean,
-        hasAttachment: Boolean,
-    ): EtaScreenContextUiState =
-        if (enabled && hasAttachment && state.phase == EtaScreenContextPhase.AVAILABLE) {
-            state.copy(selected = true)
-        } else {
-            state
-        }
-
-    fun remove(
-        state: EtaScreenContextUiState,
-        enabled: Boolean,
-    ): EtaScreenContextUiState =
-        if (enabled && state.selected) state.copy(selected = false) else state
-
-    fun consume(): EtaScreenContextUiState = EtaScreenContextUiState(
-        phase = EtaScreenContextPhase.CONSUMED,
-    )
-}
-
-private data class EtaVoicePanelColors(
-    val content: Color,
-    val contentGradientEnd: Color,
-    val borderHighlight: Color,
-    val input: Color,
-    val inputPrimary: Color,
-    val inputSecondary: Color,
-    val inputTertiary: Color,
-    val tertiary: Color,
-    val scrim: Color,
-)
-
-@Composable
-private fun rememberEtaVoicePanelColors(): EtaVoicePanelColors {
-    val dark = isSystemInDarkTheme()
-    return remember(dark) {
-        if (dark) {
-            EtaVoicePanelColors(
-                content = Color(0x8C1C1F26),
-                contentGradientEnd = Color(0x40111317),
-                borderHighlight = Color(0x40FFFFFF),
-                // Q2-A：半透明底色，让浮窗 blurBehindRadius 透出来（柔光玻璃）
-                input = Color(0x59404040),
-                inputPrimary = Color(0xE6FFFFFF),
-                inputSecondary = Color(0x8AFFFFFF),
-                inputTertiary = Color(0x4DFFFFFF),
-                tertiary = Color(0x66FFFFFF),
-                scrim = Color(0x4D000000),
-            )
-        } else {
-            EtaVoicePanelColors(
-                content = Color(0x8AFFFFFF),
-                contentGradientEnd = Color(0x2EEFF3F8),
-                borderHighlight = Color(0x99FFFFFF),
-                // Q2-A：半透明底色，让浮窗 blurBehindRadius 透出来（柔光玻璃）
-                input = Color(0x59FFFFFF),
-                inputPrimary = Color(0xE6000000),
-                inputSecondary = Color(0x8A000000),
-                inputTertiary = Color(0x42000000),
-                tertiary = Color(0x52000000),
-                scrim = Color(0x20000000),
-            )
-        }
-    }
-}
+private val CouiEnterEasing = CubicBezierEasing(0.20f, 0f, 0f, 1f)
+private val CouiExitEasing = CubicBezierEasing(0.30f, 0f, 1f, 1f)
 
 @Composable
 internal fun EtaVoicePanel(
+    speechLevel: () -> Float,
     state: EtaVoiceUiState,
     input: String,
+    speech: EtaSpeechState,
+    recognitionEnabled: Boolean?,
+    entranceComplete: Boolean,
+    onEntranceFinished: () -> Unit,
+    onContentReady: () -> Unit,
+    onInputFocus: () -> Unit,
+    onMicrophone: (holdToTalk: Boolean) -> Unit,
+    onCancelSpeech: () -> Unit,
+    onFinishSpeech: () -> Unit,
+    onOpenSpeechSettings: () -> Unit,
+    onKeyboard: () -> Unit,
     inputFocusRequestKey: Int,
     canOpenConversation: Boolean,
+    handoffRunning: Boolean,
     exitRequested: Boolean,
-    onScreenContextSelect: () -> Unit,
-    onScreenContextRemove: () -> Unit,
-    onScreenTranslation: () -> Unit,
-    onToggleHistoryMenu: () -> Unit,
-    onSelectConversation: (String) -> Unit,
-    onNewConversation: () -> Unit,
-    onDeleteConversation: (String) -> Unit,
-    onModelSelected: (String, String) -> Unit,
-    onSubmit: (String) -> Unit,
+    onInputChange: (String) -> Unit,
+    onSuggestionClick: (String) -> Unit,
+    onSubmit: () -> Unit,
     onStop: () -> Unit,
     onClose: () -> Unit,
-    onKeyboard: () -> Unit,
     onOpenConversation: () -> Unit,
-    onAttachImage: (String) -> Unit,
-    onAttachVideo: (String) -> Unit,
-    onRemoveImage: (String) -> Unit,
-    onAttachFiles: (List<String>) -> Unit,
-    onAttachFolder: (String) -> Unit,
-    onAttachFilePath: (String) -> Unit,
-    onRemoveFileReference: (String) -> Unit,
-    onReasoningEffortChange: (ReasoningEffort) -> Unit,
-    onAssistantSelected: (String) -> Unit,
-    onEditAssistant: (String) -> Unit,
-    messageLaterTurnCount: (String) -> Int?,
-    onEditMessage: (String) -> Unit,
-    onDeleteMessage: (String) -> Unit,
-    onRegenerateMessage: (String) -> Unit,
-    onCancelMessageEdit: () -> Unit,
-    history: List<AgentModelClient.ConversationMessage>,
-    autoCompressEnabled: Boolean,
-    assistantId: String,
-    voiceMode: Boolean = false,
-    voiceNotice: String? = null,
-    onQuestionDraftChanged: (String, String, io.github.mangi.eta.agent.question.AgentQuestionAnswer) -> Unit,
-    onSubmitQuestionAnswer: (String, String) -> Unit,
 ) {
     val colors = rememberEtaVoicePanelColors()
     val keyboard = LocalSoftwareKeyboardController.current
     val density = LocalDensity.current
-    val focusRequester = remember { FocusRequester() }
-    // 浮窗语音态：控制器提升到面板根部，供四周波纹与声波共用。
-    val voiceController = rememberChatVoiceController(state.conversationId, onSubmit)
-    val voiceState by voiceController.state.collectAsState()
-    val voiceLevel by voiceController.level.collectAsState()
-    val voiceConfig by DoubaoVoiceConfig.state.collectAsState()
-    // 浮条也支持三种模式（用户要求与输入框一致）：记录上次选择，按策略解析出本次实际使用的模式。
-    var voiceEntryRaw by remember {
-        mutableStateOf(Prefs.getString(Prefs.Keys.AGENT_VOICE_LAST_ENTRY))
-    }
-    val appContext = LocalContext.current.applicationContext
-    LaunchedEffect(Unit) { DoubaoVoiceConfig.load(appContext) }
-    val voiceModes = io.github.mangi.eta.agent.voice.VoiceEntryPolicy.modes(voiceConfig)
-    val voiceEntry = io.github.mangi.eta.agent.voice.VoiceEntryPolicy
-        .directMode(voiceConfig, voiceEntryRaw)
-        ?: VoiceEntryMode.UNIVERSAL
-    val voiceUsable = remember(voiceConfig, voiceEntry) {
-        if (voiceEntry == VoiceEntryMode.DOUBAO_DUPLEX) true
-        else SpeechInputSession.ready(voiceEntry)
-    }
-    val voiceFeedback = voiceState.error ?: voiceNotice
-        ?: if (voiceMode && !voiceUsable) stringResource(R.string.voice_speech_unavailable) else null
-    // 浮窗会话切换（语音态下点历史按钮）同样要重启聆听：controller 内部会在
-    // conversationId 变化时 stop()，这里跟着把语音态重新拉起来，避免「假聆听」。
-    LaunchedEffect(voiceMode, state.conversationId, voiceEntry) {
-        if (voiceMode) voiceController.start(voiceEntry) else voiceController.stop()
-    }
-    // 浮窗侧把消息流喂给语音控制器：主界面在 AgentChatBody 里做同一件事；
-    // 浮窗此前从未调用 updateChat，导致 voiceState.reply 恒为空（语音态看不到回复）。
-    LaunchedEffect(state.messages, state.phase) {
-        val last = state.messages.filterIsInstance<AgentMessageUi>().lastOrNull()
-        voiceController.updateChat(
-            VoiceChatSnapshot(
-                isStreaming = state.phase == EtaVoicePhase.PROCESSING,
-                lastAgentId = last?.id,
-                lastAgentText = last?.content.orEmpty(),
-            ),
-        )
-    }
     val entryProgress = remember { Animatable(0f) }
+    val entryAlpha = remember { Animatable(0f) }
     val scrimProgress = remember { Animatable(0f) }
-    val exitAlpha by animateFloatAsState(
-        targetValue = if (exitRequested) 0f else 1f,
-        animationSpec = tween(220, easing = FastOutSlowInEasing),
+    val contentVisible = recognitionEnabled != null && (recognitionEnabled || entranceComplete)
+    val contentReady by rememberUpdatedState(onContentReady)
+    val entryOffsetPx = with(density) { (if (recognitionEnabled == false) 18.dp else 14.dp).toPx() }
+    val exitOffsetPx = with(density) { (if (handoffRunning) (-18).dp else 22.dp).toPx() }
+
+    val exitProgress by animateFloatAsState(
+        targetValue = if (exitRequested) 1f else 0f,
+        animationSpec = tween(210, easing = CouiExitEasing),
         label = "assistant_exit",
     )
+    val hasMessages = state.messages.isNotEmpty()
+    val sheetScrimMix by animateFloatAsState(
+        targetValue = if (hasMessages) 1f else 0f,
+        animationSpec = tween(240, easing = LinearOutSlowInEasing),
+        label = "assistant_sheet_scrim_mix",
+    )
+    val voiceCushionAlpha by animateFloatAsState(
+        targetValue = if (contentVisible && speech.active && !hasMessages) 1f else 0f,
+        animationSpec = tween(220, easing = FastOutSlowInEasing),
+        label = "assistant_voice_cushion",
+    )
+    val textCushionAlpha by animateFloatAsState(
+        targetValue = if (contentVisible && !speech.active && !hasMessages) 1f else 0f,
+        animationSpec = tween(200, easing = FastOutSlowInEasing),
+        label = "assistant_text_cushion",
+    )
+    val imeInsets = WindowInsets.ime
+    val navigationInsets = WindowInsets.navigationBars
 
     LaunchedEffect(Unit) {
-        launch { entryProgress.animateTo(1f, tween(160, easing = LinearOutSlowInEasing)) }
-        delay(180)
-        scrimProgress.animateTo(1f, tween(280, easing = LinearOutSlowInEasing))
+        delay(50)
+        scrimProgress.animateTo(1f, tween(240, easing = LinearOutSlowInEasing))
     }
 
-    LaunchedEffect(inputFocusRequestKey) {
-        if (inputFocusRequestKey >= 0 && state.phase != EtaVoicePhase.PROCESSING) {
-            delay(120)
-            focusRequester.requestFocus()
-            keyboard?.show()
+    LaunchedEffect(contentVisible) {
+        if (!contentVisible) return@LaunchedEffect
+        coroutineScope {
+            launch {
+                entryAlpha.animateTo(
+                    1f,
+                    tween(
+                        durationMillis = if (recognitionEnabled == false) 210 else 180,
+                        easing = FastOutSlowInEasing,
+                    ),
+                )
+            }
+            launch {
+                entryProgress.animateTo(
+                    1f,
+                    tween(
+                        durationMillis = if (recognitionEnabled == false) 250 else 210,
+                        easing = CouiEnterEasing,
+                    ),
+                )
+            }
         }
+        // 焦点会主动唤起 IME；必须等显现和位移都结束，不能在仍透明时交出输入焦点。
+        contentReady()
     }
 
+    val exitFade = 1f - exitProgress
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .graphicsLayer { alpha = exitAlpha }
-            // 语音态只叠很轻的 scrim（配 55 的轻模糊），保证文字可读性又不糊成一片。
             .drawBehind {
-                val scrimAlpha = if (voiceMode) colors.scrim.alpha * 0.45f else colors.scrim.alpha
-                drawRect(colors.scrim.copy(alpha = scrimAlpha * scrimProgress.value))
+                val baseScrim = lerp(colors.idleScrim, colors.sheetScrim, sheetScrimMix)
+                val scrimAlpha = baseScrim.alpha * scrimProgress.value * exitFade
+                if (scrimAlpha > 0.002f) {
+                    drawRect(baseScrim.copy(alpha = scrimAlpha))
+                }
+
+                val bottomInsetPx = maxOf(
+                    imeInsets.getBottom(this),
+                    navigationInsets.getBottom(this),
+                ).toFloat()
+
+                val voiceCushion = scrimProgress.value * voiceCushionAlpha * exitFade
+                if (voiceCushion > 0.005f) {
+                    val bandPx = 228.dp.toPx()
+                    val startY = (size.height - bottomInsetPx - bandPx).coerceAtLeast(0f)
+                    val baseAlpha = colors.voiceBottomCushion.alpha * voiceCushion
+                    drawRect(
+                        brush = Brush.verticalGradient(
+                            0f to Color.Transparent,
+                            0.36f to colors.voiceBottomCushion.copy(alpha = baseAlpha * 0.22f),
+                            0.70f to colors.voiceBottomCushion.copy(alpha = baseAlpha * 0.64f),
+                            1f to colors.voiceBottomCushion.copy(alpha = baseAlpha),
+                            startY = startY,
+                            endY = size.height,
+                        ),
+                        topLeft = Offset(0f, startY),
+                        size = Size(size.width, size.height - startY),
+                    )
+                }
+
+                val textCushion = scrimProgress.value * textCushionAlpha * exitFade
+                if (textCushion > 0.005f) {
+                    // 仅在输入胶囊与软键盘交界处铺一层柔和羽化托底，避免大面积灰雾截断壁纸。
+                    val bandPx = 136.dp.toPx()
+                    val startY = (size.height - bottomInsetPx - bandPx).coerceAtLeast(0f)
+                    drawRect(
+                        brush = Brush.verticalGradient(
+                            0f to Color.Transparent,
+                            0.58f to colors.textBottomCushion.copy(alpha = colors.textBottomCushion.alpha * 0.50f * textCushion),
+                            1f to colors.textBottomCushion.copy(alpha = colors.textBottomCushion.alpha * textCushion),
+                            startY = startY,
+                            endY = size.height,
+                        ),
+                        topLeft = Offset(0f, startY),
+                        size = Size(size.width, size.height - startY),
+                    )
+                }
             },
     ) {
         Box(
@@ -397,91 +262,70 @@ internal fun EtaVoicePanel(
         )
 
         EtaAssistantEdgeGlow(
-            active = voiceState.active && !exitRequested,
+            active = (speech.active || !entranceComplete) && !exitRequested,
+            onEntranceFinished = onEntranceFinished,
+            level = speechLevel,
         )
         EtaAssistantWave(
-            active = voiceState.active && !exitRequested,
-            level = { voiceLevel },
+            active = (speech.active || !entranceComplete) && !exitRequested,
+            level = speechLevel,
             modifier = Modifier.align(Alignment.BottomCenter),
         )
 
-
-        BoxWithConstraints(
+        if (contentVisible) BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
-                    alpha = entryProgress.value
-                    translationY = (1f - entryProgress.value) * with(density) { 32.dp.toPx() }
+                    alpha = entryAlpha.value * exitFade
+                    translationY = (1f - entryProgress.value) * entryOffsetPx + exitProgress * exitOffsetPx
                 },
         ) {
-            val imeBottom = WindowInsets.ime.getBottom(density)
-            val navigationBottom = WindowInsets.navigationBars.getBottom(density)
+            val keyboardVisible by remember(density, imeInsets, navigationInsets) {
+                derivedStateOf { imeInsets.getBottom(density) > navigationInsets.getBottom(density) }
+            }
+            val navigationBottom = navigationInsets.getBottom(density)
             val statusTop = WindowInsets.statusBars.getTop(density)
-            val bottomInset = max(imeBottom, navigationBottom)
-            val imeOverlap = (imeBottom - navigationBottom).coerceAtLeast(0)
+            val imeOverlap = if (state.messages.isEmpty()) 0
+                else (imeInsets.getBottom(density) - navigationBottom).coerceAtLeast(0)
             val maxContentHeightPx = with(density) {
                 (maxHeight - 88.dp).toPx() - statusTop - navigationBottom
             }.coerceAtLeast(with(density) { 220.dp.toPx() })
             AssistantPanel(
-                voiceMode = voiceMode,
-                voiceEntry = voiceEntry,
-                voiceModes = voiceModes,
-                onSelectVoiceMode = { mode ->
-                    Prefs.putString(Prefs.Keys.AGENT_VOICE_LAST_ENTRY, mode.wireValue)
-                    voiceEntryRaw = mode.wireValue
-                },
-                voiceController = voiceController,
-                voiceState = voiceState,
-                voiceFeedback = voiceFeedback,
                 state = state,
                 input = input,
+                speech = speech,
+                speechLevel = speechLevel,
+                recognitionEnabled = recognitionEnabled == true,
+                inputFocusRequestKey = inputFocusRequestKey,
+                onInputFocus = onInputFocus,
+                onMicrophone = onMicrophone,
+                onCancelSpeech = onCancelSpeech,
+                onFinishSpeech = onFinishSpeech,
+                onOpenSpeechSettings = onOpenSpeechSettings,
+                onKeyboard = onKeyboard,
                 colors = colors,
-                focusRequester = focusRequester,
                 canOpenConversation = canOpenConversation,
+                handoffRunning = handoffRunning,
                 baseContentHeightPx = assistantBaseHeightPx(
                     messages = state.messages,
                     maxHeightPx = maxContentHeightPx,
                     density = density.density,
                 ),
                 maxContentHeightPx = maxContentHeightPx,
-                bottomInsetPx = bottomInset,
                 imeOverlapPx = imeOverlap,
-                onScreenContextSelect = onScreenContextSelect,
-                onScreenContextRemove = onScreenContextRemove,
-                onScreenTranslation = onScreenTranslation,
-                onToggleHistoryMenu = onToggleHistoryMenu,
-                onSelectConversation = onSelectConversation,
-                onNewConversation = onNewConversation,
-                onDeleteConversation = onDeleteConversation,
-                onModelSelected = onModelSelected,
-                onSubmit = { text ->
+                onInputChange = onInputChange,
+                onSuggestionClick = { suggestion ->
                     keyboard?.hide()
-                    onSubmit(text)
+                    onSuggestionClick(suggestion)
+                },
+                keyboardVisible = keyboardVisible,
+                onSubmit = {
+                    keyboard?.hide()
+                    onSubmit()
                 },
                 onStop = onStop,
                 onClose = onClose,
-                onKeyboard = onKeyboard,
                 onOpenConversation = onOpenConversation,
-                onAttachImage = onAttachImage,
-                onAttachVideo = onAttachVideo,
-                onRemoveImage = onRemoveImage,
-                onAttachFiles = onAttachFiles,
-                onAttachFolder = onAttachFolder,
-                onAttachFilePath = onAttachFilePath,
-                onRemoveFileReference = onRemoveFileReference,
-                onReasoningEffortChange = onReasoningEffortChange,
-                onAssistantSelected = onAssistantSelected,
-                onEditAssistant = onEditAssistant,
-                messageLaterTurnCount = messageLaterTurnCount,
-                onEditMessage = onEditMessage,
-                onDeleteMessage = onDeleteMessage,
-                onRegenerateMessage = onRegenerateMessage,
-                onCancelMessageEdit = onCancelMessageEdit,
-                history = history,
-                autoCompressEnabled = autoCompressEnabled,
-                assistantId = assistantId,
-                onQuestionDraftChanged = onQuestionDraftChanged,
-                onSubmitQuestionAnswer = onSubmitQuestionAnswer,
             )
         }
     }
@@ -491,132 +335,168 @@ internal fun EtaVoicePanel(
 private fun BoxScope.AssistantPanel(
     state: EtaVoiceUiState,
     input: String,
+    speech: EtaSpeechState,
+    speechLevel: () -> Float,
+    recognitionEnabled: Boolean,
+    inputFocusRequestKey: Int,
+    onInputFocus: () -> Unit,
+    onMicrophone: (holdToTalk: Boolean) -> Unit,
+    onCancelSpeech: () -> Unit,
+    onFinishSpeech: () -> Unit,
+    onOpenSpeechSettings: () -> Unit,
+    onKeyboard: () -> Unit,
     colors: EtaVoicePanelColors,
-    focusRequester: FocusRequester,
     canOpenConversation: Boolean,
+    handoffRunning: Boolean,
     baseContentHeightPx: Float,
     maxContentHeightPx: Float,
-    bottomInsetPx: Int,
     imeOverlapPx: Int,
-    onScreenContextSelect: () -> Unit,
-    onScreenContextRemove: () -> Unit,
-    onScreenTranslation: () -> Unit,
-    onToggleHistoryMenu: () -> Unit,
-    onSelectConversation: (String) -> Unit,
-    onNewConversation: () -> Unit,
-    onDeleteConversation: (String) -> Unit,
-    onModelSelected: (String, String) -> Unit,
-    onSubmit: (String) -> Unit,
+    onInputChange: (String) -> Unit,
+    onSuggestionClick: (String) -> Unit,
+    keyboardVisible: Boolean,
+    onSubmit: () -> Unit,
     onStop: () -> Unit,
     onClose: () -> Unit,
-    onKeyboard: () -> Unit,
     onOpenConversation: () -> Unit,
-    onAttachImage: (String) -> Unit,
-    onAttachVideo: (String) -> Unit,
-    onRemoveImage: (String) -> Unit,
-    onAttachFiles: (List<String>) -> Unit,
-    onAttachFolder: (String) -> Unit,
-    onAttachFilePath: (String) -> Unit,
-    onRemoveFileReference: (String) -> Unit,
-    onReasoningEffortChange: (ReasoningEffort) -> Unit,
-    onAssistantSelected: (String) -> Unit,
-    onEditAssistant: (String) -> Unit,
-    messageLaterTurnCount: (String) -> Int?,
-    onEditMessage: (String) -> Unit,
-    onDeleteMessage: (String) -> Unit,
-    onRegenerateMessage: (String) -> Unit,
-    onCancelMessageEdit: () -> Unit,
-    history: List<AgentModelClient.ConversationMessage>,
-    autoCompressEnabled: Boolean,
-    assistantId: String,
-    voiceMode: Boolean = false,
-    voiceEntry: VoiceEntryMode? = null,
-    voiceModes: List<VoiceEntryMode> = emptyList(),
-    onSelectVoiceMode: (VoiceEntryMode) -> Unit = {},
-    voiceController: VoiceModeController,
-    voiceState: VoiceModeState,
-    voiceFeedback: String? = null,
-    onQuestionDraftChanged: (String, String, io.github.mangi.eta.agent.question.AgentQuestionAnswer) -> Unit,
-    onSubmitQuestionAnswer: (String, String) -> Unit,
 ) {
     val density = LocalDensity.current
     val haptic = LocalHapticFeedback.current
-    val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
     var settledHeightPx by remember { mutableFloatStateOf(baseContentHeightPx) }
-    var draggedHeightPx by remember { mutableStateOf<Float?>(null) }
+    val heightAnim = remember { Animatable(0f) }
+    var sheetHeightPx by remember { mutableFloatStateOf(0f) }
+    var needsHeightAnimSync by remember { mutableStateOf(false) }
+    val rubberAnim = remember { Animatable(0f) }
+    var rubberYPx by remember { mutableFloatStateOf(0f) }
+    var isDragging by remember { mutableStateOf(false) }
+    var autoExpandSuppressed by remember { mutableStateOf(false) }
     var dismissPullPx by remember { mutableFloatStateOf(0f) }
     var handoffPullPx by remember { mutableFloatStateOf(0f) }
-    var directHandoffPullPx by remember { mutableFloatStateOf(0f) }
     var thresholdHapticSent by remember { mutableStateOf(false) }
-    var handoffRunning by remember { mutableStateOf(false) }
     var keepBottomAnchored by remember { mutableStateOf(true) }
-    var messageDeleteTarget by remember { mutableStateOf<OverlayMessageMutationTarget?>(null) }
-    var messageRegenerateTarget by remember { mutableStateOf<OverlayMessageMutationTarget?>(null) }
-    val handoffThresholdPx = with(density) { 72.dp.toPx() }
-    val directHandoffThresholdPx = with(density) { 48.dp.toPx() }
+    // 满高时把手与状态栏之间的空间有限，需在扣除触摸 slop 后仍能完成过顶手势。
+    val handoffThresholdPx = with(density) { 24.dp.toPx() }
     val dismissThresholdPx = with(density) { 92.dp.toPx() }
-    val handoffVelocityPx = with(density) { 900.dp.toPx() }
-    // 面板态底栏与输入栏共用同一个语音控制器（浮窗为 Service，LocalContext/LocalLifecycleOwner 均可用）。
-
-    // 语音态下按「无消息」处理：面板高度与背景均收到 0，只留波纹与底部入口。
-    val hasMessages = state.messages.isNotEmpty() && !voiceMode
-    // 语音态只留波纹 + 聆听提示 + 圆按钮，建议气泡不在其中（与语音态裁决一致）。
-    val showSuggestions = state.messages.isEmpty() && !voiceMode
+    val maxHandoffVisualPx = with(density) { 40.dp.toPx() }
+    val autoSettleTolerancePx = with(density) { 6.dp.toPx() }
+    val dragHandleHeightPx = with(density) { 38.dp.toPx() }
+    val contentFitSlackPx = with(density) { 12.dp.toPx() }
+    val availableMaxHeightPx = (maxContentHeightPx - imeOverlapPx).coerceAtLeast(0f)
+    val minimumContentHeightPx = with(density) { 140.dp.toPx() }.coerceAtMost(availableMaxHeightPx)
+    val clampedBaseHeightPx = baseContentHeightPx.coerceIn(minimumContentHeightPx, availableMaxHeightPx)
+    val mediumHeightPx = clampedBaseHeightPx +
+        (availableMaxHeightPx - clampedBaseHeightPx) * 0.58f
+    val effectiveMinHeightPx = minOf(clampedBaseHeightPx, settledHeightPx)
+        .coerceIn(minimumContentHeightPx, availableMaxHeightPx)
+    val hasMessages = state.messages.isNotEmpty()
     val targetHeightPx = if (hasMessages) {
-        settledHeightPx.coerceIn(baseContentHeightPx, maxContentHeightPx)
+        if (settledHeightPx <= 0f) clampedBaseHeightPx
+        else settledHeightPx.coerceIn(minimumContentHeightPx, availableMaxHeightPx)
     } else {
         0f
     }
-    val animatedHeightPx by animateFloatAsState(
-        targetValue = targetHeightPx,
-        animationSpec = folmeSpring(damping = 0.9f, response = 0.38f),
-        label = "assistant_content_height",
-    )
     val sheetBackgroundAlpha = animateFloatAsState(
         targetValue = if (hasMessages) 1f else 0f,
-        animationSpec = tween(durationMillis = 160, easing = LinearOutSlowInEasing),
+        animationSpec = tween(durationMillis = 190, easing = LinearOutSlowInEasing),
         label = "assistant_sheet_background",
     )
     val messageRevealProgress = animateFloatAsState(
         targetValue = if (hasMessages) 1f else 0f,
         animationSpec = if (hasMessages) {
-            tween(durationMillis = 180, delayMillis = 50, easing = LinearOutSlowInEasing)
+            tween(durationMillis = 210, delayMillis = 45, easing = CouiEnterEasing)
         } else {
-            tween(durationMillis = 100, easing = FastOutSlowInEasing)
+            tween(durationMillis = 110, easing = FastOutSlowInEasing)
         },
         label = "assistant_message_reveal",
     )
-    val currentAnimatedHeight = rememberUpdatedState(animatedHeightPx)
-    val sheetHeightPx = draggedHeightPx ?: animatedHeightPx
-    // 输入栏（含附件/推理/助手/模型/发送）是 sheet 之下固定占位的一层。
-    // 消息区必须为它预留高度，否则 IME 弹出时输入栏会被消息区顶出可视区。
-    val composerReservedHeightPx = with(density) {
-        val base = 136.dp
-        val historyExtra = if (state.isHistoryMenuVisible) 180.dp else 0.dp
-        (base + historyExtra).toPx()
+    val visibleSheetHeightPx = if (hasMessages || sheetHeightPx > 0.5f) {
+        sheetHeightPx.coerceIn(0f, availableMaxHeightPx)
+    } else {
+        0f
     }
-    val maxAvailableForSheetPx = (
-        maxContentHeightPx - imeOverlapPx - composerReservedHeightPx
-        ).coerceAtLeast(0f)
-    val visibleSheetHeightPx = sheetHeightPx.coerceAtMost(maxAvailableForSheetPx)
-    val nearFullscreen = sheetHeightPx >= maxContentHeightPx * 0.88f
-    val handoffReady = canOpenConversation && nearFullscreen &&
-        (handoffPullPx >= handoffThresholdPx ||
-            directHandoffPullPx >= directHandoffThresholdPx)
-    val sheetTranslationPx = dismissPullPx * 0.28f - handoffPullPx.coerceAtMost(
-        with(density) { 28.dp.toPx() },
-    ) * 0.12f
+    // 接管只认把手发起的过顶拉取：列表滚动与惯性 fling 不再触发，避免读回复时误入本体。
+    val handoffReady = canOpenConversation &&
+        sheetHeightPx >= availableMaxHeightPx - 1f &&
+        handoffPullPx >= handoffThresholdPx
+    val handoffPullProgress = if (canOpenConversation && handoffThresholdPx > 0f && handoffPullPx > 0f) {
+        (handoffPullPx / handoffThresholdPx).coerceIn(0f, 1f)
+    } else {
+        0f
+    }
 
-    LaunchedEffect(hasMessages, baseContentHeightPx, maxContentHeightPx) {
-        settledHeightPx = if (hasMessages) {
-            settledHeightPx.coerceIn(baseContentHeightPx, maxContentHeightPx)
+    LaunchedEffect(hasMessages, minimumContentHeightPx, maxContentHeightPx) {
+        if (hasMessages) {
+            settledHeightPx = if (settledHeightPx <= 0f) {
+                baseContentHeightPx.coerceIn(minimumContentHeightPx, maxContentHeightPx)
+            } else {
+                settledHeightPx.coerceIn(minimumContentHeightPx, maxContentHeightPx)
+            }
         } else {
-            0f
+            autoExpandSuppressed = false
+            isDragging = false
+            needsHeightAnimSync = false
+            dismissPullPx = 0f
+            handoffPullPx = 0f
+            settledHeightPx = 0f
+            rubberYPx = 0f
+            rubberAnim.snapTo(0f)
         }
     }
-    LaunchedEffect(state.messages.size) {
-        if (state.messages.isNotEmpty()) keepBottomAnchored = true
+    LaunchedEffect(targetHeightPx, isDragging) {
+        if (isDragging) return@LaunchedEffect
+        if (needsHeightAnimSync) {
+            heightAnim.snapTo(sheetHeightPx)
+            needsHeightAnimSync = false
+        }
+        heightAnim.animateTo(
+            targetValue = targetHeightPx,
+            animationSpec = if (autoExpandSuppressed) {
+                folmeSpring(damping = 1f, response = 0.36f)
+            } else {
+                folmeSpring(damping = 1f, response = 0.44f)
+            },
+        ) {
+            if (!isDragging) sheetHeightPx = value
+        }
+    }
+    LaunchedEffect(isDragging) {
+        if (isDragging) return@LaunchedEffect
+        if (abs(rubberYPx) > 0.5f) {
+            rubberAnim.snapTo(rubberYPx)
+            rubberAnim.animateTo(0f, folmeSpring(damping = 0.94f, response = 0.30f)) {
+                if (!isDragging) rubberYPx = value
+            }
+        } else {
+            rubberYPx = 0f
+            rubberAnim.snapTo(0f)
+        }
+    }
+    // 单向连续生长：随实测内容高度平滑推高面板（弹簧保持速度连续），只增不减，
+    // 避免分档等待造成的顿挫以及流式结束后的二次弹起与回落。
+    LaunchedEffect(hasMessages, keyboardVisible, baseContentHeightPx, availableMaxHeightPx, listState) {
+        if (!hasMessages || keyboardVisible) return@LaunchedEffect
+        snapshotFlow {
+            if (autoExpandSuppressed || isDragging || handoffRunning || !keepBottomAnchored) {
+                return@snapshotFlow null
+            }
+            requiredPanelHeightPx(
+                listState = listState,
+                currentAnimatedHeightPx = sheetHeightPx,
+                settledHeightPx = settledHeightPx,
+                dragHandleHeightPx = dragHandleHeightPx,
+                contentFitSlackPx = contentFitSlackPx,
+                autoSettleTolerancePx = autoSettleTolerancePx,
+                baseContentHeightPx = clampedBaseHeightPx,
+                maxContentHeightPx = availableMaxHeightPx,
+            )
+        }
+            .distinctUntilChanged()
+            .collect { requiredHeightPx ->
+                val target = requiredHeightPx ?: return@collect
+                if (target > settledHeightPx + autoSettleTolerancePx) {
+                    settledHeightPx = target
+                }
+            }
     }
     LaunchedEffect(handoffReady) {
         if (handoffReady && !thresholdHapticSent) {
@@ -629,696 +509,442 @@ private fun BoxScope.AssistantPanel(
 
     fun triggerHandoff() {
         if (handoffRunning || !canOpenConversation) return
-        handoffRunning = true
-        settledHeightPx = maxContentHeightPx
-        draggedHeightPx = null
-        scope.launch {
-            delay(120)
-            onOpenConversation()
+        settledHeightPx = availableMaxHeightPx
+        dismissPullPx = 0f
+        handoffPullPx = 0f
+        rubberYPx = 0f
+        isDragging = false
+        onOpenConversation()
+    }
+
+    fun stopAutoExpand() {
+        if (autoExpandSuppressed) return
+        autoExpandSuppressed = true
+        if (settledHeightPx > sheetHeightPx + autoSettleTolerancePx) {
+            settledHeightPx = sheetHeightPx.coerceIn(minimumContentHeightPx, availableMaxHeightPx)
         }
     }
 
-    fun dragBy(deltaY: Float): Float {
-        if (handoffRunning || state.messages.isEmpty()) return 0f
-        val current = draggedHeightPx ?: currentAnimatedHeight.value
-        val requested = current - deltaY
-        return when {
-            requested > maxContentHeightPx -> {
-                draggedHeightPx = maxContentHeightPx
-                if (deltaY < 0f) handoffPullPx += -deltaY
-                deltaY
-            }
-            requested < baseContentHeightPx -> {
-                draggedHeightPx = baseContentHeightPx
-                if (deltaY > 0f) dismissPullPx += deltaY
-                deltaY
-            }
-            else -> {
-                draggedHeightPx = requested
-                dismissPullPx = 0f
-                handoffPullPx = 0f
-                deltaY
-            }
-        }
+    fun startDrag() {
+        stopAutoExpand()
+        isDragging = true
+        needsHeightAnimSync = true
+        dismissPullPx = 0f
+        handoffPullPx = 0f
+        sheetHeightPx = sheetHeightPx.coerceIn(effectiveMinHeightPx, availableMaxHeightPx)
+        rubberYPx = 0f
     }
 
-    fun finishDrag(velocityY: Float = 0f) {
-        val current = draggedHeightPx ?: currentAnimatedHeight.value
+    fun dragBy(deltaRootY: Float, allowHandoff: Boolean) {
+        if (handoffRunning || state.messages.isEmpty() || deltaRootY == 0f) return
+        val currentPos = sheetHeightPx + handoffPullPx - dismissPullPx
+        val requestedPos = currentPos - deltaRootY
+        val clampedHeight = requestedPos.coerceIn(effectiveMinHeightPx, availableMaxHeightPx)
+        val nextHandoff = if (allowHandoff && requestedPos > availableMaxHeightPx) {
+            requestedPos - availableMaxHeightPx
+        } else {
+            0f
+        }
+        val nextDismiss = if (requestedPos < effectiveMinHeightPx) {
+            effectiveMinHeightPx - requestedPos
+        } else {
+            0f
+        }
+        handoffPullPx = nextHandoff
+        dismissPullPx = nextDismiss
+        sheetHeightPx = clampedHeight
+        rubberYPx = nextDismiss * 0.28f - (nextHandoff * 0.36f).coerceAtMost(maxHandoffVisualPx)
+    }
+
+    fun finishDrag(commit: Boolean, allowHandoff: Boolean) {
+        if (handoffRunning) {
+            isDragging = false
+            return
+        }
+        val current = sheetHeightPx
         when {
-            dismissPullPx >= dismissThresholdPx -> onClose()
-            canOpenConversation && current >= maxContentHeightPx * 0.88f &&
-                (handoffReady || velocityY <= -handoffVelocityPx) -> triggerHandoff()
-            else -> {
-                val medium = baseContentHeightPx +
-                    (maxContentHeightPx - baseContentHeightPx) * 0.58f
-                val anchors = floatArrayOf(baseContentHeightPx, medium, maxContentHeightPx)
-                settledHeightPx = anchors.minBy { kotlin.math.abs(it - current) }
-                draggedHeightPx = null
+            commit && dismissPullPx >= dismissThresholdPx -> {
                 dismissPullPx = 0f
                 handoffPullPx = 0f
+                isDragging = false
+                onClose()
+            }
+            // 松手可能与最后一个位移在同一帧内到达，直接读取状态，不依赖重组后的派生值。
+            commit && allowHandoff && canOpenConversation &&
+                current >= availableMaxHeightPx - 1f && handoffPullPx >= handoffThresholdPx -> {
+                triggerHandoff()
+            }
+            else -> {
+                val anchors = floatArrayOf(
+                    effectiveMinHeightPx,
+                    clampedBaseHeightPx,
+                    mediumHeightPx,
+                    availableMaxHeightPx,
+                )
+                settledHeightPx = anchors.minBy { abs(it - current) }
+                dismissPullPx = 0f
+                handoffPullPx = 0f
+                isDragging = false
             }
         }
     }
 
-    val bottomInset = with(density) { bottomInsetPx.toDp() }
-    val messageRevealOffsetPx = with(density) { 12.dp.toPx() }
-    val sheetShape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
+    val startDragState = rememberUpdatedState { startDrag() }
+    val dragByState = rememberUpdatedState { deltaY: Float, allowHandoff: Boolean ->
+        dragBy(deltaY, allowHandoff)
+    }
+    val finishDragState = rememberUpdatedState { commit: Boolean, allowHandoff: Boolean ->
+        finishDrag(commit, allowHandoff)
+    }
+    val shouldInterceptListDrag = rememberUpdatedState { totalDy: Float ->
+        (totalDy < 0f && sheetHeightPx < availableMaxHeightPx - 1f) ||
+            (totalDy > 0f && !listState.canScrollBackward)
+    }
+
+    val messageRevealOffsetPx = with(density) { 14.dp.toPx() }
+    val sheetCornerRadius = 32.dp
+    val sheetShape = remember { TopCouiSheetShape(topRadius = sheetCornerRadius, cornerWeight = 2.6f) }
+    val sheetSurfaceVisible = hasMessages || sheetBackgroundAlpha.value > 0.001f
+
     Column(
         modifier = Modifier
             .align(Alignment.BottomCenter)
             .fillMaxWidth()
-            .offset(y = with(density) { sheetTranslationPx.toDp() })
-            .clip(sheetShape)
-            // 吸收 sheet 内的空白点击，避免穿透到 scrim 触发 onClose 关掉浮窗。
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                onClick = {},
-            )
+            .offset { IntOffset(0, rubberYPx.roundToInt()) }
             .drawBehind {
-                val bgAlpha = sheetBackgroundAlpha.value
-                val glassBrush = Brush.verticalGradient(
-                    colors = listOf(
-                        colors.content.copy(alpha = colors.content.alpha * bgAlpha),
-                        colors.contentGradientEnd.copy(alpha = colors.contentGradientEnd.alpha * bgAlpha),
-                    ),
-                )
-                drawRect(brush = glassBrush)
-                val rimBrush = Brush.verticalGradient(
-                    colors = listOf(
-                        colors.borderHighlight.copy(alpha = colors.borderHighlight.alpha * bgAlpha),
-                        colors.borderHighlight.copy(alpha = colors.borderHighlight.alpha * 0.45f * bgAlpha),
-                        colors.borderHighlight.copy(alpha = colors.borderHighlight.alpha * 0.2f * bgAlpha),
-                    ),
-                    startY = 0f,
-                    endY = size.height,
-                )
-                drawRect(
-                    brush = rimBrush,
-                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.2.dp.toPx()),
-                )
-            },
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(with(density) { visibleSheetHeightPx.toDp() }),
-        ) {
-            DragHandle(
-                colors = colors,
-                modifier = Modifier.pointerInput(baseContentHeightPx, maxContentHeightPx) {
-                    detectVerticalDragGestures(
-                        onDragStart = { draggedHeightPx = currentAnimatedHeight.value },
-                        onVerticalDrag = { change, dragAmount ->
-                            change.consume()
-                            dragBy(dragAmount)
-                        },
-                        onDragEnd = { finishDrag() },
-                        onDragCancel = { finishDrag() },
-                    )
-                },
-            )
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .graphicsLayer {
-                        alpha = messageRevealProgress.value
-                        translationY = (1f - messageRevealProgress.value) * messageRevealOffsetPx
-                    },
-            ) {
-                if (hasMessages) {
-                    AgentConversationMessages(
-                        // 编辑某条消息时只显示到它为止，与本体 AgentChatBody 同一口径。
-                        visibleMessages = AgentConversationRevisionReducer.visibleMessagesForEdit(
-                            state.messages,
-                            state.messageEdit?.targetMessageId,
-                        ),
-                        scrollState = listState,
-                        isStreaming = state.phase == EtaVoicePhase.PROCESSING,
-                        bottomInset = 8.dp,
-                        keepBottomAnchored = keepBottomAnchored,
-                        onBottomAnchorChanged = { keepBottomAnchored = it },
-                        onEditMessage = onEditMessage,
-                        onDeleteMessage = { id ->
-                            messageLaterTurnCount(id)?.let { count ->
-                                messageDeleteTarget = OverlayMessageMutationTarget(id, count)
-                            }
-                        },
-                        onRegenerateMessage = { id ->
-                            when (val count = messageLaterTurnCount(id)) {
-                                null -> Unit
-                                0 -> onRegenerateMessage(id)
-                                else -> messageRegenerateTarget =
-                                    OverlayMessageMutationTarget(id, count)
-                            }
-                        },
-                        // 浮窗沿用本体同一套操作栏；分支按钮按裁决不接（branchEnabled 保持 false）。
-                        messageActionsEnabled = state.phase != EtaVoicePhase.PROCESSING,
-                        editTargetMessageId = state.messageEdit?.targetMessageId,
-                        onQuestionDraftChanged = onQuestionDraftChanged,
-                        onSubmitQuestionAnswer = onSubmitQuestionAnswer,
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                }
-                // 浮窗没有 Activity token，本体那套 WindowDialog 会抛 BadTokenException；
-                // 这里用与浮窗其它菜单同款的下拉弹层做二次确认。
-                val mutationTarget = messageDeleteTarget ?: messageRegenerateTarget
-                if (mutationTarget != null) {
-                    val isDelete = messageDeleteTarget != null
-                    Box(modifier = Modifier.align(Alignment.Center)) {
-                        EtaDropdownMenu(
-                            expanded = true,
-                            onDismissRequest = {
-                                messageDeleteTarget = null
-                                messageRegenerateTarget = null
-                            },
-                            // 按裁决固定居中：不跟随具体按钮，始终落在消息区正中。
-                            centerOnAnchor = true,
-                            minWidth = 0.dp,
-                            focusable = false,
-                        ) {
-                            Text(
-                                text = stringResource(
-                                    if (isDelete) {
-                                        R.string.conversation_delete_message_title
-                                    } else {
-                                        R.string.conversation_regenerate_title
-                                    },
-                                ),
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = colors.inputPrimary,
-                                modifier = Modifier.padding(
-                                    start = 12.dp,
-                                    end = 12.dp,
-                                    top = 4.dp,
-                                    bottom = 2.dp,
-                                ),
-                            )
-                            Text(
-                                text = if (isDelete) {
-                                    if (mutationTarget.laterTurnCount == 0) {
-                                        stringResource(R.string.conversation_delete_message_body)
-                                    } else {
-                                        pluralStringResource(
-                                            R.plurals.conversation_delete_later_turns,
-                                            mutationTarget.laterTurnCount,
-                                            mutationTarget.laterTurnCount,
-                                        )
-                                    }
-                                } else {
-                                    if (mutationTarget.laterTurnCount == 0) {
-                                        stringResource(R.string.conversation_regenerate_current_turn)
-                                    } else {
-                                        pluralStringResource(
-                                            R.plurals.conversation_regenerate_later_turns,
-                                            mutationTarget.laterTurnCount,
-                                            mutationTarget.laterTurnCount,
-                                        )
-                                    }
-                                },
-                                fontSize = 12.sp,
-                                color = colors.inputSecondary,
-                                modifier = Modifier.padding(
-                                    start = 12.dp,
-                                    end = 12.dp,
-                                    bottom = 4.dp,
-                                ),
-                            )
-                            DropdownMenuItem(
-                                modifier = Modifier.height(40.dp),
-                                contentPadding = PaddingValues(horizontal = 12.dp),
-                                text = {
-                                    Text(
-                                        text = stringResource(R.string.action_cancel),
-                                        fontSize = 14.sp,
-                                        color = colors.inputPrimary,
+                val sheetAlpha = sheetBackgroundAlpha.value
+                if (sheetAlpha > 0.01f && size.height > 8f) {
+                    // 沿着 G2 连续顶部圆角外侧绘制渐隐环境投影，切出面板内部后贴合左右切点收束至 0，
+                    // 避免矩形阴影在圆角外侧露馅。
+                    val shadowRisePx = 28.dp.toPx()
+                    val cornerPx = sheetCornerRadius.toPx().coerceIn(0f, minOf(size.width * 0.5f, size.height))
+                    val maxAlpha = (if (colors.dark) 0.30f else 0.10f) * sheetAlpha
+                    val sheetPath = buildTopCouiSheetPath(size, cornerPx, 2.6f)
+                    val rimPath = buildTopCouiRimPath(size, cornerPx, 2.6f)
+                    clipRect(left = 0f, top = -shadowRisePx, right = size.width, bottom = cornerPx) {
+                        clipPath(sheetPath, clipOp = ClipOp.Difference) {
+                            val layers = 8
+                            for (i in 0 until layers) {
+                                val fraction = (i + 1f) / layers
+                                val spread = shadowRisePx * fraction
+                                val falloff = 1f - i.toFloat() / layers
+                                val layerAlpha = maxAlpha * falloff * falloff * (2.2f / layers)
+                                if (layerAlpha > 0.001f) {
+                                    drawPath(
+                                        path = rimPath,
+                                        color = Color.Black.copy(alpha = layerAlpha),
+                                        style = Stroke(width = spread * 2f, cap = StrokeCap.Butt),
                                     )
-                                },
-                                onClick = {
-                                    messageDeleteTarget = null
-                                    messageRegenerateTarget = null
-                                },
-                            )
-                            DropdownMenuItem(
-                                modifier = Modifier.height(40.dp),
-                                contentPadding = PaddingValues(horizontal = 12.dp),
-                                text = {
-                                    Text(
-                                        text = stringResource(
-                                            if (isDelete) {
-                                                R.string.action_delete
-                                            } else {
-                                                R.string.action_regenerate
-                                            },
-                                        ),
-                                        fontSize = 14.sp,
-                                        color = MiuixTheme.colorScheme.error,
-                                    )
-                                },
-                                onClick = {
-                                    val id = mutationTarget.messageId
-                                    messageDeleteTarget = null
-                                    messageRegenerateTarget = null
-                                    if (isDelete) onDeleteMessage(id) else onRegenerateMessage(id)
-                                },
-                            )
+                                }
+                            }
                         }
                     }
                 }
             }
-        }
-        AnimatedVisibility(
-            visible = state.isHistoryMenuVisible,
-            enter = fadeIn(tween(180, easing = LinearOutSlowInEasing)) +
-                slideInVertically(tween(220, easing = FastOutSlowInEasing)) { it / 4 },
-            exit = fadeOut(tween(140, easing = FastOutSlowInEasing)) +
-                slideOutVertically(tween(160, easing = FastOutSlowInEasing)) { it / 4 },
-        ) {
-            AssistantHistorySheet(
-                state = state,
-                colors = colors,
-                onSelectConversation = onSelectConversation,
-                onNewConversation = onNewConversation,
-                onDeleteConversation = onDeleteConversation,
+            // 未展开回复面板时不启用面板轮廓裁剪，避免把空状态下的悬浮胶囊顶部与阴影裁掉。
+            .then(if (sheetSurfaceVisible) Modifier.clip(sheetShape) else Modifier)
+            .drawWithContent {
+                val sheetAlpha = sheetBackgroundAlpha.value
+                if (sheetAlpha > 0f) {
+                    drawRect(
+                        colors.content.copy(
+                            alpha = colors.content.alpha * sheetAlpha,
+                        ),
+                    )
+                }
+                drawContent()
+                if (sheetAlpha > 0.01f && size.height > 8f) {
+                    val rimFadePx = minOf(84.dp.toPx(), size.height * 0.55f)
+                    val path = buildTopCouiSheetPath(size, sheetCornerRadius.toPx(), 2.6f)
+                    drawPath(
+                        path = path,
+                        brush = Brush.verticalGradient(
+                            0f to colors.panelSpecular.copy(alpha = colors.panelSpecular.alpha * sheetAlpha),
+                            1f to Color.Transparent,
+                            startY = 0f,
+                            endY = rimFadePx.coerceAtLeast(1f),
+                        ),
+                        style = Stroke(width = 1.15.dp.toPx()),
+                    )
+                }
+            }
+            // 背景先覆盖导航区域，再让内容避开系统栏；否则底部 Insets 会露出下层窗口。
+            // IME 与导航栏取并集，布局阶段消费一次，跟随系统键盘动画。
+            .windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars).only(WindowInsetsSides.Bottom))
+            .windowInsetsPadding(
+                WindowInsets.navigationBars.union(WindowInsets.displayCutout).only(WindowInsetsSides.Horizontal),
+            ),
+    ) {
+        if (sheetSurfaceVisible) {
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 6.dp),
-            )
+                    .height(with(density) { visibleSheetHeightPx.toDp() }),
+            ) {
+                var handleCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
+                DragHandle(
+                    colors = colors,
+                    handoffReady = handoffReady,
+                    handoffProgress = handoffPullProgress,
+                    modifier = Modifier
+                        .onGloballyPositioned { handleCoords = it }
+                        .pointerInput(Unit) {
+                            handleRootVerticalDrag(
+                                getCoords = { handleCoords },
+                                pass = PointerEventPass.Main,
+                                shouldStart = { true },
+                                onDragStart = { startDragState.value() },
+                                onDrag = { deltaRootY -> dragByState.value(deltaRootY, true) },
+                                onDragEnd = { finishDragState.value(true, true) },
+                                onDragCancel = { finishDragState.value(false, false) },
+                            )
+                        },
+                )
+                var listBoxCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .onGloballyPositioned { listBoxCoords = it }
+                        .pointerInput(Unit) {
+                            handleRootVerticalDrag(
+                                getCoords = { listBoxCoords },
+                                pass = PointerEventPass.Initial,
+                                shouldStart = { totalRootY -> shouldInterceptListDrag.value(totalRootY) },
+                                onDragStart = { startDragState.value() },
+                                onDrag = { deltaRootY -> dragByState.value(deltaRootY, false) },
+                                onDragEnd = { finishDragState.value(true, false) },
+                                onDragCancel = { finishDragState.value(false, false) },
+                            )
+                        }
+                        .graphicsLayer {
+                            alpha = messageRevealProgress.value
+                            translationY = (1f - messageRevealProgress.value) * messageRevealOffsetPx
+                        },
+                ) {
+                    if (hasMessages) {
+                        AgentConversationMessages(
+                            visibleMessages = state.messages,
+                            scrollState = listState,
+                            isStreaming = state.phase == EtaVoicePhase.PROCESSING,
+                            bottomInset = 8.dp,
+                            keepBottomAnchored = keepBottomAnchored,
+                            onBottomAnchorChanged = { keepBottomAnchored = it },
+                            assistantOverlay = true,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    }
+                }
+            }
         }
         EtaAssistantSuggestions(
-            onSuggestionClick = onSubmit,
-            visible = showSuggestions,
-            keyboardVisible = imeOverlapPx > 0,
+            onSuggestionClick = onSuggestionClick,
+            colors = colors,
+            visible = !hasMessages && !speech.hasFeedback,
         )
         AssistantComposer(
-            voiceMode = voiceMode,
-            voiceEntry = voiceEntry,
-            voiceModes = voiceModes,
-            onSelectVoiceMode = onSelectVoiceMode,
-            voiceFeedback = voiceFeedback,
-            onKeyboard = onKeyboard,
             state = state,
             input = input,
+            speech = speech,
+            speechLevel = speechLevel,
+            recognitionEnabled = recognitionEnabled,
+            inputFocusRequestKey = inputFocusRequestKey,
+            onInputFocus = onInputFocus,
+            onMicrophone = onMicrophone,
+            onCancelSpeech = onCancelSpeech,
+            onFinishSpeech = onFinishSpeech,
+            onOpenSpeechSettings = onOpenSpeechSettings,
+            onKeyboard = onKeyboard,
+            keyboardVisible = keyboardVisible,
             colors = colors,
-            focusRequester = focusRequester,
-            onScreenContextSelect = onScreenContextSelect,
-            onScreenContextRemove = onScreenContextRemove,
-            onScreenTranslation = onScreenTranslation,
-            onToggleHistoryMenu = onToggleHistoryMenu,
-            onNewConversation = onNewConversation,
-            onModelSelected = onModelSelected,
+            onInputChange = onInputChange,
             onSubmit = onSubmit,
             onStop = onStop,
-            onCancelMessageEdit = onCancelMessageEdit,
-            onAttachImage = onAttachImage,
-            onAttachVideo = onAttachVideo,
-            onRemoveImage = onRemoveImage,
-            onAttachFiles = onAttachFiles,
-            onAttachFolder = onAttachFolder,
-            onAttachFilePath = onAttachFilePath,
-            onRemoveFileReference = onRemoveFileReference,
-            onReasoningEffortChange = onReasoningEffortChange,
-            onAssistantSelected = onAssistantSelected,
-            onEditAssistant = onEditAssistant,
-            history = history,
-            autoCompressEnabled = autoCompressEnabled,
-            assistantId = assistantId,
-            voiceController = voiceController,
-            voiceState = voiceState,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(
-                    start = 16.dp,
-                    end = 16.dp,
-                    top = 8.dp,
-                    bottom = bottomInset + 10.dp,
+                    start = 18.dp,
+                    end = 18.dp,
+                    top = 2.dp,
+                    bottom = 14.dp,
                 ),
         )
     }
 }
 
+private suspend fun PointerInputScope.handleRootVerticalDrag(
+    getCoords: () -> LayoutCoordinates?,
+    pass: PointerEventPass,
+    shouldStart: (totalRootY: Float) -> Boolean,
+    onDragStart: () -> Unit,
+    onDrag: (deltaRootY: Float) -> Unit,
+    onDragEnd: () -> Unit,
+    onDragCancel: () -> Unit,
+) {
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false, pass = pass)
+        var activeId = down.id
+        val startRoot = getCoords().toRootOffset(down.position)
+        var lastRootY = startRoot.y
+        val touchSlop = viewConfiguration.touchSlop
+        var started = false
+        var finished = false
+        try {
+            while (true) {
+                val event = awaitPointerEvent(pass)
+                val changes = event.changes
+                val activeChange = changes.firstOrNull { it.id == activeId }
+                if (activeChange == null) {
+                    if (started) onDragCancel()
+                    finished = true
+                    break
+                }
+                if (!activeChange.pressed) {
+                    val nextPointer = changes.firstOrNull { it.pressed }
+                    if (nextPointer != null) {
+                        activeId = nextPointer.id
+                        lastRootY = getCoords().toRootOffset(nextPointer.position).y
+                        if (started) nextPointer.consume()
+                        continue
+                    }
+                    if (started) {
+                        val releasedCleanly = activeChange.changedToUpIgnoreConsumed() &&
+                            (pass == PointerEventPass.Initial || !activeChange.isConsumed)
+                        if (releasedCleanly) {
+                            onDragEnd()
+                        } else {
+                            onDragCancel()
+                        }
+                    }
+                    finished = true
+                    break
+                }
+                if (pass == PointerEventPass.Main && activeChange.isConsumed) {
+                    if (started) onDragCancel()
+                    finished = true
+                    break
+                }
+                val currentRoot = getCoords().toRootOffset(activeChange.position)
+                if (!started) {
+                    val totalDx = currentRoot.x - startRoot.x
+                    val totalDy = currentRoot.y - startRoot.y
+                    if (abs(totalDx) > touchSlop && abs(totalDx) > abs(totalDy)) {
+                        finished = true
+                        break
+                    }
+                    if (abs(totalDy) > touchSlop && abs(totalDy) >= abs(totalDx)) {
+                        if (!shouldStart(totalDy)) {
+                            finished = true
+                            break
+                        }
+                        started = true
+                        onDragStart()
+                        val overSlop = totalDy - sign(totalDy) * touchSlop
+                        activeChange.consume()
+                        lastRootY = currentRoot.y
+                        if (overSlop != 0f) onDrag(overSlop)
+                    }
+                } else {
+                    val deltaRootY = currentRoot.y - lastRootY
+                    lastRootY = currentRoot.y
+                    activeChange.consume()
+                    if (deltaRootY != 0f) onDrag(deltaRootY)
+                }
+            }
+        } finally {
+            if (started && !finished) {
+                onDragCancel()
+            }
+        }
+    }
+}
+
+private fun LayoutCoordinates?.toRootOffset(localPosition: Offset): Offset {
+    val coords = this?.takeIf { it.isAttached } ?: return localPosition
+    return coords.localToRoot(localPosition)
+}
+
 @Composable
-private fun AssistantComposer(
-    state: EtaVoiceUiState,
-    input: String,
+private fun DragHandle(
     colors: EtaVoicePanelColors,
-    focusRequester: FocusRequester,
-    onScreenContextSelect: () -> Unit,
-    onScreenContextRemove: () -> Unit,
-    onScreenTranslation: () -> Unit,
-    onToggleHistoryMenu: () -> Unit,
-    onNewConversation: () -> Unit,
-    onModelSelected: (String, String) -> Unit,
-    onSubmit: (String) -> Unit,
-    onStop: () -> Unit,
-    onCancelMessageEdit: () -> Unit,
-    onAttachImage: (String) -> Unit,
-    onAttachVideo: (String) -> Unit,
-    onRemoveImage: (String) -> Unit,
-    onAttachFiles: (List<String>) -> Unit,
-    onAttachFolder: (String) -> Unit,
-    onAttachFilePath: (String) -> Unit,
-    onRemoveFileReference: (String) -> Unit,
-    onReasoningEffortChange: (ReasoningEffort) -> Unit,
-    onAssistantSelected: (String) -> Unit,
-    onEditAssistant: (String) -> Unit,
-    history: List<AgentModelClient.ConversationMessage>,
-    autoCompressEnabled: Boolean,
-    assistantId: String,
-    voiceController: VoiceModeController,
-    voiceState: VoiceModeState,
-    voiceMode: Boolean = false,
-    voiceEntry: VoiceEntryMode? = null,
-    voiceModes: List<VoiceEntryMode> = emptyList(),
-    onSelectVoiceMode: (VoiceEntryMode) -> Unit = {},
-    voiceFeedback: String? = null,
-    onKeyboard: () -> Unit = {},
+    handoffReady: Boolean,
+    handoffProgress: Float,
     modifier: Modifier = Modifier,
 ) {
-    val voiceLevel by voiceController.level.collectAsState()
-    // 语音态暂停：点停止=暂停（保留面板），再点=恢复聆听。
-    var voicePaused by remember { mutableStateOf(false) }
-    LaunchedEffect(voiceState.active) {
-        if (voiceState.active) voicePaused = false
-    }
-    Column(
-        modifier = modifier.animateContentSize(
-            animationSpec = folmeSpring(damping = 0.92f, response = 0.34f),
-        ),
-    ) {
-        EtaSpeechFeedback(error = voiceFeedback)
-        AnimatedContent(
-            targetState = voiceMode,
-            transitionSpec = {
-                fadeIn(tween(250)) togetherWith fadeOut(tween(160)) using SizeTransform(clip = false)
-            },
-            contentAlignment = Alignment.BottomCenter,
-            label = "assistant_input_mode",
-        ) { inVoiceMode ->
-            if (inVoiceMode) {
-                AssistantVoiceCapsule(
-                    voiceState = voiceState,
-                    colors = colors,
-                    level = voiceLevel,
-                    paused = voicePaused,
-                    onToggleStop = {
-                        if (voicePaused) {
-                            voiceEntry?.let { mode -> voiceController.start(mode) }
-                            voicePaused = false
-                        } else {
-                            voiceController.stop()
-                            voicePaused = true
-                        }
-                    },
-                    onKeyboard = {
-                        voiceController.stop()
-                        onKeyboard()
-                    },
-                    onFinishSpeech = { voiceController.finishSpeech() },
-                    onHistory = onToggleHistoryMenu,
-                    selectedMode = voiceEntry,
-                    availableModes = voiceModes,
-                    onSelectMode = onSelectVoiceMode,
-                )
-            } else {
-                // AnimatedContent 的内容槽是 Box 语义（子项叠放）；三胶囊、间距与
-                // 输入栏必须自己收进一层 Column，否则会叠在同一位置被输入栏盖住。
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        ConversationCapsule(
-                            title = state.conversationTitle.ifBlank {
-                                stringResource(R.string.conversation_unnamed)
-                            },
-                            isMenuVisible = state.isHistoryMenuVisible,
-                            enabled = state.phase != EtaVoicePhase.PROCESSING,
-                            colors = colors,
-                            onClick = onToggleHistoryMenu,
-                        )
-                        ScreenContextAttachment(
-                            state = state.screenContext,
-                            enabled = state.phase != EtaVoicePhase.PROCESSING,
-                            colors = colors,
-                            onSelect = onScreenContextSelect,
-                            onRemove = onScreenContextRemove,
-                        )
-                        ScreenTranslationCapsule(
-                            enabled = state.phase != EtaVoicePhase.PROCESSING,
-                            colors = colors,
-                            onClick = onScreenTranslation,
-                        )
-                    }
-                    // Q3a：间距无条件保留。上游曾把它改成「非 CONSUMED 才留」，
-                    // 导致发送后 phase 变 CONSUMED、间距塌陷，三胶囊被压到贴住输入框。
-                    Spacer(Modifier.height(7.dp))
-                    // 与主界面共用同一个输入栏：附件入口、推理强度、模型选择、助手切换
-                    // 全部走同一套组件，两处不再各写一份；附件预览条也由输入栏自己渲染。
-                    key(state.conversationId) {
-                        AgentChatInputBar(
-                            input = input,
-                            modelPickerState = state.modelPickerState,
-                            history = history,
-                            autoCompressEnabled = autoCompressEnabled,
-                            showContextUsage = false,
-                            isStreaming = state.phase == EtaVoicePhase.PROCESSING,
-                            reasoningEffort = state.reasoningEffort,
-                            availableReasoningEfforts = state.availableReasoningEfforts,
-                            pendingImages = state.pendingImages,
-                            pendingFileReferences = state.pendingFileReferences,
-                            isEditingMessage = state.messageEdit != null,
-                            assistantId = assistantId,
-                            editHasLaterTurns = state.messageEdit?.hasLaterTurns == true,
-                            onReasoningEffortChange = onReasoningEffortChange,
-                            onModelSelected = onModelSelected,
-                            onSubmit = onSubmit,
-                            onStop = onStop,
-                            onAttachImage = onAttachImage,
-                            onAttachVideo = onAttachVideo,
-                            onRemoveImage = onRemoveImage,
-                            onAttachFiles = onAttachFiles,
-                            onAttachFolder = onAttachFolder,
-                            onAttachFilePath = onAttachFilePath,
-                            onRemoveFileReference = onRemoveFileReference,
-                            onCancelMessageEdit = onCancelMessageEdit,
-                            onEditAssistant = onEditAssistant,
-                            onAssistantSelected = onAssistantSelected,
-                            focusRequester = focusRequester,
-                            voiceState = voiceState,
-                            onStartVoiceMode = voiceController::start,
-                            onStopVoiceMode = voiceController::stop,
-                            overlayMode = true,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ScreenContextAttachment(
-    state: EtaScreenContextUiState,
-    enabled: Boolean,
-    colors: EtaVoicePanelColors,
-    onSelect: () -> Unit,
-    onRemove: () -> Unit,
-) {
-    AnimatedContent(
-        targetState = state,
-        transitionSpec = {
-            (fadeIn(tween(180, easing = LinearOutSlowInEasing)) +
-                slideInVertically(tween(180, easing = LinearOutSlowInEasing)) { it / 5 })
-                .togetherWith(
-                    fadeOut(tween(120, easing = FastOutSlowInEasing)) +
-                        slideOutVertically(tween(120, easing = FastOutSlowInEasing)) { -it / 6 },
-                )
-        },
-        contentKey = { it.phase to it.selected },
-        label = "assistant_screen_context",
-    ) { screenContext ->
-        when {
-            screenContext.phase == EtaScreenContextPhase.CONSUMED -> Unit
-            screenContext.phase == EtaScreenContextPhase.AVAILABLE && screenContext.selected -> {
-                SelectedScreenContext(
-                    previewDataUrl = screenContext.previewDataUrl,
-                    enabled = enabled,
-                    colors = colors,
-                    onRemove = onRemove,
-                )
-            }
-            else -> {
-                val available = screenContext.phase == EtaScreenContextPhase.AVAILABLE && enabled
-                Row(
-                    modifier = Modifier
-                        .height(34.dp)
-                        .squircleSurface(
-                            color = colors.input.copy(alpha = 0.62f),
-                            cornerRadius = 17.dp,
-                        )
-                        .squircleBorder(
-                            width = 0.5.dp,
-                            color = colors.borderHighlight.copy(alpha = 0.55f),
-                            cornerRadius = 17.dp,
-                        )
-                        .clickable(enabled = available, onClick = onSelect)
-                        .padding(horizontal = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    when (screenContext.phase) {
-                        EtaScreenContextPhase.CAPTURING -> CircularProgressIndicator(
-                            size = 15.dp,
-                            strokeWidth = 2.dp,
-                        )
-                        EtaScreenContextPhase.AVAILABLE -> Icon(
-                            imageVector = Icons.Rounded.DesktopWindows,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                            tint = if (available) colors.inputPrimary else colors.inputTertiary,
-                        )
-                        EtaScreenContextPhase.UNAVAILABLE -> Icon(
-                            imageVector = Icons.Rounded.CancelPresentation,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                            tint = colors.inputTertiary,
-                        )
-                        EtaScreenContextPhase.CONSUMED -> Unit
-                    }
-                    Spacer(Modifier.size(7.dp))
-                    Text(
-                        text = when (screenContext.phase) {
-                            EtaScreenContextPhase.CAPTURING -> stringResource(R.string.voice_screen_preparing)
-                            EtaScreenContextPhase.AVAILABLE -> stringResource(R.string.voice_screen_add)
-                            EtaScreenContextPhase.UNAVAILABLE -> stringResource(R.string.voice_screen_unavailable)
-                            EtaScreenContextPhase.CONSUMED -> ""
-                        },
-                        color = if (available) colors.inputPrimary else colors.inputSecondary,
-                        fontSize = 12.sp,
-                        maxLines = 1,
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ScreenTranslationCapsule(
-    enabled: Boolean,
-    colors: EtaVoicePanelColors,
-    onClick: () -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .height(34.dp)
-            .squircleSurface(
-                color = colors.input.copy(alpha = 0.62f),
-                cornerRadius = 17.dp,
-            )
-            .squircleBorder(
-                width = 0.5.dp,
-                color = colors.borderHighlight.copy(alpha = 0.55f),
-                cornerRadius = 17.dp,
-            )
-            .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            imageVector = Icons.Rounded.Translate,
-            contentDescription = null,
-            modifier = Modifier.size(16.dp),
-            tint = if (enabled) colors.inputPrimary else colors.inputTertiary,
-        )
-        Spacer(Modifier.size(7.dp))
-        Text(
-            text = stringResource(R.string.screen_translation_start),
-            color = if (enabled) colors.inputPrimary else colors.inputSecondary,
-            fontSize = 12.sp,
-            maxLines = 1,
-        )
-    }
-}
-
-@Composable
-private fun SelectedScreenContext(
-    previewDataUrl: String?,
-    enabled: Boolean,
-    colors: EtaVoicePanelColors,
-    onRemove: () -> Unit,
-) {
-    val previewBitmap = previewDataUrl?.let { rememberDataUrlBitmap(it) }
-    Row(
-        modifier = Modifier
-            .height(60.dp)
-            .squircleBackground(colors.input.copy(alpha = 0.92f), 15.dp)
-            .padding(5.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        previewBitmap?.let { bitmap ->
-            Image(
-                bitmap = bitmap,
-                contentDescription = stringResource(R.string.voice_screen_preview),
-                modifier = Modifier
-                    .size(50.dp)
-                    .squircleClip(11.dp),
-                contentScale = ContentScale.Crop,
-            )
-        }
-        Column(
-            modifier = Modifier.padding(start = 10.dp, end = 6.dp),
-        ) {
-            Text(
-                text = stringResource(R.string.voice_screen_title),
-                color = colors.inputPrimary,
-                fontSize = 13.sp,
-                maxLines = 1,
-            )
-            Text(
-                text = stringResource(R.string.voice_screen_context_summary),
-                color = colors.inputSecondary,
-                fontSize = 11.sp,
-                maxLines = 1,
-            )
-        }
-        IconButton(
-            onClick = onRemove,
-            enabled = enabled,
-            minWidth = 30.dp,
-            minHeight = 30.dp,
-            cornerRadius = 15.dp,
-        ) {
-            Icon(
-                imageVector = Icons.Rounded.Close,
-                contentDescription = stringResource(R.string.voice_screen_remove),
-                modifier = Modifier.size(14.dp),
-                tint = if (enabled) colors.inputSecondary else colors.inputTertiary,
-            )
-        }
-    }
-}
-
-@Composable
-private fun DragHandle(colors: EtaVoicePanelColors, modifier: Modifier = Modifier) {
+    // 把手是接管的唯一入口：拉到阈值时变宽并染成主色，配合微文案与触觉反馈提示松手进入本体。
+    val handleWidth by animateDpAsState(
+        targetValue = if (handoffReady) 52.dp else 36.dp,
+        animationSpec = folmeSpring(damping = 0.88f, response = 0.26f),
+        label = "assistant_handle_width",
+    )
+    val handleColor by animateColorAsState(
+        targetValue = if (handoffReady) colors.accent else colors.tertiary,
+        animationSpec = tween(160),
+        label = "assistant_handle_color",
+    )
+    val hintAlpha by animateFloatAsState(
+        targetValue = if (handoffProgress > 0.18f) 1f else 0f,
+        animationSpec = tween(140),
+        label = "assistant_handoff_hint_alpha",
+    )
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(34.dp),
-        contentAlignment = Alignment.Center,
+            .height(38.dp)
+            .testTag("eta_assistant_drag_handle"),
     ) {
         Box(
             modifier = Modifier
-                .size(width = 36.dp, height = 4.dp)
+                .align(Alignment.TopCenter)
+                .padding(top = 15.dp)
+                .graphicsLayer { translationY = -7.dp.toPx() * hintAlpha }
+                .size(width = handleWidth, height = 4.dp)
                 .clip(CircleShape)
-                .background(colors.tertiary),
+                .background(handleColor),
         )
+        if (hintAlpha > 0.01f) {
+            Text(
+                text = stringResource(
+                    if (handoffReady) R.string.voice_handoff_release else R.string.voice_handoff_pull,
+                ),
+                color = if (handoffReady) colors.accent else colors.inputSecondary,
+                fontSize = 11.sp,
+                lineHeight = 14.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 3.dp)
+                    .graphicsLayer { alpha = hintAlpha },
+            )
+        }
     }
+}
+
+private fun requiredPanelHeightPx(
+    listState: LazyListState,
+    currentAnimatedHeightPx: Float,
+    settledHeightPx: Float,
+    dragHandleHeightPx: Float,
+    contentFitSlackPx: Float,
+    autoSettleTolerancePx: Float,
+    baseContentHeightPx: Float,
+    maxContentHeightPx: Float,
+): Float? {
+    val layout = listState.layoutInfo
+    if (layout.totalItemsCount == 0 || layout.viewportSize.height <= 0) return null
+    val first = layout.visibleItemsInfo.firstOrNull() ?: return null
+    val last = layout.visibleItemsInfo.lastOrNull() ?: return null
+    val visibleSpanPx = (last.offset + last.size - first.offset +
+        layout.beforeContentPadding + layout.afterContentPadding).toFloat()
+    val allItemsVisible = first.index == 0 && last.index == layout.totalItemsCount - 1
+    val requiredContentHeightPx = if (allItemsVisible) {
+        dragHandleHeightPx + visibleSpanPx + contentFitSlackPx
+    } else if (currentAnimatedHeightPx >= settledHeightPx - autoSettleTolerancePx) {
+        maxContentHeightPx
+    } else {
+        dragHandleHeightPx + visibleSpanPx + contentFitSlackPx
+    }
+    return requiredContentHeightPx.coerceIn(baseContentHeightPx, maxContentHeightPx)
 }
 
 private fun assistantBaseHeightPx(
@@ -1327,425 +953,6 @@ private fun assistantBaseHeightPx(
     density: Float,
 ): Float {
     if (messages.isEmpty()) return 0f
-    val estimatedLines = messages.sumOf { message ->
-        when (message) {
-            is UserMessageUi -> ceil(message.content.length / 22f).toInt().coerceAtLeast(1)
-            is AgentMessageUi -> ceil(message.content.length / 24f).toInt().coerceAtLeast(1)
-            is ThinkingMessageUi -> 2
-            is io.github.mangi.eta.ui.model.AgentQuestionMessageUi -> 7 + message.request.options.size * 2
-            is ToolActivityMessageUi -> 2
-            else -> 1
-        }
-    }
-    val estimatedDp = 92f + estimatedLines * 23f + messages.size * 12f
-    return max(230f, estimatedDp)
-        .times(density)
-        .coerceAtMost(maxHeightPx * 0.68f)
-}
-
-
-@Composable
-private fun ConversationCapsule(
-    title: String,
-    isMenuVisible: Boolean,
-    enabled: Boolean,
-    colors: EtaVoicePanelColors,
-    onClick: () -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .height(32.dp)
-            .squircleSurface(
-                color = colors.input.copy(alpha = 0.62f),
-                cornerRadius = 16.dp,
-            )
-            .squircleBorder(
-                width = 0.5.dp,
-                color = colors.borderHighlight.copy(alpha = 0.55f),
-                cornerRadius = 16.dp,
-            )
-            .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            imageVector = Icons.AutoMirrored.Rounded.Chat,
-            contentDescription = null,
-            modifier = Modifier.size(15.dp),
-            tint = if (enabled) colors.inputPrimary else colors.inputTertiary,
-        )
-        Spacer(Modifier.size(6.dp))
-        Text(
-            text = title,
-            color = if (enabled) colors.inputPrimary else colors.inputSecondary,
-            fontSize = 12.sp,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.widthIn(max = 140.dp),
-        )
-        Spacer(Modifier.size(4.dp))
-        Icon(
-            imageVector = if (isMenuVisible) Icons.Rounded.KeyboardArrowUp else Icons.Rounded.KeyboardArrowDown,
-            contentDescription = null,
-            modifier = Modifier.size(16.dp),
-            tint = if (enabled) colors.inputSecondary else colors.inputTertiary,
-        )
-    }
-}
-
-@Composable
-private fun AssistantHistorySheet(
-    state: EtaVoiceUiState,
-    colors: EtaVoicePanelColors,
-    onSelectConversation: (String) -> Unit,
-    onNewConversation: () -> Unit,
-    onDeleteConversation: (String) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Column(
-        modifier = modifier
-            .heightIn(max = 240.dp)
-            .squircleSurface(
-                color = colors.content,
-                cornerRadius = 20.dp,
-            )
-            .padding(vertical = 10.dp),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = stringResource(R.string.action_conversation_history),
-                fontSize = 14.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = colors.inputPrimary,
-            )
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .clickable(onClick = onNewConversation)
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Add,
-                    contentDescription = null,
-                    modifier = Modifier.size(15.dp),
-                    tint = colors.inputPrimary,
-                )
-                Spacer(Modifier.size(4.dp))
-                Text(
-                    text = stringResource(R.string.action_new_conversation),
-                    fontSize = 12.sp,
-                    color = colors.inputPrimary,
-                )
-            }
-        }
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(0.5.dp)
-                .background(colors.inputTertiary.copy(alpha = 0.2f)),
-        )
-        if (state.historyConversations.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 24.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    text = stringResource(R.string.conversation_empty),
-                    fontSize = 13.sp,
-                    color = colors.inputTertiary,
-                )
-            }
-        } else {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 180.dp),
-            ) {
-                items(state.historyConversations, key = { it.id }) { item ->
-                    HistoryConversationItemRow(
-                        item = item,
-                        colors = colors,
-                        onSelect = { onSelectConversation(item.id) },
-                        onDelete = { onDeleteConversation(item.id) },
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun HistoryConversationItemRow(
-    item: AssistantConversationItem,
-    colors: EtaVoicePanelColors,
-    onSelect: () -> Unit,
-    onDelete: () -> Unit,
-) {
-    val isSelected = item.isCurrent
-    var confirmDelete by remember { mutableStateOf(false) }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 8.dp, vertical = 2.dp)
-            .squircleSurface(
-                color = if (isSelected) colors.input.copy(alpha = 0.85f) else Color.Transparent,
-                cornerRadius = 12.dp,
-            )
-            .clickable(onClick = onSelect)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            imageVector = Icons.AutoMirrored.Rounded.Chat,
-            contentDescription = null,
-            modifier = Modifier.size(16.dp),
-            tint = if (isSelected) colors.inputPrimary else colors.inputSecondary,
-        )
-        Spacer(Modifier.size(10.dp))
-        Text(
-            text = item.title.ifBlank { stringResource(R.string.conversation_unnamed) },
-            fontSize = 13.sp,
-            color = if (isSelected) colors.inputPrimary else colors.inputSecondary,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
-        )
-        Box {
-            IconButton(
-                onClick = { confirmDelete = true },
-                modifier = Modifier.size(28.dp),
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Delete,
-                    contentDescription = stringResource(R.string.action_delete),
-                    modifier = Modifier.size(16.dp),
-                    tint = colors.inputSecondary,
-                )
-            }
-            // 与浮窗其它弹层同款：二次确认后再真正删除，避免误触。
-            EtaDropdownMenu(
-                expanded = confirmDelete,
-                onDismissRequest = { confirmDelete = false },
-                alignEnd = true,
-                preferAbove = true,
-                minWidth = 0.dp,
-                focusable = false,
-            ) {
-                Text(
-                    text = stringResource(R.string.conversation_delete_title),
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = colors.inputPrimary,
-                    modifier = Modifier.padding(
-                        start = 12.dp,
-                        end = 12.dp,
-                        top = 4.dp,
-                        bottom = 2.dp,
-                    ),
-                )
-                Text(
-                    text = stringResource(R.string.conversation_delete_message),
-                    fontSize = 12.sp,
-                    color = colors.inputSecondary,
-                    modifier = Modifier.padding(
-                        start = 12.dp,
-                        end = 12.dp,
-                        bottom = 4.dp,
-                    ),
-                )
-                DropdownMenuItem(
-                    modifier = Modifier.height(40.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp),
-                    text = {
-                        Text(
-                            text = stringResource(R.string.action_cancel),
-                            fontSize = 14.sp,
-                            color = colors.inputPrimary,
-                        )
-                    },
-                    onClick = { confirmDelete = false },
-                )
-                DropdownMenuItem(
-                    modifier = Modifier.height(40.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp),
-                    text = {
-                        Text(
-                            text = stringResource(R.string.action_delete),
-                            fontSize = 14.sp,
-                            color = MiuixTheme.colorScheme.error,
-                        )
-                    },
-                    onClick = {
-                        confirmDelete = false
-                        onDelete()
-                    },
-                )
-            }
-        }
-        if (isSelected) {
-            Spacer(Modifier.size(4.dp))
-            Icon(
-                imageVector = Icons.Rounded.Check,
-                contentDescription = null,
-                modifier = Modifier.size(16.dp),
-                tint = colors.inputPrimary,
-            )
-        }
-    }
-}
-
-@Composable
-private fun AssistantVoiceCapsule(
-    voiceState: VoiceModeState,
-    colors: EtaVoicePanelColors,
-    level: Float,
-    paused: Boolean,
-    onToggleStop: () -> Unit,
-    onKeyboard: () -> Unit,
-    onFinishSpeech: () -> Unit,
-    onHistory: () -> Unit,
-    selectedMode: VoiceEntryMode?,
-    availableModes: List<VoiceEntryMode>,
-    onSelectMode: (VoiceEntryMode) -> Unit,
-) {
-    var modeMenu by remember { mutableStateOf(false) }
-    Column(modifier = Modifier.fillMaxWidth()) {
-        // 参考图一：大卡片压胶囊上方；识别中显示识别文本，思考/朗读显示流式回复。
-        val voiceStreaming = voiceState.phase == VoiceModePhase.Thinking ||
-            voiceState.phase == VoiceModePhase.Speaking
-        VoiceReplyCard(
-            // 暂停时卡片状态也要停在「已暂停」，否则 voiceState 已 Off 会显示成「打开语音模式」。
-            statusText = if (paused) {
-                stringResource(R.string.voice_mode_paused)
-            } else {
-                voiceReplyPhaseLabel(voiceState.phase, voiceStreaming)
-            },
-            reply = when (voiceState.phase) {
-                VoiceModePhase.Connecting,
-                VoiceModePhase.Listening,
-                VoiceModePhase.Transcribing -> voiceState.transcript
-                else -> voiceState.reply
-            },
-            streaming = voiceStreaming,
-            // 浮窗没有可供 textureBlur 取样的窗口内容，传 null 走半透明玻璃降级。
-            backdrop = null,
-            modifier = Modifier.padding(bottom = 20.dp),
-        )
-        Box(modifier = Modifier.fillMaxWidth()) {
-        VoiceControlCapsule(
-            statusText = if (paused) {
-                stringResource(R.string.voice_mode_paused)
-            } else {
-                voiceReplyPhaseLabel(voiceState.phase, false)
-            },
-            level = level,
-            listening = !paused && voiceState.phase == VoiceModePhase.Listening,
-            paused = paused,
-            // 浮窗没有可供 textureBlur 取样的窗口内容，传 null 走实心玻璃降级。
-            backdrop = null,
-            onMessage = onHistory,
-            onKeyboard = onKeyboard,
-            onStop = onToggleStop,
-            onStopLongClick = if (availableModes.size > 1) ({ modeMenu = true }) else null,
-            modifier = Modifier.padding(horizontal = 11.dp),
-        )
-        if (availableModes.size > 1) {
-            EtaDropdownMenu(
-                expanded = modeMenu,
-                onDismissRequest = { modeMenu = false },
-                alignEnd = true,
-                preferAbove = true,
-            ) {
-                availableModes.forEach { mode ->
-                    val label = when (mode) {
-                        VoiceEntryMode.DICTATION -> R.string.voice_mode_dictation
-                        VoiceEntryMode.UNIVERSAL -> R.string.voice_mode_universal
-                        VoiceEntryMode.DOUBAO_DUPLEX -> R.string.voice_mode_doubao
-                    }
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                modeMenu = false
-                                onSelectMode(mode)
-                            }
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = stringResource(label),
-                            fontSize = 13.sp,
-                            color = if (mode == selectedMode) colors.inputPrimary else colors.inputSecondary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f),
-                        )
-                        if (mode == selectedMode) {
-                            Text(
-                                text = "✓",
-                                fontSize = 13.sp,
-                                color = colors.inputPrimary,
-                            )
-                        }
-                    }
-                }
-            }
-        }
-        }
-    }
-}
-
-@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
-@Composable
-private fun AssistantRoundButton(
-    iconRes: Int? = null,
-    contentDescription: String,
-    progress: Float,
-    enabled: Boolean,
-    onClick: () -> Unit,
-    imageVector: ImageVector? = null,
-    onLongClick: (() -> Unit)? = null,
-) {
-    Box(
-        modifier = Modifier
-            .size(40.dp)
-            .graphicsLayer {
-                alpha = progress
-                scaleX = 0.8f + progress * 0.2f
-                scaleY = 0.8f + progress * 0.2f
-            }
-            .clip(CircleShape)
-            .background(Color(0xFFF4F5F7))
-            .combinedClickable(
-                enabled = enabled,
-                onClick = onClick,
-                onLongClick = onLongClick,
-            ),
-        contentAlignment = Alignment.Center,
-    ) {
-        if (imageVector != null) {
-            Icon(
-                imageVector = imageVector,
-                contentDescription = contentDescription,
-                tint = Color(0xE6000000),
-                modifier = Modifier.size(22.dp),
-            )
-        } else if (iconRes != null) {
-            Icon(
-                painter = painterResource(iconRes),
-                contentDescription = contentDescription,
-                tint = Color(0xE6000000),
-                modifier = Modifier.size(22.dp),
-            )
-        }
-    }
+    // 回复增量只改变列表内容，不重新估算浮窗高度，避免与跟底滚动互相追赶。
+    return (304f * density).coerceAtMost(maxHeightPx)
 }

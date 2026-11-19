@@ -19,19 +19,15 @@ internal object AndroidAgentLogger : AgentLogger {
     private val logThrottle = LogThrottle()
 
     override fun debug(message: () -> String) {
-        val text = message()
-        Log.d(ModuleConfig.TAG, text)
-        AppFileLogger.debug(text)
+        Log.d(ModuleConfig.TAG, message())
     }
 
     override fun info(message: String) {
         Log.i(ModuleConfig.TAG, message)
-        AppFileLogger.info(message)
     }
 
     override fun warn(message: String) {
         Log.w(ModuleConfig.TAG, message)
-        AppFileLogger.warn(message)
     }
 
     fun warnThrottled(
@@ -50,7 +46,6 @@ internal object AndroidAgentLogger : AgentLogger {
         } else {
             Log.e(ModuleConfig.TAG, message, throwable)
         }
-        AppFileLogger.error(message, throwable)
     }
 
     fun errorThrottled(

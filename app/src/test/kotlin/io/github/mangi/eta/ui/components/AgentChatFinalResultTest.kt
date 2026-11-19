@@ -9,18 +9,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class AgentChatFinalResultTest {
-    @Test fun failureStaysClosedWhileRetryStreamsAndAfterItCompletes() {
-        val messages = listOf(
-            UserMessageUi("user-run-old", "task"),
-            AgentMessageUi("assistant-run-old-1", "partial"),
-            io.github.mangi.eta.ui.model.SystemNoticeMessageUi("failure",
-                io.github.mangi.eta.ui.model.SystemNoticeCode.RuntimeFailed),
-            AgentMessageUi("assistant-run-new-1", "new result"),
-        )
-        assertEquals(setOf("failure"), resolveFinalResultMessageIds(messages, isStreaming = true))
-        assertEquals(setOf("failure", "assistant-run-new-1"), resolveFinalResultMessageIds(messages))
-    }
-
 
     @Test
     fun onlyLastAgentMessageOfEachTurnIsFinalResult() {
@@ -126,71 +114,4 @@ class AgentChatFinalResultTest {
         status = ToolActivityStatusUi.Success,
         argumentsSummary = "query",
     )
-
-    @Test
-    fun steerSupplementDoesNotCloseTurnWhileContinuing() {
-        val messages = listOf(
-            UserMessageUi(id = "user-1", content = "任务"),
-            AgentMessageUi(id = "agent-1", content = "我先做这一步。"),
-            UserMessageUi(id = "user-run-1-supplement-0", content = "再加上这个"),
-            AgentMessageUi(id = "agent-2", content = "继续输出中"),
-        )
-        assertEquals(
-            emptySet<String>(),
-            resolveFinalResultMessageIds(messages, isStreaming = true),
-        )
-        assertEquals(
-            setOf("agent-2"),
-            resolveFinalResultMessageIds(messages, isStreaming = false),
-        )
-    }
-
-    @Test
-    fun steerSupplementKeepsEarlierTurnFinalResult() {
-        val messages = listOf(
-            UserMessageUi(id = "user-1", content = "第一问"),
-            AgentMessageUi(id = "agent-1", content = "第一答"),
-            UserMessageUi(id = "user-2", content = "第二问"),
-            AgentMessageUi(id = "agent-2", content = "被打断"),
-            UserMessageUi(id = "user-run-2-supplement-0", content = "补充"),
-        )
-        assertEquals(
-            setOf("agent-1"),
-            resolveFinalResultMessageIds(messages, isStreaming = true),
-        )
-        assertEquals(
-            setOf("agent-1", "agent-2"),
-            resolveFinalResultMessageIds(messages, isStreaming = false),
-        )
-    }
-
-    @Test
-    fun compressingTurnDoesNotMarkCurrentResult() {
-        val messages = listOf(
-            UserMessageUi(id = "user-1", content = "写故事"),
-            AgentMessageUi(id = "agent-1", content = "写到一半"),
-        )
-        assertEquals(
-            emptySet<String>(),
-            resolveFinalResultMessageIds(messages, isCompressingContext = true),
-        )
-        assertEquals(
-            setOf("agent-1"),
-            resolveFinalResultMessageIds(messages, isCompressingContext = false),
-        )
-    }
-
-    @Test
-    fun compressingKeepsFinalResultOfCompletedEarlierTurns() {
-        val messages = listOf(
-            UserMessageUi(id = "user-1", content = "第一问"),
-            AgentMessageUi(id = "agent-1", content = "第一答"),
-            UserMessageUi(id = "user-2", content = "写故事"),
-            AgentMessageUi(id = "agent-2", content = "写到一半"),
-        )
-        assertEquals(
-            setOf("agent-1"),
-            resolveFinalResultMessageIds(messages, isCompressingContext = true),
-        )
-    }
 }

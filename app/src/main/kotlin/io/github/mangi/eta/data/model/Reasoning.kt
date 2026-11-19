@@ -16,28 +16,28 @@ enum class ReasoningEffort(
     internal val rank: Int,
 ) {
     @SerialName("off")
-    OFF("off", "关闭", 0),
+    OFF("off", "Off", 0),
 
     @SerialName("default")
-    DEFAULT("default", "默认", 1),
+    DEFAULT("default", "Default", 1),
 
     @SerialName("minimal")
-    MINIMAL("minimal", "最小", 2),
+    MINIMAL("minimal", "Minimal", 2),
 
     @SerialName("low")
-    LOW("low", "低", 3),
+    LOW("low", "Low", 3),
 
     @SerialName("medium")
-    MEDIUM("medium", "中", 4),
+    MEDIUM("medium", "Medium", 4),
 
     @SerialName("high")
-    HIGH("high", "高", 5),
+    HIGH("high", "High", 5),
 
     @SerialName("xhigh")
-    XHIGH("xhigh", "超高", 6),
+    XHIGH("xhigh", "XHigh", 6),
 
     @SerialName("max")
-    MAX("max", "极高", 7),
+    MAX("max", "Max", 7),
     ;
 
     val enablesReasoning: Boolean
@@ -85,6 +85,7 @@ data class ModelReasoningCapabilities(
     val selectableEfforts: List<ReasoningEffort>
         get() = buildList {
             if (canDisable && !mandatory) add(ReasoningEffort.OFF)
+            add(ReasoningEffort.DEFAULT)
             supportedEfforts
                 .asSequence()
                 .filter { it != ReasoningEffort.OFF && it != ReasoningEffort.DEFAULT }
@@ -97,16 +98,11 @@ data class ModelReasoningCapabilities(
         val selectable = selectableEfforts
         if (requested in selectable) return requested
         if (requested == ReasoningEffort.OFF || requested == ReasoningEffort.DEFAULT) {
-            return when {
-                canDisable && !mandatory -> ReasoningEffort.OFF
-                supportedEfforts.isEmpty() && mandatory -> ReasoningEffort.DEFAULT
-                else -> selectable.firstOrNull { it != ReasoningEffort.OFF } ?: ReasoningEffort.OFF
-            }
+            return ReasoningEffort.DEFAULT
         }
         return selectable
             .filter { it != ReasoningEffort.OFF && it.rank <= requested.rank }
             .maxByOrNull(ReasoningEffort::rank)
-            ?: selectable.firstOrNull { it != ReasoningEffort.OFF }
-            ?: if (mandatory) ReasoningEffort.DEFAULT else ReasoningEffort.OFF
+            ?: ReasoningEffort.DEFAULT
     }
 }

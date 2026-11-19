@@ -5,19 +5,19 @@ import io.github.mangi.eta.data.model.ModelReasoningCapabilities
 import io.github.mangi.eta.data.model.ProviderSourceTypes
 import io.github.mangi.eta.data.model.ReasoningEffort
 
-/**
- * If a model supports reasoning, expose every thinking level.
- * Catalog rules only decide whether reasoning is available, not which
- * individual levels to check.
- */
 internal object ReasoningCapabilityResolver {
-    private val allEffortTiers = listOf(
-        ReasoningEffort.MINIMAL,
+    private val lowToMax = listOf(
         ReasoningEffort.LOW,
         ReasoningEffort.MEDIUM,
         ReasoningEffort.HIGH,
         ReasoningEffort.XHIGH,
         ReasoningEffort.MAX,
+    )
+    private val lowToXHigh = listOf(
+        ReasoningEffort.LOW,
+        ReasoningEffort.MEDIUM,
+        ReasoningEffort.HIGH,
+        ReasoningEffort.XHIGH,
     )
 
     fun resolve(
@@ -26,116 +26,214 @@ internal object ReasoningCapabilityResolver {
         inferExactCatalogModel: Boolean = false,
     ): ModelReasoningCapabilities? {
         if (model.effectiveReasoning == false) return null
-        if (model.reasoningOverride == true) {
-            val override = model.reasoningCapabilitiesOverride
-            if (override != null && (hasUsableEffortTiers(override) || isToggleOnly(override))) {
-                return allReasoningCapabilities(
-                    canDisable = override.canDisable || !override.mandatory,
-                    mandatory = override.mandatory,
-                    supportsBudget = override.supportsBudget,
-                    maxBudgetTokens = override.maxBudgetTokens,
-                    defaultEffort = override.defaultEffort ?: ReasoningEffort.MEDIUM,
-                )
-            }
-            return catalogByModelId(model.modelId) ?: allReasoningCapabilities()
+        model.effectiveReasoningCapabilities?.let { return it }
+        if (model.effectiveReasoning != true) {
+            return if (inferExactCatalogModel) catalogCapabilities(sourceType, model.modelId) else null
         }
-
-        val declared = model.reasoningCapabilities
-        if (declared != null && (hasUsableEffortTiers(declared) || isToggleOnly(declared) || declared.mandatory)) {
-            return allReasoningCapabilities(
-                canDisable = declared.canDisable || !declared.mandatory,
-                mandatory = declared.mandatory,
-                supportsBudget = declared.supportsBudget,
-                maxBudgetTokens = declared.maxBudgetTokens,
-                defaultEffort = declared.defaultEffort ?: ReasoningEffort.MEDIUM,
+        return catalogCapabilities(sourceType, model.modelId)
+            ?: familyCapabilities(sourceType, model.modelId)
+            ?: ModelReasoningCapabilities(
+                defaultEnabled = true,
+                mandatory = true,
             )
-        }
-
-        val catalog = catalogByModelId(model.modelId)
-        if (catalog != null) return catalog
-
-        if (model.effectiveReasoning == true) {
-            return allReasoningCapabilities()
-        }
-        if (inferExactCatalogModel) return null
-        return null
     }
-
-    fun automaticCapabilities(
-        model: Model,
-        sourceType: String = ProviderSourceTypes.CUSTOM,
-    ): ModelReasoningCapabilities? = resolve(
-        sourceType = sourceType,
-        model = model.copy(
-            reasoningOverride = null,
-            reasoningCapabilitiesOverride = null,
-        ),
-    )
-
-    fun suggestedCapabilities(
-        model: Model,
-        sourceType: String = ProviderSourceTypes.CUSTOM,
-    ): ModelReasoningCapabilities = automaticCapabilities(model, sourceType)
-        ?: resolve(
-            sourceType = sourceType,
-            model = model.copy(
-                reasoning = true,
-                reasoningOverride = null,
-                reasoningCapabilitiesOverride = null,
-            ),
-        )
-        ?: allReasoningCapabilities()
 
     fun catalogCapabilities(
         sourceType: String,
         modelId: String,
-    ): ModelReasoningCapabilities? = catalogByModelId(modelId)
+    ): ModelReasoningCapabilities? {
+        val model = modelId.trim().lowercase()
+        return when (sourceType) {
+            ProviderSourceTypes.OPENAI -> when {
+                model == "gpt-6-astra" -> capabilities(lowToMax, mandatory = true)
+                model == "gpt-6.1-sol" -> capabilities(
+                    lowToMax, mandatory = true, defaultEffort = ReasoningEffort.MEDIUM,
+                )
+                model == "gpt-6-sol" || model == "gpt-6-luna" -> capabilities(
+                    lowToMax,
+                    canDisable = true,
+                    defaultEffort = ReasoningEffort.MEDIUM,
+                )
+                model == "gpt-5.6" || model in setOf(
+                    "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
+                ) -> capabilities(
+                    lowToMax,
+                    canDisable = true,
+                    defaultEffort = ReasoningEffort.MEDIUM,
+                )
+                model == "gpt-5.5" ->
+                    capabilities(
+                        lowToXHigh,
+                        canDisable = true,
+                        defaultEffort = ReasoningEffort.MEDIUM,
+                    )
+                else -> null
+            }
 
-    internal fun catalogByModelId(modelId: String): ModelReasoningCapabilities? {
-        val id = normalizedId(modelId)
-        if (id.isEmpty()) return null
-        if (!isKnownReasoningModel(id)) return null
-        return when {
-            hasPrefix(id, "qwen3-7") -> allReasoningCapabilities(
-                supportsBudget = true,
-                maxBudgetTokens = 262_144,
-                defaultEffort = ReasoningEffort.MAX,
-            )
-            hasPrefix(id, "kimi-k3") -> allReasoningCapabilities(
-                canDisable = false,
-                mandatory = true,
-                defaultEffort = ReasoningEffort.MAX,
-            )
-            else -> allReasoningCapabilities()
+            ProviderSourceTypes.GEMINI -> GeminiModelCapabilities.reasoningCapabilities(model)
+
+            ProviderSourceTypes.ANTHROPIC -> when (model) {
+                "claude-fable-5", "claude-fable-5-1" ->
+                    capabilities(
+                        lowToMax,
+                        mandatory = true,
+                        defaultEffort = ReasoningEffort.HIGH,
+                    )
+                "claude-opus-5-5" ->
+                    capabilities(
+                        lowToMax,
+                        mandatory = true,
+                        defaultEffort = ReasoningEffort.MEDIUM,
+                    )
+                "claude-opus-4-8", "claude-sonnet-5" ->
+                    capabilities(
+                        lowToMax,
+                        canDisable = true,
+                        defaultEffort = ReasoningEffort.HIGH,
+                    )
+                else -> null
+            }
+
+            ProviderSourceTypes.BAILIAN -> when {
+                model.startsWith("qwen3.8-") -> capabilities(
+                    supported = listOf(
+                        ReasoningEffort.LOW,
+                        ReasoningEffort.MEDIUM,
+                        ReasoningEffort.XHIGH,
+                    ),
+                    canDisable = true,
+                    defaultEffort = ReasoningEffort.XHIGH,
+                )
+                model.startsWith("qwen3.7-") -> capabilities(
+                    supported = lowToMax,
+                    canDisable = true,
+                    supportsBudget = true,
+                    maxBudgetTokens = 262_144,
+                    defaultEffort = ReasoningEffort.MAX,
+                )
+                model == "deepseek-v4.1-flash" -> capabilities(
+                    supported = listOf(ReasoningEffort.LOW, ReasoningEffort.HIGH, ReasoningEffort.MAX),
+                    canDisable = true,
+                    defaultEffort = ReasoningEffort.HIGH,
+                )
+                model == "kimi-k3" -> capabilities(
+                    supported = listOf(ReasoningEffort.LOW, ReasoningEffort.HIGH, ReasoningEffort.MAX),
+                    mandatory = true,
+                    defaultEffort = ReasoningEffort.MAX,
+                )
+                model.startsWith("kimi-k2.7-code") -> mandatoryDefault()
+                model.startsWith("kimi-k2.6") -> capabilities(emptyList(), canDisable = true)
+                else -> null
+            }
+
+            ProviderSourceTypes.DEEPSEEK -> when {
+                model == "deepseek-flash" ->
+                    capabilities(
+                        listOf(ReasoningEffort.LOW, ReasoningEffort.HIGH, ReasoningEffort.MAX),
+                        canDisable = true,
+                        defaultEffort = ReasoningEffort.HIGH,
+                    )
+                model.startsWith("deepseek-v4-flash") ->
+                    capabilities(
+                        listOf(ReasoningEffort.LOW, ReasoningEffort.HIGH, ReasoningEffort.MAX),
+                        canDisable = true,
+                        defaultEffort = ReasoningEffort.HIGH,
+                    )
+                model.startsWith("deepseek-v4-pro") ->
+                    capabilities(
+                        listOf(ReasoningEffort.HIGH, ReasoningEffort.MAX),
+                        canDisable = true,
+                        defaultEffort = ReasoningEffort.HIGH,
+                    )
+                else -> null
+            }
+
+            ProviderSourceTypes.MOONSHOT -> when {
+                model.startsWith("kimi-k3") -> capabilities(
+                    supported = listOf(ReasoningEffort.LOW, ReasoningEffort.HIGH, ReasoningEffort.MAX),
+                    mandatory = true,
+                    defaultEffort = ReasoningEffort.MAX,
+                )
+                model.startsWith("kimi-k2.7-code") -> mandatoryDefault()
+                model.startsWith("kimi-k2.6") || model.startsWith("kimi-k2.5") ->
+                    capabilities(emptyList(), canDisable = true)
+                else -> null
+            }
+
+            ProviderSourceTypes.MIMO -> when {
+                model.startsWith("mimo-v2.5") || model.startsWith("mimo-v2.6") ->
+                    capabilities(emptyList(), canDisable = true)
+                else -> null
+            }
+
+            ProviderSourceTypes.MINIMAX -> mandatoryDefault()
+            ProviderSourceTypes.STEPFUN -> when {
+                model == "step-5-preview" || model == "step-3.7-flash" -> capabilities(
+                    listOf(ReasoningEffort.LOW, ReasoningEffort.MEDIUM, ReasoningEffort.HIGH),
+                    mandatory = true,
+                    defaultEffort = ReasoningEffort.MEDIUM,
+                )
+                model.startsWith("step-3.5-flash-2603") -> capabilities(
+                    listOf(ReasoningEffort.LOW, ReasoningEffort.HIGH),
+                    mandatory = true,
+                )
+                else -> mandatoryDefault()
+            }
+
+            else -> null
         }
     }
 
-    private fun isKnownReasoningModel(id: String): Boolean = when {
-        hasPrefix(id, "gpt-5") || hasPrefix(id, "o1") || hasPrefix(id, "o3") || hasPrefix(id, "o4") -> true
-        hasPrefix(id, "claude-") -> true
-        hasPrefix(id, "deepseek") -> true
-        hasPrefix(id, "kimi-") -> true
-        hasPrefix(id, "qwen3-") -> true
-        containsToken(id, "mimo") || containsToken(id, "agnes") -> true
-        containsToken(id, "seed-") || containsToken(id, "bytedance-seed") -> true
-        containsToken(id, "minimax") -> true
-        hasPrefix(id, "step-") -> true
-        containsToken(id, "grok") &&
-            "non-reasoning" !in id &&
-            !hasPrefix(id, "grok-build") &&
-            !hasPrefix(id, "grok-stt") &&
-            !hasPrefix(id, "grok-tts") -> true
-        else -> false
+    private fun familyCapabilities(
+        sourceType: String,
+        modelId: String,
+    ): ModelReasoningCapabilities? {
+        val model = modelId.trim().lowercase()
+        return when (sourceType) {
+            ProviderSourceTypes.BAILIAN -> when {
+                model.startsWith("qwen3.7-") -> catalogCapabilities(sourceType, model)
+                model.startsWith("qwen3.8-") -> catalogCapabilities(sourceType, model)
+                model == "deepseek-v4.1-flash" -> catalogCapabilities(sourceType, model)
+                model == "kimi-k3" -> catalogCapabilities(sourceType, model)
+                "deepseek" in model -> capabilities(
+                    listOf(ReasoningEffort.HIGH, ReasoningEffort.MAX),
+                    canDisable = true,
+                    defaultEffort = ReasoningEffort.HIGH,
+                )
+                model.startsWith("kimi-k3") -> capabilities(
+                    listOf(ReasoningEffort.MAX),
+                    mandatory = true,
+                    defaultEffort = ReasoningEffort.MAX,
+                )
+                model.startsWith("kimi-k2.7-code") -> mandatoryDefault()
+                model.startsWith("kimi-k2.6") -> capabilities(emptyList(), canDisable = true)
+                else -> null
+            }
+
+            ProviderSourceTypes.DEEPSEEK,
+            ProviderSourceTypes.MOONSHOT,
+            ProviderSourceTypes.MIMO,
+            ProviderSourceTypes.MINIMAX,
+            ProviderSourceTypes.STEPFUN -> catalogCapabilities(sourceType, model)
+
+            else -> null
+        }
     }
 
-    private fun allReasoningCapabilities(
-        canDisable: Boolean = true,
+    private fun mandatoryDefault() = ModelReasoningCapabilities(
+        defaultEnabled = true,
+        mandatory = true,
+    )
+
+    private fun capabilities(
+        supported: List<ReasoningEffort>,
+        canDisable: Boolean = false,
         mandatory: Boolean = false,
         supportsBudget: Boolean = false,
         maxBudgetTokens: Int? = null,
-        defaultEffort: ReasoningEffort? = ReasoningEffort.MEDIUM,
+        defaultEffort: ReasoningEffort? = null,
     ) = ModelReasoningCapabilities(
-        supportedEfforts = allEffortTiers,
+        supportedEfforts = supported,
         defaultEffort = defaultEffort,
         defaultEnabled = true,
         mandatory = mandatory,
@@ -143,38 +241,4 @@ internal object ReasoningCapabilityResolver {
         supportsBudget = supportsBudget,
         maxBudgetTokens = maxBudgetTokens,
     )
-
-    private fun hasUsableEffortTiers(capabilities: ModelReasoningCapabilities): Boolean =
-        capabilities.supportedEfforts.any {
-            it != ReasoningEffort.OFF && it != ReasoningEffort.DEFAULT
-        } || capabilities.supportsBudget
-
-    private fun isToggleOnly(capabilities: ModelReasoningCapabilities?): Boolean =
-        capabilities != null &&
-            !capabilities.mandatory &&
-            capabilities.canDisable &&
-            capabilities.supportedEfforts.isEmpty() &&
-            !capabilities.supportsBudget
-
-    internal fun modelIdMatchesPrefix(modelId: String, prefix: String): Boolean =
-        hasPrefix(normalizedId(modelId), prefix)
-
-    internal fun modelIdContains(modelId: String, token: String): Boolean =
-        containsToken(normalizedId(modelId), token)
-
-    private fun normalizedId(modelId: String): String =
-        modelId.trim().lowercase()
-            .substringAfterLast('/')
-            .replace('.', '-')
-            .trim()
-
-    private fun hasPrefix(normalizedId: String, prefix: String): Boolean {
-        val needle = prefix.lowercase().replace('.', '-')
-        return normalizedId.startsWith(needle)
-    }
-
-    private fun containsToken(normalizedId: String, token: String): Boolean {
-        val needle = token.lowercase().replace('.', '-')
-        return normalizedId.contains(needle)
-    }
 }

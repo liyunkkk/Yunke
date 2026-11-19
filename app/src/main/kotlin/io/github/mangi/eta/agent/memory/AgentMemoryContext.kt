@@ -59,7 +59,7 @@ internal object AgentMemoryContextBuilder {
     fun coreBudgetChars(contextWindow: Int?): Int {
         val resolvedWindow = contextWindow?.takeIf { it > 0 } ?: DEFAULT_CONTEXT_WINDOW
         return (resolvedWindow / CONTEXT_WINDOW_DIVISOR)
-            .coerceAtLeast(MIN_CORE_CHARS)
+            .coerceIn(MIN_CORE_CHARS, MAX_CORE_CHARS)
     }
 
     private fun extractCore(content: String): String {
@@ -75,10 +75,11 @@ internal object AgentMemoryContextBuilder {
 
     private val HEADING = Regex("^#{1,2}\\s+.+$")
     private const val CORE_HEADING = "# 核心记忆"
-    private const val DEFAULT_CONTEXT_WINDOW = 128_000
+    /** 窗口未知时用于按比例分配记忆、世界书等注入预算的保守基准，不参与压缩判定。 */
+    const val DEFAULT_CONTEXT_WINDOW = 128_000
     private const val CONTEXT_WINDOW_DIVISOR = 16
     private const val MIN_CORE_CHARS = 4_000
-    // MAX_CORE_CHARS removed: budget now follows the configured context window
+    private const val MAX_CORE_CHARS = 32_000
     private const val MAX_HEADING_INDEX_CHARS = 4_000
     private const val EMPTY_SHA256 =
         "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"

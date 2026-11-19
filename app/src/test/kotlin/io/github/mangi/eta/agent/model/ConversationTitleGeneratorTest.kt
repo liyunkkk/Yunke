@@ -74,7 +74,8 @@ class ConversationTitleGeneratorTest {
 
         assertEquals("崩溃日志原因分析", title)
         val request = requests.single()
-        assertEquals(0, request.tools.length())
+        assertEquals(ProviderRequestPurpose.TITLE_GENERATION, request.purpose)
+        assertEquals(0, request.effectiveTools.length())
         assertEquals(
             ConversationTitleGenerator.SYSTEM_PROMPT,
             request.messages.getJSONObject(0).getString("content"),

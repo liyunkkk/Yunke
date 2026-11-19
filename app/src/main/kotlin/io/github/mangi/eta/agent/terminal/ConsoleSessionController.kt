@@ -77,7 +77,6 @@ internal class ConsoleSessionController(
             ) {
                 return OpenResult.Failed("LINUX_ENVIRONMENT_NOT_READY", "Linux 工具环境尚未安装")
             }
-            var startFailure = "stage=unknown"
             val process = processSupervisor.startShellProcess(
                 identity = identity,
                 command = null,
@@ -92,8 +91,7 @@ internal class ConsoleSessionController(
                 pty = true,
                 ptyCols = cols,
                 ptyRows = rows,
-                onStartFailure = { startFailure = it },
-            ) ?: return OpenResult.Failed("PROCESS_START_FAILED", "无法启动控制台进程，请检查所选环境和终端组件 ($startFailure)")
+            ) ?: return OpenResult.Failed("PROCESS_START_FAILED", "无法启动控制台进程，请检查所选环境和终端组件")
 
             val sessionId = "c${++nextSessionNumber}"
             val newSession = PtySession(environment, process, identity)
@@ -124,7 +122,7 @@ internal class ConsoleSessionController(
                 "[ -f \"\$HOME/.profile\" ] && . \"\$HOME/.profile\"; " +
                 "cd ${shellQuote(defaultCwd)} && clear\n"
             runCatching {
-                process.outputStream.write(bootstrap.toByteArray(Charsets.UTF_8))
+                process.outputStream.write(PtyInputFrames.data(bootstrap.toByteArray(Charsets.UTF_8)))
                 process.outputStream.flush()
             }
             logger.info("Console action=open outcome=succeeded environment=${environment.wireName} cols=$cols rows=$rows")
@@ -134,6 +132,17 @@ internal class ConsoleSessionController(
 
     /** 向指定控制台会话写入输入字节（键盘文本、方向键/功能键转义序列）。会话不可用时静默丢弃。 */
     fun write(sessionId: String, bytes: ByteArray) {
+        if (bytes.isNotEmpty()) sendFrames(sessionId, PtyInputFrames.data(bytes))
+    }
+
+    fun write(sessionId: String, text: String) = write(sessionId, text.toByteArray(Charsets.UTF_8))
+
+    /** 同步窗口尺寸；内核随后向前台进程组发送 SIGWINCH，TUI 据此重绘。 */
+    fun resize(sessionId: String, cols: Int, rows: Int) {
+        sendFrames(sessionId, PtyInputFrames.resize(rows = rows, cols = cols))
+    }
+
+    private fun sendFrames(sessionId: String, frames: ByteArray) {
         val current = synchronized(sessionLock) { sessions[sessionId] } ?: return
         if (current.closed || !current.process.isAlive) return
         if (current.identity == "root" && !rootAvailable()) {
@@ -141,14 +150,13 @@ internal class ConsoleSessionController(
             return
         }
         runCatching {
+            // 帧必须整体写入，并发写者交错会破坏原生侧的帧边界。
             synchronized(current.stdinLock) {
-                current.process.outputStream.write(bytes)
+                current.process.outputStream.write(frames)
                 current.process.outputStream.flush()
             }
         }
     }
-
-    fun write(sessionId: String, text: String) = write(sessionId, text.toByteArray(Charsets.UTF_8))
 
     /** 关闭单个会话；只回收该进程树，不影响其它会话，也不触发 supervisor 全局关闭。 */
     fun closeSession(sessionId: String) {

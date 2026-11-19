@@ -1,25 +1,44 @@
 package io.github.mangi.eta.data.model
 
-import io.github.mangi.eta.data.model.BalanceOption
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 internal object ProviderTypes {
     const val OPENAI_COMPATIBLE = "openai_compatible"
     const val ANTHROPIC = "anthropic"
+    const val GEMINI = "gemini"
     const val CUSTOM = "custom"
 }
 
 internal object OpenAiEndpointMode {
     const val CHAT_COMPLETIONS = "chat_completions"
     const val RESPONSES = "responses"
-    const val ANTIGRAVITY = "antigravity"
+}
+
+internal object GeminiEndpointMode {
+    const val AI_STUDIO = "ai_studio"
+    const val VERTEX_AI = "vertex_ai"
+
+    fun normalize(value: String?): String = when (value?.trim()?.lowercase()) {
+        VERTEX_AI -> VERTEX_AI
+        else -> AI_STUDIO
+    }
+}
+
+internal object ProviderAuthModes {
+    const val API_KEY = "api_key"
+    const val OPENAI_CHATGPT = "openai_chatgpt"
+    const val XAI_GROK = "xai_grok"
+
+    fun isOAuth(mode: String): Boolean = mode == OPENAI_CHATGPT || mode == XAI_GROK
 }
 
 internal object ProviderSourceTypes {
     const val CUSTOM = "custom"
     const val OPENAI = "openai"
+    const val XAI = "xai"
     const val ANTHROPIC = "anthropic"
+    const val GEMINI = "gemini"
     const val BAILIAN = "bailian"
     const val DEEPSEEK = "deepseek"
     const val MOONSHOT = "moonshot"
@@ -28,9 +47,6 @@ internal object ProviderSourceTypes {
     const val STEPFUN = "stepfun"
     const val SILICONFLOW = "siliconflow"
     const val OPENROUTER = "openrouter"
-    const val ANTIGRAVITY = "antigravity"
-    const val DOUBAO_SPEECH = "doubao_speech"
-    const val COMPATIBLE_SPEECH = "compatible_speech"
 }
 
 @Serializable
@@ -40,6 +56,7 @@ sealed interface ProviderSetting {
     val baseUrl: String
     val sourceType: String
     val apiKey: String
+    val authMode: String
     val isEnabled: Boolean
     val isBuiltIn: Boolean
     val sortOrder: Int
@@ -48,22 +65,8 @@ sealed interface ProviderSetting {
     val customHeaders: List<CustomHeader>
     val customBody: List<CustomBody>
     val createdAt: Long
-    val authMode: String
-    val responsesStripReasoningStatus: Boolean
-        get() = false
     val hostedWebSearchEnabled: Boolean
         get() = false
-    val balanceOption: BalanceOption
-        get() = BalanceOption()
-    val sessionGatewayJson: String
-        get() = ""
-}
-
-internal fun ProviderSetting.canQueryBalance(): Boolean {
-    val option = balanceOption.resolved()
-    return option.enabled &&
-        option.apiPath.isNotBlank() &&
-        option.resultPath.isNotBlank()
 }
 
 @Serializable
@@ -82,12 +85,9 @@ data class OpenAiCompatibleProviderSetting(
     override val customHeaders: List<CustomHeader> = emptyList(),
     override val customBody: List<CustomBody> = emptyList(),
     override val createdAt: Long = System.currentTimeMillis(),
-    override val authMode: String = ProviderAuthMode.DEFAULT,
     val endpointMode: String = OpenAiEndpointMode.CHAT_COMPLETIONS,
-    override val responsesStripReasoningStatus: Boolean = false,
     override val hostedWebSearchEnabled: Boolean = false,
-    override val balanceOption: BalanceOption = BalanceOption(),
-    override val sessionGatewayJson: String = "",
+    override val authMode: String = ProviderAuthModes.API_KEY,
 ) : ProviderSetting
 
 @Serializable
@@ -106,13 +106,44 @@ data class AnthropicProviderSetting(
     override val customHeaders: List<CustomHeader> = emptyList(),
     override val customBody: List<CustomBody> = emptyList(),
     override val createdAt: Long = System.currentTimeMillis(),
-    override val authMode: String = ProviderAuthMode.DEFAULT,
     val anthropicVersion: String = DEFAULT_ANTHROPIC_VERSION,
-    override val balanceOption: BalanceOption = BalanceOption(),
-    override val sessionGatewayJson: String = "",
+    override val authMode: String = ProviderAuthModes.API_KEY,
 ) : ProviderSetting {
     companion object {
         const val DEFAULT_ANTHROPIC_VERSION = "2023-06-01"
+    }
+}
+
+@Serializable
+@SerialName(ProviderTypes.GEMINI)
+data class GeminiProviderSetting(
+    override val id: String,
+    override val name: String,
+    override val baseUrl: String = DEFAULT_BASE_URL,
+    override val sourceType: String = ProviderSourceTypes.GEMINI,
+    override val apiKey: String = "",
+    override val isEnabled: Boolean = true,
+    override val isBuiltIn: Boolean = false,
+    override val sortOrder: Int = 0,
+    override val systemPrompt: String? = null,
+    override val models: List<Model> = emptyList(),
+    override val customHeaders: List<CustomHeader> = emptyList(),
+    override val customBody: List<CustomBody> = emptyList(),
+    override val createdAt: Long = System.currentTimeMillis(),
+    override val hostedWebSearchEnabled: Boolean = false,
+    val endpointMode: String = GeminiEndpointMode.AI_STUDIO,
+    val vertexProject: String = "",
+    val vertexLocation: String = DEFAULT_VERTEX_LOCATION,
+) : ProviderSetting {
+    override val authMode: String get() = ProviderAuthModes.API_KEY
+
+    val isVertexAi: Boolean
+        get() = GeminiEndpointMode.normalize(endpointMode) == GeminiEndpointMode.VERTEX_AI
+
+    companion object {
+        const val DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+        const val DEFAULT_VERTEX_BASE_URL = "https://aiplatform.googleapis.com/v1beta1"
+        const val DEFAULT_VERTEX_LOCATION = "global"
     }
 }
 
@@ -132,17 +163,15 @@ data class CustomProviderSetting(
     override val customHeaders: List<CustomHeader> = emptyList(),
     override val customBody: List<CustomBody> = emptyList(),
     override val createdAt: Long = System.currentTimeMillis(),
-    override val authMode: String = ProviderAuthMode.DEFAULT,
     val endpointMode: String = OpenAiEndpointMode.CHAT_COMPLETIONS,
-    override val responsesStripReasoningStatus: Boolean = false,
     override val hostedWebSearchEnabled: Boolean = false,
-    override val balanceOption: BalanceOption = BalanceOption(),
-    override val sessionGatewayJson: String = "",
+    override val authMode: String = ProviderAuthModes.API_KEY,
 ) : ProviderSetting
 
 internal val ProviderSetting.runtimeProviderType: String
     get() = when (this) {
         is AnthropicProviderSetting -> ProviderTypes.ANTHROPIC
+        is GeminiProviderSetting -> ProviderTypes.GEMINI
         is OpenAiCompatibleProviderSetting,
         is CustomProviderSetting -> ProviderTypes.OPENAI_COMPATIBLE
     }
@@ -150,6 +179,7 @@ internal val ProviderSetting.runtimeProviderType: String
 internal val ProviderSetting.typeLabel: String
     get() = when (this) {
         is AnthropicProviderSetting -> "Anthropic Messages"
+        is GeminiProviderSetting -> if (isVertexAi) "Vertex AI" else "Gemini Interactions"
         is OpenAiCompatibleProviderSetting -> "OpenAI-compatible"
         is CustomProviderSetting -> "Custom OpenAI-compatible"
     }
@@ -165,6 +195,7 @@ internal fun ProviderSetting.withModels(models: List<Model>): ProviderSetting =
     when (this) {
         is OpenAiCompatibleProviderSetting -> copy(models = models)
         is AnthropicProviderSetting -> copy(models = models)
+        is GeminiProviderSetting -> copy(models = models)
         is CustomProviderSetting -> copy(models = models)
     }
 
@@ -172,6 +203,7 @@ internal fun ProviderSetting.withSortOrder(sortOrder: Int): ProviderSetting =
     when (this) {
         is OpenAiCompatibleProviderSetting -> copy(sortOrder = sortOrder)
         is AnthropicProviderSetting -> copy(sortOrder = sortOrder)
+        is GeminiProviderSetting -> copy(sortOrder = sortOrder)
         is CustomProviderSetting -> copy(sortOrder = sortOrder)
     }
 
@@ -179,6 +211,7 @@ internal fun ProviderSetting.withId(id: String): ProviderSetting =
     when (this) {
         is OpenAiCompatibleProviderSetting -> copy(id = id)
         is AnthropicProviderSetting -> copy(id = id)
+        is GeminiProviderSetting -> copy(id = id)
         is CustomProviderSetting -> copy(id = id)
     }
 
@@ -186,8 +219,21 @@ internal fun ProviderSetting.withApiKey(apiKey: String): ProviderSetting =
     when (this) {
         is OpenAiCompatibleProviderSetting -> copy(apiKey = apiKey)
         is AnthropicProviderSetting -> copy(apiKey = apiKey)
+        is GeminiProviderSetting -> copy(apiKey = apiKey)
         is CustomProviderSetting -> copy(apiKey = apiKey)
     }
+
+internal data class ProviderModel(val provider: ProviderSetting, val model: Model)
+
+/** 服务商与模型都启用时才视为可用；会话绑定、选择器与发送共用这一判定。 */
+internal fun List<ProviderSetting>.enabledModel(modelId: String?): ProviderModel? {
+    modelId ?: return null
+    for (provider in this) {
+        if (!provider.isEnabled) continue
+        provider.models.firstOrNull { it.id == modelId && it.isEnabled }?.let { return ProviderModel(provider, it) }
+    }
+    return null
+}
 
 internal fun ProviderSetting.selectedOrFirstModel(modelId: String?): Model? =
     models.firstOrNull { it.id == modelId && it.isEnabled }

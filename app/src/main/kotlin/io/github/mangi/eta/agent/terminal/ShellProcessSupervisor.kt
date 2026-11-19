@@ -1,11 +1,10 @@
 package io.github.mangi.eta.agent.terminal
 
-import io.github.mangi.eta.agent.device.RootSu
-import io.github.mangi.eta.core.AndroidAgentLogger
-
 import java.io.File
+import java.io.IOException
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
 /** 负责 Shell 进程的启动接纳、所有权识别、进程树终止与回收。 */
@@ -13,20 +12,16 @@ internal class ShellProcessSupervisor(
     private val allowTreeFallback: Boolean = !isAndroidRuntime(),
     private val setsidCommand: String = "setsid",
     private val rootAvailable: () -> Boolean = { TerminalRuntime.rootAvailable },
-    private val userPtyExecutable: () -> File? = { TerminalRuntime.nativeExecutable("libeta_pty.so") },
-    private val skillsDirectoryProvider: () -> File? = TerminalRuntime::visibleSkillsDirectory,
-    private val startupOwnershipWaitMs: Long = PROCESS_OWNERSHIP_WAIT_MS,
+    private val ptyExecutable: () -> File? = { TerminalRuntime.nativeExecutable(PTY_EXECUTABLE) },
 ) {
     private companion object {
         const val PROCESS_REAP_TIMEOUT_MS = 1_000L
-        const val PROCESS_OWNERSHIP_WAIT_MS = 10_000L
-        const val PROCESS_OWNERSHIP_POLL_MS = 10L
-        const val PROCESS_CLEANUP_OWNERSHIP_WAIT_MS = 500L
-        const val START_FAILURE_STDERR_MAX_BYTES = 4_096
+        const val PROCESS_OWNERSHIP_WAIT_MS = 500L
         const val PROCESS_SIGNAL_TIMEOUT_MS = 1_000L
         const val DEFAULT_PTY_COLS = 120
         const val DEFAULT_PTY_ROWS = 40
         const val PTY_TERM_TYPE = "xterm-256color"
+        const val BUSYBOX_APPLET_DIR = "${TerminalRuntime.ROOT_WORKSPACE_PATH}/.busybox"
 
         fun isAndroidRuntime(): Boolean =
             System.getProperty("java.vm.name").orEmpty().equals("Dalvik", ignoreCase = true) ||
@@ -54,37 +49,23 @@ internal class ShellProcessSupervisor(
         pty: Boolean = false,
         ptyCols: Int = DEFAULT_PTY_COLS,
         ptyRows: Int = DEFAULT_PTY_ROWS,
-        onStartFailure: (String) -> Unit = {},
     ): Process? {
-        val startNanos = System.nanoTime()
-        var stderrCategory: String? = null
-        fun failed(stage: String, failure: Throwable? = null): Process? {
-            // Only controlled stages and exception types: never command, token, path or exception message.
-            val summary = "stage=$stage" + (failure?.let { " type=${it.javaClass.simpleName}" } ?: "") +
-                " elapsedMs=${TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos)}" +
-                (stderrCategory?.let { " reason=$it" } ?: "")
-            runCatching { AndroidAgentLogger.warn("Shell start failed $summary") }
-            runCatching { onStartFailure(summary) }
-            return null
-        }
-        if (isClosing) return failed("closing")
+        if (isClosing) return null
         require(identity == "root" || identity == "user") { "identity 仅支持 root/user" }
         require(!environment.isLinux || identity == "root" || LinuxEnvironmentPaths.backendOf(linuxRootfsPath) == LinuxExecutionBackend.PROOT) {
             "Linux 工具环境仅支持 root identity"
         }
-        if (environment.isLinux && identity == "root" && LinuxEnvironmentPaths.backendOf(linuxRootfsPath) == LinuxExecutionBackend.PROOT) return failed("root_proot_rejected")
-        if (identity == "root" && !rootAvailable()) return failed("root_unavailable")
+        if (environment.isLinux && identity == "root" && LinuxEnvironmentPaths.backendOf(linuxRootfsPath) == LinuxExecutionBackend.PROOT) return null
+        if (identity == "root" && !rootAvailable()) return null
         val ownershipFile = runCatching {
             File.createTempFile("eta-terminal-", ".owner")
-        }.getOrElse { return failed("ownership_file", it) }
+        }.getOrNull() ?: return null
         val ownershipToken = UUID.randomUUID().toString().replace("-", "")
-        val prepared = try { LongShellCommand.prepare(command, environment, linuxRootfsPath) }
-        catch (failure: Exception) { ownershipFile.delete(); return failed("prepare_command", failure) }
         val launcher = try {
             buildTrackedShellLauncher(
                 ownershipFile = ownershipFile,
                 ownershipToken = ownershipToken,
-                command = prepared.command,
+                command = command,
                 identity = identity,
                 environment = environment,
                 linuxRootfsPath = linuxRootfsPath,
@@ -93,14 +74,16 @@ internal class ShellProcessSupervisor(
                 ptyCols = ptyCols,
                 ptyRows = ptyRows,
             )
-        } catch (failure: Exception) {
+        } catch (_: IllegalArgumentException) {
             ownershipFile.delete()
-            prepared.file?.delete()
-            return failed("build_launcher", failure)
+            return null
+        } catch (_: java.io.IOException) {
+            ownershipFile.delete()
+            return null
         }
         val process = runCatching {
             val builder = if (identity == "root") {
-                RootSu.process(launcher)
+                ProcessBuilder("su", "-c", launcher)
             } else {
                 ProcessBuilder("sh", "-c", launcher)
             }
@@ -110,10 +93,9 @@ internal class ShellProcessSupervisor(
             builder.redirectErrorStream(mergeStderr).start()
         }.getOrElse {
             ownershipFile.delete()
-            prepared.file?.delete()
-            return failed("process_start", it)
+            return null
         }
-        val metadata = ProcessMetadata(identity, ownershipFile, ownershipToken, prepared.file)
+        val metadata = ProcessMetadata(identity, ownershipFile, ownershipToken)
         val accepted = synchronized(activeProcesses) {
             if (isClosing) {
                 false
@@ -124,35 +106,26 @@ internal class ShellProcessSupervisor(
             }
         }
         if (!accepted) {
-            stderrCategory = classifyStartupStderr(process, mergeStderr)
             terminateAndReap(process, metadata)
             metadata.ownershipFile.delete()
-            metadata.commandFile?.delete()
-            return failed("closing")
+            return null
         }
-        var ownershipFailure = "ownership_timeout"
-        val ownership = try {
-            resolveProcessOwnership(metadata, process, waitForStartup = true) { ownershipFailure = it }
-        } catch (failure: InterruptedException) {
-            try {
-                stderrCategory = classifyStartupStderr(process, mergeStderr)
-                terminateAndReap(process, metadata)
-                unregisterProcess(process)
-                return failed("ownership_interrupted", failure)
-            } finally {
-                Thread.currentThread().interrupt()
-            }
-        }
+        val ownership = resolveProcessOwnership(metadata)
         val stillAccepted = synchronized(activeProcesses) {
             processMetadata[process] === metadata && !isClosing
         }
         if (ownership == null || !stillAccepted) {
-            stderrCategory = classifyStartupStderr(process, mergeStderr)
             terminateAndReap(process, metadata)
             unregisterProcess(process)
-            return failed(if (!stillAccepted) "closing" else ownershipFailure)
+            return null
         }
         return process
+    }
+
+    internal fun ownershipOf(process: Process): ShellProcessOwnership? {
+        val metadata = synchronized(activeProcesses) { processMetadata[process] } ?: return null
+        val ownership = resolveProcessOwnership(metadata) ?: return null
+        return ShellProcessOwnership(ownership.pid, metadata.ownershipToken, ownership.isolatedGroup)
     }
 
     fun transferActiveProcess(process: Process, transfer: () -> Unit): Boolean =
@@ -185,13 +158,7 @@ internal class ShellProcessSupervisor(
         runCatching { process.outputStream.close() }
         runCatching { process.inputStream.close() }
         runCatching { process.errorStream.close() }
-        try {
-            process.waitFor(PROCESS_REAP_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-        } catch (_: InterruptedException) {
-            Thread.currentThread().interrupt()
-        } catch (_: Exception) {
-            // Best-effort reap; streams are already closed.
-        }
+        runCatching { process.waitFor(PROCESS_REAP_TIMEOUT_MS, TimeUnit.MILLISECONDS) }
     }
 
     fun unregisterProcess(process: Process) {
@@ -200,7 +167,6 @@ internal class ShellProcessSupervisor(
             processMetadata.remove(process)
         }
         metadata?.ownershipFile?.delete()
-        metadata?.commandFile?.delete()
     }
 
     /** leader 已退出后只废止所有权；禁止再向可能复用的 PID/PGID 发信号。 */
@@ -227,6 +193,7 @@ internal class ShellProcessSupervisor(
             TerminalEnvironment.ANDROID -> buildAndroidPayload(
                 identity = identity,
                 command = managedCommand,
+                interactivePty = pty && command == null,
             )
             else -> buildLinuxPayload(
                 rootfsPath = requireNotNull(linuxRootfsPath) {
@@ -240,6 +207,12 @@ internal class ShellProcessSupervisor(
 
         val path = shellQuote(ownershipFile.absolutePath)
         val exportOwner = "export $ETA_PROCESS_OWNER_ENV=${shellQuote(ownershipToken)}"
+        if (pty) {
+            // PTY 会话由原生组件建立独立 session 并在退出时回收整个进程组，Root 与普通身份共用同一入口。
+            val executable = ptyExecutable() ?: throw IOException("PTY 组件不可用")
+            val script = "printf '%s group\\n' \"${'$'}${'$'}\" > $path; export TERM=$PTY_TERM_TYPE; $payload"
+            return "$exportOwner; exec ${shellQuote(executable.absolutePath)} $ptyRows $ptyCols -- sh -c ${shellQuote(script)}"
+        }
         val cleanupGroup =
                 "eta_cleanup_proc_group() { " +
                 "for stat_file in /proc/[0-9]*/stat; do " +
@@ -267,58 +240,39 @@ internal class ShellProcessSupervisor(
             "printf '%s unavailable\\n' \"${'$'}${'$'}\" > $path; exit 126"
         }
         val safeSetsid = shellQuote(setsidCommand)
-        if (pty) {
-            if (identity == "user") {
-                userPtyExecutable()?.let { executable ->
-                    val script = "printf '%s group\\n' \"${'$'}${'$'}\" > $path; export TERM=$PTY_TERM_TYPE; $payload"
-                    return "$exportOwner; exec ${shellQuote(executable.absolutePath)} $ptyRows $ptyCols -- sh -c ${shellQuote(script)}"
-                }
-            }
-            return buildPtyLauncher(
-                exportOwner = exportOwner,
-                path = path,
-                groupScript = groupScript,
-                safeSetsid = safeSetsid,
-                cols = ptyCols,
-                rows = ptyRows,
-            )
-        }
         return "$exportOwner; if command -v $safeSetsid >/dev/null 2>&1; then " +
             "exec $safeSetsid -w sh -c ${shellQuote(groupScript)}; else $fallback; fi"
     }
 
     /**
-     * PTY 控制台启动器：经 BusyBox script 为负载分配伪终端（stty 设定初始尺寸、TERM 宣告全彩）。
-     * script 缺失时写入 unavailable，由调用方拒绝接纳，控制台入口依赖 [ptySupported] 提前探测。
+     * Root 会话优先进入 Magisk/KernelSU/APatch BusyBox standalone ash，补齐 Android PATH 外的 applet。
+     *
+     * 交互式 PTY 例外：BusyBox 1.35.0–1.36.x 的 ash 在提示符等待输入时，任何信号打断 poll 都会让
+     * 行编辑返回并另起一行新提示符（上游 bug 15256，1.37.0 修复，1.36.1 未回移）。控制台随软键盘和横竖屏
+     * 同步窗口尺寸，每次 SIGWINCH 都会多出一行空提示符。命中这些版本时改用系统 sh（与 su 默认 shell 一致），
+     * 并把 BusyBox applet 链接追加到 PATH 末尾，系统命令仍然优先。
      */
-    private fun buildPtyLauncher(
-        exportOwner: String,
-        path: String,
-        groupScript: String,
-        safeSetsid: String,
-        cols: Int,
-        rows: Int,
-    ): String {
-        val discovery = AndroidBusyBox.discoveryScript()
-        val ptyScript = "stty rows $rows cols $cols 2>/dev/null; export TERM=$PTY_TERM_TYPE; $groupScript"
-        val unavailable = "printf '%s unavailable\\n' \"\$\$\" > $path; exit 126"
-        val run = "\"\$eta_busybox\" script -qfc ${shellQuote(ptyScript)} /dev/null"
-        return "$exportOwner; $discovery; [ -n \"\$eta_busybox\" ] || { $unavailable; }; " +
-            "if command -v $safeSetsid >/dev/null 2>&1; then " +
-            "exec $safeSetsid -w $run; else $run; fi"
-    }
-
-    /** Root 会话优先进入 Magisk/KernelSU/APatch BusyBox standalone ash，补齐 Android PATH 外的 applet。 */
-    internal fun buildAndroidPayload(identity: String, command: String?): String {
+    internal fun buildAndroidPayload(identity: String, command: String?, interactivePty: Boolean = false): String {
         val shellArgument = command?.let { "-c ${shellQuote(it)}" }.orEmpty()
         if (identity != "root") {
             return "sh $shellArgument".trimEnd()
         }
         val discovery = AndroidBusyBox.discoveryScript()
+        val ash = "export ASH_STANDALONE=1; \"${'$'}eta_busybox\" ash $shellArgument"
+        val busyBoxShell = if (interactivePty) {
+            val applets = shellQuote(BUSYBOX_APPLET_DIR)
+            "case \"${'$'}(\"${'$'}eta_busybox\" 2>&1 | head -n 1)\" in " +
+                "*' v1.35.'*|*' v1.36.'*) " +
+                "mkdir -p $applets 2>/dev/null && \"${'$'}eta_busybox\" --install -s $applets 2>/dev/null; " +
+                "export PATH=\"${'$'}PATH:\"$applets; sh;; " +
+                "*) $ash;; esac"
+        } else {
+            ash
+        }
         return "$discovery; " +
             "if [ -n \"${'$'}eta_busybox\" ]; then " +
-            "export ETA_BUSYBOX=\"${'$'}eta_busybox\" ASH_STANDALONE=1; " +
-            "\"${'$'}eta_busybox\" ash $shellArgument; " +
+            "export ETA_BUSYBOX=\"${'$'}eta_busybox\"; " +
+            "$busyBoxShell; " +
             "else sh $shellArgument; fi"
     }
 
@@ -335,43 +289,16 @@ internal class ShellProcessSupervisor(
         termType: String = "dumb",
     ): String {
         if (LinuxEnvironmentPaths.backendOf(rootfsPath) == LinuxExecutionBackend.PROOT) {
-            return ProotCommandBuilder.payload(rootfsPath, command, sharedMounts, termType, skillsDirectory = skillsDirectoryProvider())
+            return ProotCommandBuilder.payload(rootfsPath, command, sharedMounts, termType)
         }
         val rootfs = shellQuote(rootfsPath)
         val mode = if (command == null) "session" else "command"
         val payload = shellQuote(command.orEmpty())
         // name 经 SharedFolderMounts 校验只含 [A-Za-z0-9._-]，可安全拼进双引号路径。
-        val skillsRoot = skillsDirectoryProvider()?.takeIf { it.isDirectory }
-        val skillsDir = skillsRoot?.absolutePath
-        val offloadsDir = TerminalRuntime.minisOffloadsDirectory()?.absolutePath
-            ?: "/data/local/tmp/eta/offloads"
-        val browserDir = TerminalRuntime.minisBrowserDirectory()?.absolutePath
-            ?: "/data/local/tmp/eta/browser"
-        val commandDirectory = TerminalRuntime.temporaryDirectory.apply { mkdirs() }
-        val mountsBlock = buildList {
-            // Long commands are staged outside rootfs; bind explicitly rather than relying on /proc/PID/root.
-            add("eta_mount_required ${shellQuote(commandDirectory.absolutePath)} \"\$eta_rootfs${LongShellCommand.CHROOT_SCRIPTS_DIR}\" bind")
-            sharedMounts.forEach { mount ->
-                add(
-                    "eta_mount_optional ${shellQuote(mount.sourcePath)} " +
-                        "\"\$eta_rootfs${SharedFolderMounts.LINUX_MOUNTS_ROOT}/${mount.name}\" bind",
-                )
-            }
-            if (!skillsDir.isNullOrBlank()) {
-                add("eta_mount_required ${shellQuote(skillsDir)} \"\$eta_rootfs/var/minis/skills\" bind")
-            }
-            skillsRoot?.listFiles().orEmpty().filter { it.isDirectory && !it.name.startsWith(".") }.forEach { skill ->
-                val data = File(skillsRoot!!.parentFile, "skill-data/${skill.name}").canonicalFile
-                if (data.isDirectory) add("eta_mount_required ${shellQuote(data.absolutePath)} \"\$eta_rootfs/var/minis/skills/${skill.name}/data\" bind")
-            }
-            if (!offloadsDir.isNullOrBlank()) {
-                add("eta_mount_optional ${shellQuote(offloadsDir)} \"\$eta_rootfs/var/minis/offloads\" bind")
-            }
-            if (!browserDir.isNullOrBlank()) {
-                add("eta_mount_optional ${shellQuote(browserDir)} \"\$eta_rootfs/var/minis/browser\" bind")
-            }
-        }.joinToString("\n")
-
+        val mountsBlock = sharedMounts.joinToString("\n") { mount ->
+            "eta_mount_optional ${shellQuote(mount.sourcePath)} " +
+                "\"\$eta_rootfs${SharedFolderMounts.LINUX_MOUNTS_ROOT}/${mount.name}\" bind"
+        }
         val innerScriptHead = """
             eta_rootfs=${'$'}1
             eta_busybox=${'$'}2
@@ -401,7 +328,6 @@ internal class ShellProcessSupervisor(
             eta_mount_required /data/local/tmp "${'$'}eta_rootfs/data/local/tmp" bind
             "${'$'}eta_busybox" mkdir -p /data/local/tmp/eta || exit 125
             eta_mount_required /data/local/tmp/eta "${'$'}eta_rootfs/workspace" bind
-            eta_mount_optional /data/local/tmp/eta "${'$'}eta_rootfs/var/minis/workspace" bind
         """.trimIndent()
         val innerScriptTail = """
             if [ "${'$'}eta_mode" = command ]; then
@@ -456,114 +382,40 @@ internal class ShellProcessSupervisor(
         metadataOverride: ProcessMetadata?,
     ) {
         val metadata = metadataOverride ?: synchronized(activeProcesses) { processMetadata[process] }
-        // Cleanup never inherits the startup budget, even while admission is waiting.
-        try {
-            val ownership = metadata?.let { resolveProcessOwnership(it, process, waitForStartup = false) }
-            if (metadata != null && ownership != null) {
-                if (ownership.isolatedGroup) {
-                    signalProcessGroup(metadata, ownership)
-                } else {
-                    signalProcessTree(metadata, ownership)
-                }
+        val ownership = metadata?.let(::resolveProcessOwnership)
+        if (metadata != null && ownership != null) {
+            if (ownership.isolatedGroup) {
+                signalProcessGroup(metadata, ownership)
+            } else {
+                signalProcessTree(metadata, ownership)
             }
-        } finally {
-            runCatching { if (process.isAlive) process.destroy() }
-            runCatching { if (process.isAlive) process.destroyForcibly() }
         }
+        runCatching { if (process.isAlive) process.destroy() }
+        runCatching { if (process.isAlive) process.destroyForcibly() }
     }
 
     private fun terminateAndReap(
         process: Process,
         metadataOverride: ProcessMetadata?,
     ) {
-        try {
-            terminateProcessTree(process, metadataOverride)
-        } finally {
-            reapProcess(process)
-        }
+        terminateProcessTree(process, metadataOverride)
+        reapProcess(process)
     }
 
-    // Called only after rejection; never compete with readers of an accepted process.
-    private fun classifyStartupStderr(process: Process, mergeStderr: Boolean): String? = runCatching {
-        val input = if (mergeStderr) process.inputStream else process.errorStream
-        val count = input.available().coerceIn(0, START_FAILURE_STDERR_MAX_BYTES)
-        if (count == 0) return@runCatching null
-        val bytes = ByteArray(count)
-        val read = input.read(bytes)
-        if (read <= 0) return@runCatching null
-        val text = String(bytes, 0, read, Charsets.UTF_8).lowercase(java.util.Locale.ROOT)
-        when {
-            "permission denied" in text -> "permission_denied"
-            "not found" in text || "no such file or directory" in text -> "not_found"
-            "operation not permitted" in text -> "operation_not_permitted"
-            else -> "stderr_present"
-        }
-    }.getOrNull()
-
-    private fun resolveProcessOwnership(
-        metadata: ProcessMetadata,
-        process: Process,
-        waitForStartup: Boolean,
-        onFailure: (String) -> Unit = {},
-    ): ProcessOwnership? {
-        val waitMs = if (waitForStartup) startupOwnershipWaitMs else PROCESS_CLEANUP_OWNERSHIP_WAIT_MS
-        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(waitMs)
-        fun readOwner(): String? = try {
-            metadata.ownershipFile.readText().trim()
-        } catch (failure: Exception) {
-            onFailure("ownership_read type=${failure.javaClass.simpleName}")
-            null
-        }
+    private fun resolveProcessOwnership(metadata: ProcessMetadata): ProcessOwnership? {
+        metadata.ownership?.let { ownership -> return ownership }
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(PROCESS_OWNERSHIP_WAIT_MS)
         do {
-            if (waitForStartup) {
-                if (Thread.interrupted()) throw InterruptedException()
-                if (isClosing) {
-                    onFailure("closing")
-                    return null
-                }
-            }
-            metadata.ownership?.let { return it }
-            val content = readOwner()
-            // Another admission/cleanup reader may already have cached and deleted the file.
-            metadata.ownership?.let { return it }
-            if (content == null) return null
+            metadata.ownership?.let { ownership -> return ownership }
+            val content = runCatching { metadata.ownershipFile.readText().trim() }.getOrNull().orEmpty()
             if (content.isNotEmpty()) {
-                val ownership = parseProcessOwnership(content)
-                if (ownership == null) {
-                    onFailure("ownership_invalid")
-                    return null
-                }
+                val ownership = parseProcessOwnership(content) ?: return null
                 metadata.ownership = ownership
                 metadata.ownershipFile.delete()
                 return ownership
             }
-            // Cleanup still allows a late owner during closing, within its own short budget.
-            // Read ownership first: a valid fast command may have already exited.
-            if (!process.isAlive) {
-                // Close the race between the first file read and launcher exit.
-                val finalContent = readOwner()
-                metadata.ownership?.let { return it }
-                if (finalContent == null) return null
-                val ownership = parseProcessOwnership(finalContent)
-                if (ownership != null) {
-                    metadata.ownership = ownership
-                    metadata.ownershipFile.delete()
-                    return ownership
-                }
-                onFailure(if (finalContent.isEmpty()) "launcher_exited exitCode=${process.exitValue()}" else "ownership_invalid")
-                return null
-            }
-            if (System.nanoTime() >= deadline) {
-                onFailure("ownership_timeout")
-                return null
-            }
-            try {
-                Thread.sleep(PROCESS_OWNERSHIP_POLL_MS)
-            } catch (failure: InterruptedException) {
-                if (waitForStartup) throw failure
-                Thread.currentThread().interrupt()
-                return null
-            }
+            if (System.nanoTime() >= deadline) return null
+            Thread.sleep(10)
         } while (true)
     }
 
@@ -621,7 +473,7 @@ internal class ShellProcessSupervisor(
         }
         val process = runCatching {
             val builder = if (metadata.identity == "root") {
-                RootSu.process(guardedCommand)
+                ProcessBuilder("su", "-c", guardedCommand)
             } else {
                 ProcessBuilder("sh", "-c", guardedCommand)
             }
@@ -631,14 +483,9 @@ internal class ShellProcessSupervisor(
                 .start()
         }.getOrNull() ?: return
         runCatching { process.outputStream.close() }
-        val finished = try {
+        val finished = runCatching {
             process.waitFor(PROCESS_SIGNAL_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-        } catch (_: InterruptedException) {
-            Thread.currentThread().interrupt()
-            false
-        } catch (_: Exception) {
-            false
-        }
+        }.getOrDefault(false)
         if (!finished) runCatching { process.destroyForcibly() }
     }
 
@@ -646,7 +493,6 @@ internal class ShellProcessSupervisor(
         val identity: String,
         val ownershipFile: File,
         val ownershipToken: String,
-        val commandFile: File? = null,
     ) {
         @Volatile
         var ownership: ProcessOwnership? = null
@@ -658,9 +504,9 @@ internal class ShellProcessSupervisor(
     )
 }
 
-/** 写入托管进程环境块的归属标记；巡检与停止前用它防止 PID 复用误杀。 */
-internal const val ONE_SHOT_OUTPUT_MAX_BYTES = 512 * 1024
+internal data class ShellProcessOwnership(val pid: Long, val token: String, val isolatedGroup: Boolean)
 
+/** 写入托管进程环境块的归属标记；巡检与停止前用它防止 PID 复用误杀。 */
 internal const val ETA_PROCESS_OWNER_ENV = "ETA_PROCESS_OWNER"
 
 internal fun shellQuote(value: String): String =
@@ -674,24 +520,11 @@ internal data class OneShotShellResult(
     val stderrTruncated: Boolean = false,
 )
 
-internal const val SHELL_STDIN_FAILED_EXIT_CODE = -4
+/** 控制台 PTY 的前提是随包原生组件已被安装器提取为可执行文件；不启动进程，可在入口直接调用。 */
+internal fun ptySupported(): Boolean = TerminalRuntime.nativeExecutable(PTY_EXECUTABLE) != null
 
-/**
- * 探测控制台 PTY 的前提：Root 侧 BusyBox 带 script applet。
- * 用 --list 精确匹配 applet 名；--help 的首行是版本横幅，不含 applet 名。
- * 只在控制台入口调用，不在进程启动热路径使用。
- */
-internal fun ptySupported(processSupervisor: ShellProcessSupervisor): Boolean {
-    val command = AndroidBusyBox.discoveryScript() +
-        "; [ -n \"\$eta_busybox\" ] || exit 1; \"\$eta_busybox\" --list 2>/dev/null | grep -qx script"
-    val result = runOneShotShell(
-        processSupervisor = processSupervisor,
-        identity = "root",
-        command = command,
-        timeoutSeconds = 10,
-    )
-    return result.exitCode == 0
-}
+internal const val PTY_EXECUTABLE = "libeta_pty.so"
+internal const val SHELL_STDIN_FAILED_EXIT_CODE = -4
 
 /**
  * 一次性 Shell 命令原语：带超时回收与有界输出收集。调用方负责命令构造与输出解释；
@@ -706,9 +539,8 @@ internal fun runOneShotShell(
     environment: TerminalEnvironment = TerminalEnvironment.ANDROID,
     linuxRootfsPath: String? = null,
     linuxSharedMounts: List<SharedFolderMount> = emptyList(),
-    maxOutputBytes: Int = ONE_SHOT_OUTPUT_MAX_BYTES,
+    maxOutputBytes: Int = Int.MAX_VALUE,
 ): OneShotShellResult {
-    var startFailure: String? = null
     val process = processSupervisor.startShellProcess(
         identity = identity,
         command = command,
@@ -716,13 +548,10 @@ internal fun runOneShotShell(
         environment = environment,
         linuxRootfsPath = linuxRootfsPath,
         linuxSharedMounts = linuxSharedMounts,
-        onStartFailure = { startFailure = it },
     ) ?: return OneShotShellResult(
-        if (processSupervisor.isClosing || Thread.currentThread().isInterrupted) -3 else -1,
+        if (processSupervisor.isClosing) -3 else -1,
         ByteArray(0),
-        if (processSupervisor.isClosing || Thread.currentThread().isInterrupted)
-            "操作已取消 (${startFailure ?: "stage=closing"})".toByteArray()
-        else "无法启动进程 (${startFailure ?: "stage=unknown"})".toByteArray(),
+        if (processSupervisor.isClosing) "操作已取消".toByteArray() else "无法启动进程".toByteArray(),
     )
 
     try {
@@ -734,13 +563,14 @@ internal fun runOneShotShell(
         val stderrThread = thread(name = "agent-terminal-stderr") {
             process.errorStream.use { input -> stderr.readFrom(input, minOf(maxOutputBytes, 64 * 1024)) }
         }
-        val stdinFailed = java.util.concurrent.atomic.AtomicBoolean(false)
+        val stdinFailed = AtomicBoolean(false)
         val stdinThread = thread(name = "agent-terminal-stdin") {
             try {
                 process.outputStream.use { out ->
                     if (stdin != null) out.write(stdin)
                 }
-            } catch (_: java.io.IOException) {
+            } catch (_: IOException) {
+                // 校验失败或取消可能先关闭读端；由调用线程结合退出码处理，不能让写线程异常终止 Runtime。
                 stdinFailed.set(true)
             }
         }
@@ -752,23 +582,22 @@ internal fun runOneShotShell(
             stderrThread.join(500)
             stdinThread.join(500)
             processSupervisor.reapProcess(process)
-            return OneShotShellResult(-2, output.bytes(), "命令执行超时".toByteArray())
+            return OneShotShellResult(-2, output.bytes(), "命令执行超时".toByteArray(), output.isTruncated(), stderr.isTruncated())
         }
 
         outputThread.join(500)
         stderrThread.join(500)
         stdinThread.join(500)
         val exitCode = process.exitValue()
-        if (exitCode == 0 && stdin?.isNotEmpty() == true && (stdinFailed.get() || stdinThread.isAlive)) {
+        // 子进程的失败保留原始语义；声称成功但输入传输失败时不能把不完整写入当作成功。
+        if (exitCode == 0 && stdin?.isNotEmpty() == true && stdinFailed.get()) {
             return OneShotShellResult(
                 SHELL_STDIN_FAILED_EXIT_CODE, output.bytes(), "命令输入传输失败".toByteArray(),
-                output.isTruncated(), stderr.isTruncated(),
+                output.isTruncated(),
             )
         }
         return OneShotShellResult(
-            exitCode, output.bytes(), stderr.bytes(),
-            output.isTruncated() || outputThread.isAlive,
-            stderr.isTruncated() || stderrThread.isAlive,
+            exitCode, output.bytes(), stderr.bytes(), output.isTruncated(), stderr.isTruncated(),
         )
     } finally {
         if (processSupervisor.isClosing) {

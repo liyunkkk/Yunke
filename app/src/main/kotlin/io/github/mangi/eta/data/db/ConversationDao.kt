@@ -1,228 +1,271 @@
 package io.github.mangi.eta.data.db
 
-import androidx.room.ColumnInfo
+import android.database.Cursor
 import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
-import androidx.room.Update
 import androidx.room.Transaction
-import kotlinx.coroutines.flow.Flow
+import androidx.room.Upsert
 
 @Dao
-internal interface ConversationDao {
+internal interface ConversationDao : ChunkedTextDao {
+    @Query(
+        "SELECT c.id, c.title, c.reasoning_effort, c.created_at, c.updated_at, c.model_id, c.is_pinned, " +
+            "(c.roleplay_json != '') AS has_roleplay, " +
+            "m.id AS message_id, m.type AS message_type, m.tool_name, " +
+            "COALESCE((SELECT substr(content, 1, 256) FROM agent_text_chunks " +
+            "WHERE owner_table = 'conversation_messages' AND owner_id = m.id AND field = 'content' " +
+            "AND chunk_index = 0), substr(m.content, 1, 256)) AS message_preview " +
+            "FROM conversations c LEFT JOIN conversation_messages m ON m.conversation_id = c.id " +
+            "AND m.sort_index = (SELECT MAX(sort_index) FROM conversation_messages WHERE conversation_id = c.id) " +
+            "ORDER BY c.updated_at DESC, c.id ASC"
+    )
+    suspend fun conversationIndex(): List<ConversationIndexRow>
+
+    @Query("SELECT id, title, created_at, updated_at, is_pinned FROM conversations")
+    suspend fun conversationIdentities(): List<ConversationIdentity>
+
+    @Query("UPDATE conversations SET title = :title, updated_at = :updatedAt, is_pinned = :isPinned WHERE id = :conversationId")
+    suspend fun updateConversationTitle(conversationId: String, title: String, updatedAt: Long, isPinned: Boolean = false)
+
     @Query(
         "SELECT id, title, thinking_enabled, reasoning_effort, " +
-            "applied_runtime_run_ids_json, created_at, updated_at, folder_id, is_pinned, has_completion_marker, " +
-            "provider_id, model_id, assistant_id " +
+            "applied_runtime_run_ids_json, roleplay_json, revisions_json, created_at, updated_at, model_id, is_pinned " +
+            "FROM conversations WHERE id = :conversationId"
+    )
+    suspend fun conversationMetadataRow(conversationId: String): ConversationMetadata?
+
+    @Transaction
+    suspend fun conversation(conversationId: String): ConversationMetadata? =
+        conversationMetadataRow(conversationId)?.let { restoreMetadata(it) }
+
+    @Query(
+        "SELECT id, title, thinking_enabled, reasoning_effort, " +
+            "applied_runtime_run_ids_json, roleplay_json, revisions_json, created_at, updated_at, model_id, is_pinned " +
             "FROM conversations ORDER BY updated_at DESC"
     )
-    suspend fun conversations(): List<ConversationMetadata>
+    suspend fun conversationMetadataRows(): List<ConversationMetadata>
+
+    @Transaction
+    suspend fun conversations(): List<ConversationMetadata> = conversationMetadataRows().map { restoreMetadata(it) }
 
     @Query(
         "SELECT id, title, thinking_enabled, reasoning_effort, " +
-            "applied_runtime_run_ids_json, created_at, updated_at, folder_id, is_pinned, has_completion_marker, " +
-            "provider_id, model_id, assistant_id " +
+            "applied_runtime_run_ids_json, roleplay_json, revisions_json, created_at, updated_at, model_id, is_pinned " +
             "FROM conversations ORDER BY updated_at DESC LIMIT :limit OFFSET :offset"
     )
-    suspend fun conversationsPage(limit: Int, offset: Int): List<ConversationMetadata>
+    suspend fun conversationMetadataPage(limit: Int, offset: Int): List<ConversationMetadata>
 
-    @Query("SELECT id, title, thinking_enabled, reasoning_effort, applied_runtime_run_ids_json, " +
-        "created_at, updated_at, folder_id, is_pinned, has_completion_marker, provider_id, model_id, assistant_id " +
-        "FROM conversations WHERE id = :id")
-    suspend fun conversationMetadata(id: String): ConversationMetadata?
+    @Transaction
+    suspend fun conversationsPage(limit: Int, offset: Int): List<ConversationMetadata> =
+        conversationMetadataPage(limit, offset).map { restoreMetadata(it) }
 
-    /** 会话最后活动时间（毫秒）：会话不存在时给 null。会话 Todo 清单的过期判定用它当基准。 */
-    @Query("SELECT updated_at FROM conversations WHERE id = :id")
-    fun observeUpdatedAt(id: String): Flow<Long?>
+    suspend fun restoreMetadata(row: ConversationMetadata) = row.copy(
+        appliedRuntimeRunIdsJson = restoreText("conversations", row.id, "runs", row.appliedRuntimeRunIdsJson),
+        roleplayJson = restoreText("conversations", row.id, "roleplay", row.roleplayJson),
+        revisionsJson = restoreText("conversations", row.id, "revisions", row.revisionsJson),
+    )
 
-    @Insert(onConflict = OnConflictStrategy.IGNORE)
-    suspend fun insertMissingConversations(rows: List<ConversationEntity>)
+    @Query("SELECT roleplay_json FROM conversations WHERE id = :conversationId")
+    suspend fun roleplayJsonRow(conversationId: String): String?
 
-    // Partial UPDATE, never REPLACE: REPLACE would cascade-delete unloaded child rows.
-    @Update(entity = ConversationEntity::class)
-    suspend fun updateConversationMetadata(rows: List<ConversationMetadata>)
-
-    @Query("DELETE FROM conversations WHERE id = :id")
-    suspend fun deleteConversation(id: String)
-
-    @Query("SELECT id, conversation_id, type, substr(content, 1, 2048) AS content, " +
-        "tool_name, tool_status, NULL AS arguments_summary, NULL AS result_summary " +
-        "FROM conversation_messages WHERE conversation_id = :id ORDER BY sort_index DESC LIMIT 1")
-    suspend fun conversationPreview(id: String): ConversationTextRow?
-
-    @Query("SELECT id, conversation_id, type, content, tool_name, tool_status, arguments_summary, result_summary " +
-        "FROM conversation_messages WHERE conversation_id = :id " +
-        "AND type IN ('user', 'assistant', 'thinking', 'tool') ORDER BY sort_index ASC LIMIT :limit OFFSET :offset")
-    suspend fun searchablePage(id: String, limit: Int, offset: Int): List<ConversationTextRow>
-
-    @Query("SELECT DISTINCT conversation_id FROM conversation_messages WHERE type = 'question'")
-    suspend fun questionConversationIds(): List<String>
+    @Transaction
+    suspend fun roleplayJson(conversationId: String): String? = roleplayJsonRow(conversationId)?.let {
+        restoreText("conversations", conversationId, "roleplay", it)
+    }
 
     @Query("SELECT * FROM conversation_messages ORDER BY conversation_id ASC, sort_index ASC")
-    suspend fun messages(): List<ConversationMessageEntity>
+    suspend fun messageRows(): List<ConversationMessageEntity>
+
+    @Transaction
+    suspend fun messages(): List<ConversationMessageEntity> = messageRows().map { restoreMessage(it) }
 
     @Query("SELECT * FROM conversations ORDER BY updated_at ASC")
-    suspend fun conversationEntities(): List<ConversationEntity>
+    suspend fun conversationEntityRows(): List<ConversationEntity>
+
+    @Transaction
+    suspend fun conversationEntities(): List<ConversationEntity> = conversationEntityRows().map { row ->
+        restoreConversation(row)
+    }
+
+    @Query("SELECT * FROM conversations ORDER BY updated_at ASC, id ASC LIMIT :limit OFFSET :offset")
+    suspend fun conversationEntityRowsPage(limit: Int, offset: Int): List<ConversationEntity>
+
+    suspend fun restoreConversation(row: ConversationEntity) = row.copy(
+        appliedRuntimeRunIdsJson = restoreText("conversations", row.id, "runs", row.appliedRuntimeRunIdsJson),
+        roleplayJson = restoreText("conversations", row.id, "roleplay", row.roleplayJson),
+        revisionsJson = restoreText("conversations", row.id, "revisions", row.revisionsJson),
+    )
+
+    @Query("SELECT * FROM conversation_messages ORDER BY conversation_id ASC, sort_index ASC LIMIT :limit OFFSET :offset")
+    suspend fun allMessageRowsPage(limit: Int, offset: Int): List<ConversationMessageEntity>
 
     @Query("SELECT * FROM conversation_context_checkpoints ORDER BY conversation_id ASC")
-    suspend fun contextCheckpoints(): List<ConversationContextCheckpointEntity>
+    suspend fun contextCheckpointRows(): List<ConversationContextCheckpointEntity>
 
-    @Query("SELECT * FROM conversations WHERE id = :id")
-    suspend fun conversationEntity(id: String): ConversationEntity?
+    @Transaction
+    suspend fun contextCheckpoints(): List<ConversationContextCheckpointEntity> = contextCheckpointRows().map { restoreCheckpoint(it) }
 
-    @Query("SELECT * FROM conversation_messages WHERE conversation_id = :conversationId ORDER BY sort_index ASC")
-    suspend fun messagesForConversation(conversationId: String): List<ConversationMessageEntity>
+    @Query("SELECT * FROM conversation_context_checkpoints ORDER BY conversation_id ASC LIMIT :limit OFFSET :offset")
+    suspend fun contextCheckpointRowsPage(limit: Int, offset: Int): List<ConversationContextCheckpointEntity>
+
+    @Query("SELECT id, sort_index AS sortIndex, type, (trim(content) != '') AS hasContent, " +
+        "CASE WHEN type = 'system_notice' THEN content ELSE '' END AS noticeCode " +
+        "FROM conversation_messages WHERE conversation_id = :conversationId ORDER BY sort_index ASC")
+    suspend fun branchMessages(conversationId: String): List<io.github.mangi.eta.data.model.ConversationBranchMessage>
+
+    @Query("SELECT * FROM conversation_messages WHERE conversation_id = :conversationId " +
+        "AND sort_index > :after AND sort_index <= :through ORDER BY sort_index ASC LIMIT :limit")
+    suspend fun branchMessageRows(conversationId: String, after: Int, through: Int, limit: Int): List<ConversationMessageEntity>
 
     @Query("SELECT * FROM conversation_messages WHERE conversation_id = :conversationId ORDER BY sort_index ASC LIMIT :limit OFFSET :offset")
-    suspend fun messagesPage(conversationId: String, limit: Int, offset: Int): List<ConversationMessageEntity>
+    suspend fun messageRowsPage(conversationId: String, limit: Int, offset: Int): List<ConversationMessageEntity>
 
-    // Message IDs are primary keys for the whole table, not just one conversation.
-    @Query("SELECT EXISTS(SELECT 1 FROM conversation_messages WHERE id = :id)")
-    suspend fun messageIdExists(id: String): Boolean
+    @Query("SELECT * FROM conversation_messages WHERE conversation_id = :conversationId AND type IN ('user', 'assistant') " +
+        "ORDER BY sort_index ASC LIMIT :limit OFFSET :offset")
+    suspend fun legacyMessageRowsPage(conversationId: String, limit: Int, offset: Int): List<ConversationMessageEntity>
 
-    @Query("UPDATE conversation_messages SET id = :newId " +
-        "WHERE conversation_id = :conversationId AND id = :oldId AND id <> :newId " +
-        "AND NOT EXISTS(SELECT 1 FROM conversation_messages WHERE id = :newId)")
-    suspend fun renameMessageId(conversationId: String, oldId: String, newId: String): Int
+    @Transaction
+    suspend fun messagesPage(conversationId: String, limit: Int, offset: Int): List<ConversationMessageEntity> =
+        messageRowsPage(conversationId, limit, offset).map { restoreMessage(it) }
+
+    @Query("SELECT * FROM conversation_messages WHERE conversation_id = :conversationId AND sort_index < :before " +
+        "ORDER BY sort_index DESC LIMIT :limit")
+    suspend fun messageRowsBefore(conversationId: String, before: Int, limit: Int): List<ConversationMessageEntity>
+
+    @Transaction
+    suspend fun messagesBefore(conversationId: String, before: Int, limit: Int): List<ConversationMessageEntity> =
+        messageRowsBefore(conversationId, before, limit).asReversed().map { restoreMessage(it) }
+
+    @Query("SELECT EXISTS(SELECT 1 FROM conversation_messages WHERE conversation_id = :conversationId AND sort_index < :before)")
+    suspend fun hasMessagesBefore(conversationId: String, before: Int): Boolean
+
+    @Query("SELECT COALESCE(MAX(sort_index) + 1, 0) FROM conversation_messages WHERE conversation_id = :conversationId")
+    suspend fun nextMessageIndex(conversationId: String): Int
+
+    @Query("SELECT DISTINCT conversation_id FROM conversation_messages WHERE type = 'system_notice' AND content IN (:codes)")
+    suspend fun searchSystemNotices(codes: List<String>): List<String>
+
+    @Query("SELECT id, conversation_id, type, content, tool_name, arguments_summary, result_summary, tools_json " +
+        "FROM conversation_messages ORDER BY conversation_id, sort_index")
+    fun messageSearchCursor(): Cursor
+
+    @Query("SELECT id, content FROM conversation_messages WHERE conversation_id = :conversationId AND id IN (:messageIds)")
+    suspend fun messageContents(conversationId: String, messageIds: List<String>): List<ConversationMessageContent>
+
+    @Query("SELECT EXISTS(SELECT 1 FROM conversation_messages WHERE conversation_id = :conversationId AND id = :messageId)")
+    suspend fun hasMessage(conversationId: String, messageId: String): Boolean
+
+    @Query("UPDATE conversation_messages SET content = :content, is_edited = CASE WHEN type = 'user' THEN 1 ELSE is_edited END " +
+        "WHERE conversation_id = :conversationId AND id = :messageId")
+    suspend fun updateMessageContentRow(conversationId: String, messageId: String, content: String)
+
+    @Transaction
+    suspend fun updateMessageContent(conversationId: String, messageId: String, content: String): Boolean {
+        if (!hasMessage(conversationId, messageId)) return false
+        updateMessageContentRow(conversationId, messageId, storeText("conversation_messages", messageId, "content", content))
+        return true
+    }
 
     @Query("SELECT COUNT(*) FROM conversation_messages WHERE conversation_id = :conversationId")
     suspend fun messageCount(conversationId: String): Int
 
-    @Query("SELECT COUNT(*) FROM conversation_messages")
-    suspend fun storedMessageCount(): Int
-
-    @Query("SELECT COUNT(*) FROM conversations")
-    suspend fun conversationCount(): Int
-
-    /**
-     * Visible chat bubbles only; thinking/tool rows are not messages.
-     *
-     * Empty assistant rows are excluded: a round whose text lands in another block still
-     * gets a content-free `...-usage` carrier row so its bill has somewhere to live. On
-     * this device those carriers were 1980 of 2550 counted rows, inflating the reported
-     * message count roughly fourfold. They are not bubbles the user ever saw.
-     */
-    @Query(
-        "SELECT COUNT(*) FROM conversation_messages WHERE type IN ('user', 'assistant') " +
-            "AND (type = 'user' OR (content IS NOT NULL AND TRIM(content) <> ''))"
-    )
-    suspend fun totalMessageCount(): Int
-
-    @Query(
-        "SELECT conversation_id, type, input_tokens, output_tokens, cached_tokens " +
-            "FROM conversation_messages WHERE type IN ('assistant', 'context_compacted')"
-    )
-    suspend fun usageContentRows(): List<UsageContentRow>
-
-    @Query(
-        "SELECT date(created_at / 1000, 'unixepoch', 'localtime') AS day, COUNT(*) AS count " +
-            "FROM conversations WHERE created_at >= :startAt GROUP BY day"
-    )
-    suspend fun conversationCountPerDay(startAt: Long): List<ConversationDayCount>
+    @Query("SELECT EXISTS(SELECT 1 FROM conversation_messages WHERE conversation_id = :conversationId AND id = :messageId AND type = 'assistant')")
+    suspend fun hasAssistantMessage(conversationId: String, messageId: String): Boolean
 
     @Query("SELECT * FROM conversation_context_checkpoints WHERE conversation_id = :conversationId")
-    suspend fun contextCheckpoint(conversationId: String): ConversationContextCheckpointEntity?
+    suspend fun contextCheckpointRow(conversationId: String): ConversationContextCheckpointEntity?
+
+    @Transaction
+    suspend fun contextCheckpoint(conversationId: String): ConversationContextCheckpointEntity? =
+        contextCheckpointRow(conversationId)?.let { restoreCheckpoint(it) }
+
+    suspend fun restoreCheckpoint(row: ConversationContextCheckpointEntity) = row.copy(
+        historyJson = restoreText("conversation_context_checkpoints", row.conversationId, "history", row.historyJson),
+        journalJson = restoreText("conversation_context_checkpoints", row.conversationId, "journal", row.journalJson),
+    )
 
     @Query("SELECT * FROM conversation_state WHERE id = :id")
     suspend fun state(id: String = ConversationStateEntity.SINGLETON_ID): ConversationStateEntity?
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertConversations(conversations: List<ConversationEntity>)
+    @Upsert
+    suspend fun insertConversationRow(conversation: ConversationEntity)
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertMessages(messages: List<ConversationMessageEntity>)
+    @Transaction
+    suspend fun insertConversations(conversations: List<ConversationEntity>) {
+        conversations.forEach { row ->
+            insertConversationRow(row.copy(
+                appliedRuntimeRunIdsJson = storeText("conversations", row.id, "runs", row.appliedRuntimeRunIdsJson),
+                roleplayJson = storeText("conversations", row.id, "roleplay", row.roleplayJson),
+                revisionsJson = storeText("conversations", row.id, "revisions", row.revisionsJson),
+            ))
+        }
+    }
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertContextCheckpoints(checkpoints: List<ConversationContextCheckpointEntity>)
+    @Upsert
+    suspend fun insertMessageRow(message: ConversationMessageEntity)
+
+    @Transaction
+    suspend fun insertMessages(messages: List<ConversationMessageEntity>) {
+        messages.forEach { row ->
+            insertMessageRow(row.copy(
+                content = storeText("conversation_messages", row.id, "content", row.content),
+                imagesJson = storeText("conversation_messages", row.id, "images", row.imagesJson),
+            ))
+        }
+    }
+
+    suspend fun restoreMessage(row: ConversationMessageEntity) = row.copy(
+        content = restoreText("conversation_messages", row.id, "content", row.content),
+        imagesJson = restoreText("conversation_messages", row.id, "images", row.imagesJson),
+    )
+
+    @Upsert
+    suspend fun insertContextCheckpointRow(checkpoint: ConversationContextCheckpointEntity)
+
+    @Transaction
+    suspend fun insertContextCheckpoints(checkpoints: List<ConversationContextCheckpointEntity>) {
+        checkpoints.forEach { row ->
+            insertContextCheckpointRow(row.copy(
+                historyJson = storeText("conversation_context_checkpoints", row.conversationId, "history", row.historyJson),
+                journalJson = storeText("conversation_context_checkpoints", row.conversationId, "journal", row.journalJson),
+            ))
+        }
+    }
+
+    @Transaction
+    suspend fun updateContextCheckpoint(conversationId: String, historyJson: String?, journalJson: String?) {
+        val previous = contextCheckpointRow(conversationId)
+            ?: ConversationContextCheckpointEntity(conversationId, "[]")
+        insertContextCheckpointRow(previous.copy(
+            historyJson = historyJson?.let { storeText("conversation_context_checkpoints", conversationId, "history", it) }
+                ?: previous.historyJson,
+            journalJson = journalJson?.let { storeText("conversation_context_checkpoints", conversationId, "journal", it) }
+                ?: previous.journalJson,
+        ))
+    }
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertState(state: ConversationStateEntity)
 
-    @Query("SELECT * FROM conversation_folders ORDER BY sort_index ASC, created_at ASC")
-    suspend fun folders(): List<ConversationFolderEntity>
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertFolders(folders: List<ConversationFolderEntity>)
-
-    @Query("DELETE FROM conversation_folders")
-    suspend fun deleteFolders()
-
-    @Transaction
-    suspend fun replaceFolders(folders: List<ConversationFolderEntity>) {
-        deleteFolders()
-        if (folders.isNotEmpty()) {
-            insertFolders(folders)
-        }
-    }
-
     @Query("DELETE FROM conversations")
     suspend fun deleteConversations()
 
+    @Query("DELETE FROM conversations WHERE id = :conversationId")
+    suspend fun deleteConversation(conversationId: String)
+
     @Query("DELETE FROM conversation_messages")
     suspend fun deleteMessages()
+
+    @Query("DELETE FROM conversation_messages WHERE conversation_id = :conversationId AND sort_index >= :fromIndex")
+    suspend fun deleteMessagesFrom(conversationId: String, fromIndex: Int)
 
     @Query("DELETE FROM conversation_context_checkpoints")
     suspend fun deleteContextCheckpoints()
 
     @Query("DELETE FROM conversation_state")
     suspend fun deleteState()
-
-    @Query("DELETE FROM conversation_messages WHERE conversation_id = :conversationId")
-    suspend fun deleteMessagesForConversation(conversationId: String)
-
-    @Query("DELETE FROM conversation_context_checkpoints WHERE conversation_id = :conversationId")
-    suspend fun deleteContextCheckpoint(conversationId: String)
-
-    @Insert(onConflict = OnConflictStrategy.ABORT)
-    suspend fun insertImportedConversation(conversation: ConversationEntity)
-
-    @Insert(onConflict = OnConflictStrategy.ABORT)
-    suspend fun insertImportedMessages(messages: List<ConversationMessageEntity>)
-
-    @Insert(onConflict = OnConflictStrategy.ABORT)
-    suspend fun insertImportedCheckpoint(checkpoint: ConversationContextCheckpointEntity)
-
-    @Query("DELETE FROM conversations WHERE id = :id")
-    suspend fun deleteImportedConversation(id: String)
-
-    @Query("SELECT id FROM conversations")
-    suspend fun conversationIds(): List<String>
-
-    @Query("DELETE FROM conversations WHERE id = :id")
-    suspend fun deleteConversationRow(id: String)
-
-    /** 删除单个会话及其消息与上下文检查点，其余会话保持原样。 */
-    @Transaction
-    suspend fun deleteConversationCascade(conversationId: String) {
-        deleteMessagesForConversation(conversationId)
-        deleteContextCheckpoint(conversationId)
-        deleteConversationRow(conversationId)
-    }
-
-    @Transaction
-    suspend fun importAsNewConversation(
-        conversation: ConversationEntity,
-        messages: List<ConversationMessageEntity>,
-        contextCheckpoint: ConversationContextCheckpointEntity?,
-    ) {
-        insertImportedConversation(conversation)
-        if (messages.isNotEmpty()) insertImportedMessages(messages)
-        contextCheckpoint?.let { insertImportedCheckpoint(it) }
-    }
-
-    @Transaction
-    suspend fun upsertConversation(
-        conversation: ConversationEntity,
-        messages: List<ConversationMessageEntity>,
-        contextCheckpoint: ConversationContextCheckpointEntity?,
-    ) {
-        deleteMessagesForConversation(conversation.id)
-        deleteContextCheckpoint(conversation.id)
-        insertConversations(listOf(conversation))
-        if (messages.isNotEmpty()) insertMessages(messages)
-        contextCheckpoint?.let { insertContextCheckpoints(listOf(it)) }
-    }
 
     @Transaction
     suspend fun replaceAll(
@@ -240,36 +283,4 @@ internal interface ConversationDao {
         insertMessages(messages)
         state?.let { insertState(it) }
     }
-}
-
-
-internal data class UsageContentRow(
-    val type: String,
-    @ColumnInfo(name = "conversation_id") val conversationId: String = "",
-    @ColumnInfo(name = "input_tokens") val inputTokens: Int? = null,
-    @ColumnInfo(name = "output_tokens") val outputTokens: Int? = null,
-    @ColumnInfo(name = "cached_tokens") val cachedTokens: Int? = null,
-)
-
-internal data class ConversationDayCount(
-    val day: String,
-    val count: Int,
-)
-
-/** Text-only projection: searching/previewing a chat never decodes its image JSON or history. */
-internal data class ConversationTextRow(
-    val id: String,
-    @ColumnInfo(name = "conversation_id") val conversationId: String,
-    val type: String,
-    val content: String,
-    @ColumnInfo(name = "tool_name") val toolName: String?,
-    @ColumnInfo(name = "tool_status") val toolStatus: String?,
-    @ColumnInfo(name = "arguments_summary") val argumentsSummary: String?,
-    @ColumnInfo(name = "result_summary") val resultSummary: String?,
-) {
-    fun asMessageEntity() = ConversationMessageEntity(
-        id = id, conversationId = conversationId, sortIndex = 0, type = type,
-        content = content, toolName = toolName, toolStatus = toolStatus,
-        argumentsSummary = argumentsSummary, resultSummary = resultSummary,
-    )
 }

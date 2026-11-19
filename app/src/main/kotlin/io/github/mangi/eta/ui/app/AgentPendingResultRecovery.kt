@@ -9,7 +9,6 @@ import io.github.mangi.eta.ui.model.AgentMessageUi
 import io.github.mangi.eta.ui.model.SystemNoticeCode
 import io.github.mangi.eta.ui.model.SystemNoticeMessageUi
 import io.github.mangi.eta.ui.model.UserMessageUi
-import io.github.mangi.eta.ui.model.decodeUserMessageImages
 
 /** 将 Runtime outbox 的结果幂等折叠回 App 会话。 */
 internal object AgentPendingResultRecovery {
@@ -24,43 +23,47 @@ internal object AgentPendingResultRecovery {
         result: AgentRuntimeWire.RunResult,
         promptSupplement: AgentUiHandoffPayload.Supplement? = null,
         supplements: List<AgentUiHandoffPayload.Supplement>,
-        generatedAtMillis: Long? = null,
     ): Outcome {
+        if (result.operation == AgentRuntimeWire.OP_REWRITE_REPLY || runId in state.roleplayMessages.pendingRewrites) {
+            return Outcome(RoleplayConversationReducer.applyRewrite(state, runId, result), runId in state.appliedRuntimeRunIds)
+        }
+        val stateWithSupplements = state.copy(messages = mergeSupplements(
+            runId, listOfNotNull(promptSupplement) + supplements, state.messages,
+        ))
         val content = result.content.takeIf { result.ok && it.isNotBlank() }
         val history = AgentRuntimeHistoryReducer.apply(
-            state = state,
+            state = stateWithSupplements,
             runId = runId,
+            snapshot = result.contextSnapshot?.let { snapshot ->
+                snapshot.copy(consumedTranscriptMessages = snapshot.consumedTranscriptMessages?.let {
+                    it + if (promptSupplement != null) 1 else 0
+                })
+            },
+            retainPendingSupplements = !result.ok || result.contextSnapshot != null,
             additions = listOfNotNull(
                 promptSupplement?.let { supplement ->
                     AgentModelClient.buildUserHistoryMessage(
                         text = supplement.text,
                         images = emptyList(),
-                    )
+                    ).copy(messageId = supplementMessageId(runId, supplement.index))
                 }
             ) + result.transcript,
         )
-        if (history.alreadyApplied) {
-            val closed = AgentQuestionProjection.interruptWaiting(runId, state.messages)
-            return Outcome(state.copy(messages = closed,
-                isWaitingForAnswer = AgentQuestionProjection.hasWaiting(closed)), alreadyApplied = true)
+        if (history.alreadyApplied) return Outcome(state, alreadyApplied = true)
+        if (result.operation == AgentRuntimeWire.OP_COMPACT) {
+            return Outcome(history.state.copy(isStreaming = false, isCompacting = false,
+                messages = AgentRunMessageProjector.mergeCompactionResultNotice(
+                    runId = runId,
+                    messages = state.messages,
+                    ok = result.ok,
+                    detail = if (result.ok) "上下文压缩完成" else result.error ?: "上下文压缩失败",
+                )), false)
         }
 
-        val messagesWithResult = state.messages
+        val messagesWithResult = stateWithSupplements.messages
             .filterNot { it is SystemNoticeMessageUi && it.id == interruptedNoticeId(runId) }
             .toMutableList()
             .also { messages ->
-            if (!result.ok && result.error != "已停止") {
-                val projected = AgentRunMessageProjector(nowElapsedRealtime = { 0L })
-                    .terminalFailure(runId, result.error.orEmpty(), messages)
-                messages.clear()
-                messages.addAll(projected)
-                return@also
-            }
-            if (!result.ok) {
-                val stopped = AgentRunMessageProjector(nowElapsedRealtime = { 0L }).runStopped(runId, messages)
-                messages.clear()
-                messages.addAll(stopped)
-            }
             val assistantIndex = AgentRunMessageProjector.resultTargetIndex(runId, messages, includeNotices = true)
             val resultId = AgentRunMessageProjector.resultFallbackId(runId, messages)
             val targetRound = (messages.getOrNull(assistantIndex) as? AgentMessageUi)
@@ -71,72 +74,47 @@ internal object AgentPendingResultRecovery {
                     message is AgentMessageUi && message.id.assistantRound(runId) == round
                 }
             } ?: 0
-            val partial = messages.getOrNull(assistantIndex) as? AgentMessageUi
-            val resultTail = content?.let {
-                AgentRunMessageProjector.completedResultTail(runId, messages, assistantIndex, it)
-            }
             val completedMessage: AgentChatMessageUi = when {
                 content != null -> AgentMessageUi(
                     id = resultId,
                     content = if (sameRoundBlocks > 1) {
-                        (messages[assistantIndex] as AgentMessageUi).content.ifBlank { resultTail.orEmpty() }
+                        (messages[assistantIndex] as AgentMessageUi).content.ifBlank { content }
                     } else {
-                        resultTail.orEmpty()
+                        content
                     },
                     isStreaming = false,
                     renderMarkdown = true,
-                    generatedAtMillis = (messages.getOrNull(assistantIndex) as? AgentMessageUi)?.generatedAtMillis
-                        ?: generatedAtMillis?.takeIf { it > 0L },
                 )
-                VirtualCompletionNotice.confirmed(result) && partial != null && partial.content.isNotBlank() ->
-                    partial.copy(isStreaming = false)
                 result.ok -> SystemNoticeMessageUi(
                     id = resultId,
                     code = SystemNoticeCode.EmptyResult,
                 )
                 else -> SystemNoticeMessageUi(
                     id = resultId,
-                    code = if (result.error == "已停止") SystemNoticeCode.Stopped else SystemNoticeCode.RuntimeFailed,
+                    code = SystemNoticeCode.RuntimeFailed,
                     detail = result.error,
                 )
             }
-            if (!result.ok && partial != null && partial.content.isNotBlank()) {
-                messages[assistantIndex] = partial.copy(isStreaming = false)
-                messages += completedMessage.copyWithId(interruptedNoticeId(runId))
-            } else if (assistantIndex >= 0) {
+            if (assistantIndex >= 0) {
                 messages[assistantIndex] = completedMessage.copyWithId(messages[assistantIndex].id)
             } else {
                 messages += completedMessage
             }
         }
-        val finalMessages = mergeSupplements(
-            runId = runId,
-            supplements = listOfNotNull(promptSupplement) + supplements,
-            messages = AgentQuestionProjection.interruptWaiting(runId,
-                VirtualCompletionNotice.append(messagesWithResult, runId, result)),
-            beforeLatestAssistant = true,
-        )
         return Outcome(
-            state = state.copy(
-                messages = finalMessages,
+            state = history.state.copy(
+                messages = mergeSupplements(
+                    runId = runId,
+                    supplements = listOfNotNull(promptSupplement) + supplements,
+                    messages = messagesWithResult,
+                    beforeLatestAssistant = true,
+                ),
                 history = history.state.history,
                 appliedRuntimeRunIds = history.state.appliedRuntimeRunIds,
                 isStreaming = false,
-                isPaused = false,
-                isWaitingForAnswer = AgentQuestionProjection.hasWaiting(finalMessages),
-            ),
+            ).let { RoleplayConversationReducer.linkRun(it, runId) },
             alreadyApplied = false,
         )
-    }
-
-    /** Caller compares the final published state with its input, not with recovery's output.
-     * alreadyApplied describes history only: closing question cards may still require a save.
-     */
-    fun stateToPublish(beforeRecovery: AgentChatHomeUiState, recovery: Outcome,
-        finalMessages: List<AgentChatMessageUi>): AgentChatHomeUiState? {
-        val next = recovery.state.copy(messages = finalMessages,
-            isWaitingForAnswer = AgentQuestionProjection.hasWaiting(finalMessages))
-        return next.takeIf { it != beforeRecovery }
     }
 
     private fun AgentChatMessageUi.copyWithId(id: String): AgentChatMessageUi = when (this) {
@@ -154,31 +132,12 @@ internal object AgentPendingResultRecovery {
         var updated = messages
         supplements.sortedBy { it.index }.forEach { supplement ->
             val id = supplementMessageId(runId, supplement.index)
-            val media = decodeUserMessageImages(supplement.imagesJson)
-            val existing = updated.indexOfFirst { it.id == id }
-            if (existing >= 0) {
-                val previous = updated[existing] as? UserMessageUi
-                if (previous != null && previous.images.isEmpty() && media.previews.isNotEmpty()) {
-                    updated = updated.toMutableList().also { it[existing] = previous.copy(
-                        images = media.previews, imageSources = media.sources,
-                        imageIsVideo = media.videoFlags, imageDurationsMs = media.durationsMs,
-                    ) }
-                }
-                return@forEach
-            }
-            val userMessage = UserMessageUi(id = id, content = supplement.text,
-                images = media.previews, imageSources = media.sources,
-                imageIsVideo = media.videoFlags, imageDurationsMs = media.durationsMs)
-            // 实时追加必须接到当前列表末尾：steering 在本 turn 结束后才注入，
-            // 用户消息应出现在正在生成的回答下面。插到流式助手前面时，
-            // 跟底滚动会把补充挡在上一条用户消息下面，要等生成完才看得见。
-            // 恢复路径才需要插到最终助手之前，对齐已完成的 transcript。
-            if (!beforeLatestAssistant) {
-                updated = updated + userMessage
-                return@forEach
-            }
+            if (updated.any { it.id == id }) return@forEach
+            val userMessage = UserMessageUi(id = id, content = supplement.text)
             val assistantIndex = updated.indexOfLast {
-                it is AgentMessageUi && it.isAssistantForRun(runId)
+                it is AgentMessageUi &&
+                    it.isAssistantForRun(runId) &&
+                    (beforeLatestAssistant || it.isStreaming)
             }
             updated = if (assistantIndex >= 0) {
                 updated.toMutableList().also { it.add(assistantIndex, userMessage) }

@@ -1,29 +1,34 @@
 package io.github.mangi.eta.data.model
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AppearanceSettingsTest {
     @Test
-    fun defaultsMatchPreferredAppearance() {
+    fun defaultsPreserveExistingAppearanceBehaviorAndDefaultToCoui() {
         val settings = AppearanceSettings()
 
-        assertEquals(AppearanceThemeMode.LIGHT, settings.themeMode)
-        assertEquals(AppearancePaletteStyle.NEUTRAL, settings.paletteStyle)
-        assertEquals(AppearanceAccentColor.SYSTEM, settings.accentColor)
-        assertTrue(settings.monetEnabled)
+        assertEquals(AppearanceUiStyle.COUI, settings.uiStyle)
+        assertEquals(AppearanceThemeMode.SYSTEM, settings.themeMode)
+        assertFalse(settings.monetEnabled)
         assertTrue(settings.blurEnabled)
-        assertEquals(AppearanceTopBarBlurStyle.GAUSSIAN, settings.topBarBlurStyle)
+        assertTrue(settings.progressiveBlurEnabled)
         assertTrue(settings.swipeDismissEnabled)
-        assertEquals(false, settings.predictiveBackEnabled)
+        assertTrue(settings.predictiveBackEnabled)
         assertEquals(DEFAULT_INTERFACE_SCALE, settings.interfaceScale)
     }
 
     @Test
     fun invalidPersistedEnumsFallBackToStableDefaults() {
-        assertEquals(AppearanceThemeMode.LIGHT, AppearanceThemeMode.fromPersistedValue("unknown"))
-        assertEquals(AppearancePaletteStyle.NEUTRAL, AppearancePaletteStyle.fromPersistedValue(null))
+        assertEquals(AppearanceUiStyle.COUI, AppearanceUiStyle.fromPersistedValue(null))
+        assertEquals(AppearanceUiStyle.COUI, AppearanceUiStyle.fromPersistedValue("unknown"))
+        assertEquals(AppearanceUiStyle.COUI, AppearanceUiStyle.fromPersistedValue("coui"))
+        assertEquals(AppearanceUiStyle.MIUIX, AppearanceUiStyle.fromPersistedValue("miuix"))
+        assertEquals(AppearanceThemeMode.SYSTEM, AppearanceThemeMode.fromPersistedValue("unknown"))
+        assertEquals(AppearancePaletteStyle.TONAL_SPOT, AppearancePaletteStyle.fromPersistedValue(null))
+        assertEquals(AppearancePaletteStyle.CMF, AppearancePaletteStyle.fromPersistedValue("cmf"))
         assertEquals(AppearanceAccentColor.SYSTEM, AppearanceAccentColor.fromPersistedValue(""))
         assertEquals(
             AppearanceTopBarBlurStyle.GAUSSIAN,

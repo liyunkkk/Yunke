@@ -7,11 +7,11 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.sqlite.db.SupportSQLiteOpenHelper
 import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import io.github.mangi.eta.data.model.ModelSource
+import io.github.mangi.eta.data.model.ProviderAuthModes
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -22,7 +22,7 @@ import org.robolectric.annotation.Config
 @Config(sdk = [36])
 class EtaDatabaseMigrationTest {
     @Test
-    fun migration6To30PreservesDataAndMovesBoundedConversationContext() {
+    fun migration6To23PreservesDataAndMovesCompleteConversationContext() {
         val context = RuntimeEnvironment.getApplication() as Context
         val databaseName = "migration-${UUID.randomUUID()}.db"
         createVersion6Database(context, databaseName)
@@ -38,10 +38,7 @@ class EtaDatabaseMigrationTest {
             )
         }
 
-        val database = try {
-            Room.databaseBuilder(context, EtaDatabase::class.java, databaseName)
-            .allowMainThreadQueries()
-            .openHelperFactory(FrameworkSQLiteOpenHelperFactory())
+        val database = Room.databaseBuilder(context, EtaDatabase::class.java, databaseName)
             .addMigrations(
                 EtaDatabase.MIGRATION_6_7,
                 EtaDatabase.MIGRATION_7_8,
@@ -65,33 +62,16 @@ class EtaDatabaseMigrationTest {
                 EtaDatabase.MIGRATION_25_26,
                 EtaDatabase.MIGRATION_26_27,
                 EtaDatabase.MIGRATION_27_28,
-                EtaDatabase.MIGRATION_28_29,
-                EtaDatabase.MIGRATION_29_30,
-                EtaDatabase.MIGRATION_30_31,
-                EtaDatabase.MIGRATION_31_32,
-                EtaDatabase.MIGRATION_32_33,
-                EtaDatabase.MIGRATION_33_34,
-                EtaDatabase.MIGRATION_34_35,
-                EtaDatabase.MIGRATION_35_36,
             )
             .build()
-        } catch (error: Throwable) {
-            throw AssertionError("Room 构建失败：${error.message}", error)
-        }
-        try {
-            database.openHelper.writableDatabase
-        } catch (error: Throwable) {
-            throw AssertionError(
-                "Room 打开迁移后的数据库失败：${error}\n${error.stackTraceToString().take(2500)}",
-                error,
-            )
-        }
         try {
             val result = runBlocking(Dispatchers.IO) {
                 database.runtimeRunDao().runtimeResults().single()
             }
+            assertEquals("", result.contextSnapshotJson)
+            assertEquals("chat", result.operation)
             val archive = runBlocking(Dispatchers.IO) {
-                database.runtimeRunDao().archivedRunHeaders().single()
+                database.runtimeRunDao().archivedRuns().single().run
             }
             val conversations = runBlocking(Dispatchers.IO) {
                 database.conversationDao().conversations()
@@ -99,13 +79,6 @@ class EtaDatabaseMigrationTest {
             val retainedCheckpoint = runBlocking(Dispatchers.IO) {
                 database.conversationDao().contextCheckpoint("conv-1")
             }
-            assertEquals("", retainedCheckpoint?.cloudUsageJson)
-            assertEquals(36, database.openHelper.readableDatabase.version)
-            val todoTableCount = database.openHelper.readableDatabase
-                .query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'conversation_todos'")
-                .use { cursor -> cursor.count }
-            assertEquals(1, todoTableCount)
-            assertTrue(conversations.none { it.hasCompletionMarker })
             val oversizedCheckpoint = runBlocking(Dispatchers.IO) {
                 database.conversationDao().contextCheckpoint("conv-oversized")
             }
@@ -122,21 +95,16 @@ class EtaDatabaseMigrationTest {
                 database.conversationDao().messages().single()
             }
             val inFlightRuns = runBlocking(Dispatchers.IO) {
-                database.runtimeRunDao().inFlightRunHeaders()
+                database.runtimeRunDao().inFlightRuns()
             }
             val mcpServers = runBlocking(Dispatchers.IO) {
                 database.mcpServerDao().servers()
             }
-            val subAgentSamples = runBlocking(Dispatchers.IO) {
-                database.subAgentRunDao().recent("quick", 10)
-            }
 
             assertEquals("保留的结果", result.content)
             assertEquals("[]", result.transcriptJson)
-            assertEquals(false, result.virtualDeliveryCompleted)
             assertEquals("保留的归档", archive.content)
             assertEquals("[]", archive.transcriptJson)
-            assertEquals(false, archive.virtualDeliveryCompleted)
             assertEquals("[]", archive.userImagePreviewsJson)
             assertEquals(
                 setOf("conv-1", "conv-enabled", "conv-custom-empty", "conv-oversized"),
@@ -146,23 +114,47 @@ class EtaDatabaseMigrationTest {
                 "[{\"role\":\"user\",\"content\":\"保留上下文\"}]",
                 retainedCheckpoint?.historyJson,
             )
-            assertEquals("[]", oversizedCheckpoint?.historyJson)
+            assertEquals("[\"${"x".repeat(140_000)}\"]", oversizedCheckpoint?.historyJson)
+            assertEquals(oversizedCheckpoint?.historyJson, oversizedCheckpoint?.journalJson)
             assertEquals("[]", clearedLegacyHistory)
             assertEquals("[]", conversations.first { it.id == "conv-1" }.appliedRuntimeRunIdsJson)
+            assertEquals("", conversations.first { it.id == "conv-1" }.roleplayJson)
+            assertEquals("", conversations.first { it.id == "conv-1" }.revisionsJson)
+            assertEquals(emptyList<CharacterEntity>(), runBlocking(Dispatchers.IO) { database.characterDao().characters() })
             assertEquals("off", conversations.first { it.id == "conv-1" }.reasoningEffort)
+            assertEquals(null, conversations.first { it.id == "conv-1" }.modelId)
+            assertEquals(false, conversations.first { it.id == "conv-1" }.isPinned)
             assertEquals("default", conversations.first { it.id == "conv-enabled" }.reasoningEffort)
-            assertEquals("", conversations.first { it.id == "conv-1" }.providerId)
-            assertEquals("", conversations.first { it.id == "conv-1" }.modelId)
             assertEquals(null, runBlocking(Dispatchers.IO) { database.conversationDao().state() })
             assertEquals(listOf("built-in", "manual"), provider.models.map { it.modelId })
-            assertEquals(false, provider.responsesStripReasoningStatus)
             assertEquals(false, provider.hostedWebSearchEnabled)
+            assertEquals(ProviderAuthModes.API_KEY, provider.authMode)
+            assertEquals("fixture-existing-api-key", provider.apiKey)
             assertEquals(false, migratedMessage.isEdited)
-            assertEquals(null, migratedMessage.generatedAtMillis)
-            assertEquals(emptyList<RuntimeInFlightRunEntity>(), inFlightRuns)
+            assertEquals(emptyList<RuntimeInFlightRunWithEvents>(), inFlightRuns)
             assertEquals(listOf("mcp-1"), mcpServers.map { it.id })
-            assertEquals(emptyList<SubAgentRunRow>(), subAgentSamples)
             assertEquals(null, mcpServers.single().toolsExpireAt)
+            assertEquals(null, mcpServers.single().toolsTruncationReason)
+
+            // 验证超大 MCP 工具目录通过分块表存储与恢复，且删除服务器后触发器自动清理分块。
+            val hugeToolsJson = "[\"${"x".repeat(40_000)}\"]"
+            runBlocking(Dispatchers.IO) {
+                database.mcpServerDao().insert(
+                    mcpServers.single().copy(
+                        id = "mcp-oversized",
+                        toolsJson = hugeToolsJson,
+                        toolsTruncationReason = "tool_limit",
+                    ),
+                )
+                val restored = database.mcpServerDao().serverById("mcp-oversized")!!
+                assertEquals(hugeToolsJson, restored.toolsJson)
+                assertEquals("tool_limit", restored.toolsTruncationReason)
+                assertEquals(1, database.mcpServerDao().delete("mcp-oversized"))
+                assertEquals(
+                    0,
+                    database.mcpServerDao().textChunks("mcp_servers", "mcp-oversized", "tools", 10, 0).size,
+                )
+            }
             assertEquals(null, provider.models.first().contextWindowOverride)
             assertEquals(null, provider.models.first().reasoningOverride)
             assertEquals(null, provider.models.first().reasoningCapabilitiesOverride)
@@ -173,258 +165,6 @@ class EtaDatabaseMigrationTest {
         } finally {
             database.close()
             context.deleteDatabase(databaseName)
-        }
-    }
-
-    @Test
-    fun migration32To33BoundsOversizedInFlightEventRows() {
-        val context = RuntimeEnvironment.getApplication() as Context
-        val databaseName = "migration-32-33-${UUID.randomUUID()}.db"
-        val helper = FrameworkSQLiteOpenHelperFactory().create(
-            SupportSQLiteOpenHelper.Configuration.builder(context)
-                .name(databaseName)
-                .callback(
-                    object : SupportSQLiteOpenHelper.Callback(32) {
-                        override fun onCreate(db: SupportSQLiteDatabase) {
-                            db.execSQL(
-                                "CREATE TABLE runtime_inflight_runs (" +
-                                    "run_id TEXT NOT NULL PRIMARY KEY, " +
-                                    "owner_instance_id TEXT NOT NULL, " +
-                                    "handoff_id TEXT NOT NULL, " +
-                                    "handoff_source TEXT NOT NULL, " +
-                                    "handoff_payload TEXT NOT NULL, " +
-                                    "dismiss_entry_surface INTEGER NOT NULL, " +
-                                    "created_at INTEGER NOT NULL, " +
-                                    "updated_at INTEGER NOT NULL)"
-                            )
-                            db.execSQL(
-                                "CREATE TABLE runtime_inflight_events (" +
-                                    "id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
-                                    "run_id TEXT NOT NULL, " +
-                                    "sort_index INTEGER NOT NULL, " +
-                                    "event_json TEXT NOT NULL)"
-                            )
-                            db.execSQL(
-                                "CREATE TABLE runtime_archive_runs (" +
-                                    "archive_run_id TEXT NOT NULL PRIMARY KEY)"
-                            )
-                            db.execSQL(
-                                "CREATE TABLE runtime_archive_events (" +
-                                    "id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
-                                    "archive_run_id TEXT NOT NULL, " +
-                                    "sort_index INTEGER NOT NULL, " +
-                                    "event_json TEXT NOT NULL)"
-                            )
-                            db.execSQL(
-                                "INSERT INTO runtime_inflight_runs " +
-                                    "(run_id, owner_instance_id, handoff_id, handoff_source, " +
-                                    "handoff_payload, dismiss_entry_surface, created_at, updated_at) " +
-                                    "VALUES ('legacy-run', 'owner', 'handoff', 'test', '{}', 0, 1, 1)"
-                            )
-                            db.execSQL(
-                                "INSERT INTO runtime_inflight_events " +
-                                    "(run_id, sort_index, event_json) VALUES (?, 0, ?)",
-                                arrayOf<Any>("legacy-run", "x".repeat(70_000)),
-                            )
-                            db.execSQL("INSERT INTO runtime_archive_runs (archive_run_id) VALUES ('legacy-archive')")
-                            db.execSQL(
-                                "INSERT INTO runtime_archive_events " +
-                                    "(archive_run_id, sort_index, event_json) VALUES (?, 0, ?)",
-                                arrayOf<Any>("legacy-archive", "y".repeat(70_000)),
-                            )
-                        }
-
-                        override fun onUpgrade(
-                            db: SupportSQLiteDatabase,
-                            oldVersion: Int,
-                            newVersion: Int,
-                        ) = Unit
-                    },
-                )
-                .build(),
-        )
-        try {
-            val database = helper.writableDatabase
-            EtaDatabase.MIGRATION_33_34.migrate(database)
-
-            val recoveryIncomplete = database.query(
-                "SELECT recovery_incomplete FROM runtime_inflight_runs WHERE run_id = 'legacy-run'"
-            ).use { cursor ->
-                check(cursor.moveToFirst())
-                cursor.getInt(0)
-            }
-            val event = database.query(
-                "SELECT event_json, length(CAST(event_json AS BLOB)) " +
-                    "FROM runtime_inflight_events WHERE run_id = 'legacy-run'"
-            ).use { cursor ->
-                check(cursor.moveToFirst())
-                cursor.getString(0) to cursor.getInt(1)
-            }
-            val archiveEvent = database.query(
-                "SELECT event_json, length(CAST(event_json AS BLOB)) " +
-                    "FROM runtime_archive_events WHERE archive_run_id = 'legacy-archive'"
-            ).use { cursor ->
-                check(cursor.moveToFirst())
-                cursor.getString(0) to cursor.getInt(1)
-            }
-
-            assertEquals(1, recoveryIncomplete)
-            assertEquals("{\"__eta_checkpoint_skipped\":true}", event.first)
-            assertTrue(event.second <= 65_536)
-            assertEquals("{\"__eta_checkpoint_skipped\":true}", archiveEvent.first)
-            assertTrue(archiveEvent.second <= 65_536)
-        } finally {
-            helper.close()
-            context.deleteDatabase(databaseName)
-        }
-    }
-
-    @Test
-    fun migration21To22AddsOrKeepsBalanceOptionColumn() {
-        val context = RuntimeEnvironment.getApplication() as Context
-        listOf(false, true).forEach { alreadyPresent ->
-            val databaseName = "migration-21-22-${alreadyPresent}-${UUID.randomUUID()}.db"
-            val helper = FrameworkSQLiteOpenHelperFactory().create(
-                SupportSQLiteOpenHelper.Configuration.builder(context)
-                    .name(databaseName)
-                    .callback(
-                        object : SupportSQLiteOpenHelper.Callback(21) {
-                            override fun onCreate(db: SupportSQLiteDatabase) {
-                                db.execSQL(
-                                    "CREATE TABLE model_providers (" +
-                                        "id TEXT NOT NULL PRIMARY KEY, " +
-                                        "type TEXT NOT NULL, name TEXT NOT NULL, " +
-                                        "base_url TEXT NOT NULL, api_key TEXT NOT NULL, " +
-                                        "is_enabled INTEGER NOT NULL, is_built_in INTEGER NOT NULL, " +
-                                        "sort_order INTEGER NOT NULL, system_prompt TEXT, " +
-                                        "custom_headers_json TEXT NOT NULL, custom_body_json TEXT NOT NULL, " +
-                                        "created_at INTEGER NOT NULL, endpoint_mode TEXT NOT NULL, " +
-                                        "anthropic_version TEXT NOT NULL, " +
-                                        "hosted_web_search_enabled INTEGER NOT NULL" +
-                                        (if (alreadyPresent) ", balance_option_json TEXT NOT NULL DEFAULT '{}'" else "") +
-                                        ")",
-                                )
-                            }
-
-                            override fun onUpgrade(
-                                db: SupportSQLiteDatabase,
-                                oldVersion: Int,
-                                newVersion: Int,
-                            ) = Unit
-                        },
-                    )
-                    .build(),
-            )
-            val database = helper.writableDatabase
-            try {
-                EtaDatabase.MIGRATION_21_22.migrate(database)
-                val info = database.query("PRAGMA table_info(model_providers)").use { cursor ->
-                    val nameIndex = cursor.getColumnIndex("name")
-                    val defaultIndex = cursor.getColumnIndex("dflt_value")
-                    buildMap {
-                        while (cursor.moveToNext()) {
-                            put(cursor.getString(nameIndex), cursor.getString(defaultIndex))
-                        }
-                    }
-                }
-                assertTrue(alreadyPresent.toString(), "balance_option_json" in info)
-                assertEquals("'{}'", info.getValue("balance_option_json"))
-            } finally {
-                helper.close()
-            }
-        }
-    }
-
-    @Test
-    fun migration28To30PreservesReceiptsAndDefaults() {
-        checkReceiptMigration(28, false, false)
-    }
-
-    @Test
-    fun bothVersion29VariantsMigrateWithoutLosingReceipts() {
-        for ((cloud, delivery) in listOf(true to false, false to true, true to true)) {
-            checkReceiptMigration(29, cloud, delivery)
-        }
-    }
-
-    private fun checkReceiptMigration(version: Int, cloud: Boolean, delivery: Boolean) {
-        val context = RuntimeEnvironment.getApplication() as Context
-        val name = "receipts-${UUID.randomUUID()}.db"
-        createVersion6Database(context, name)
-        try {
-            val legacy = FrameworkSQLiteOpenHelperFactory().create(
-                SupportSQLiteOpenHelper.Configuration.builder(context).name(name)
-                    .callback(object : SupportSQLiteOpenHelper.Callback(version) {
-                        override fun onCreate(db: SupportSQLiteDatabase) = error("Missing legacy fixture")
-                        override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) {
-                            check(oldVersion == 6)
-                            for (migration in listOf(
-                                EtaDatabase.MIGRATION_6_7,
-                                EtaDatabase.MIGRATION_7_8,
-                                EtaDatabase.MIGRATION_8_9,
-                                EtaDatabase.MIGRATION_9_10,
-                                EtaDatabase.MIGRATION_10_11,
-                                EtaDatabase.MIGRATION_11_12,
-                                EtaDatabase.MIGRATION_12_13,
-                                EtaDatabase.MIGRATION_13_14,
-                                EtaDatabase.MIGRATION_14_15,
-                                EtaDatabase.MIGRATION_15_16,
-                                EtaDatabase.MIGRATION_16_17,
-                                EtaDatabase.MIGRATION_17_18,
-                                EtaDatabase.MIGRATION_18_19,
-                                EtaDatabase.MIGRATION_19_20,
-                                EtaDatabase.MIGRATION_20_21,
-                                EtaDatabase.MIGRATION_21_22,
-                                EtaDatabase.MIGRATION_22_23,
-                                EtaDatabase.MIGRATION_23_24,
-                                EtaDatabase.MIGRATION_24_25,
-                                EtaDatabase.MIGRATION_25_26,
-                                EtaDatabase.MIGRATION_26_27,
-                                EtaDatabase.MIGRATION_27_28,
-                            )) migration.migrate(db)
-                        }
-                    }).build(),
-            )
-            try {
-                val db = legacy.writableDatabase
-                if (cloud) {
-                    EtaDatabase.MIGRATION_28_29.migrate(db)
-                    db.execSQL("UPDATE conversation_context_checkpoints SET cloud_usage_json = ?", arrayOf<Any>("preserved-cloud"))
-                }
-                if (delivery) {
-                    for (table in listOf("runtime_results", "runtime_archive_runs")) {
-                        db.execSQL("ALTER TABLE $table ADD COLUMN virtual_delivery_completed INTEGER NOT NULL DEFAULT 0")
-                        db.execSQL("UPDATE $table SET virtual_delivery_completed = 1")
-                    }
-                }
-            } finally {
-                legacy.close()
-            }
-            val database = Room.databaseBuilder(context, EtaDatabase::class.java, name)
-                .allowMainThreadQueries()
-                .openHelperFactory(FrameworkSQLiteOpenHelperFactory())
-                .addMigrations(EtaDatabase.MIGRATION_28_29, EtaDatabase.MIGRATION_29_30,
-                    EtaDatabase.MIGRATION_30_31, EtaDatabase.MIGRATION_31_32,
-                    EtaDatabase.MIGRATION_32_33, EtaDatabase.MIGRATION_33_34,
-                    EtaDatabase.MIGRATION_34_35, EtaDatabase.MIGRATION_35_36)
-                .build()
-            try {
-                assertEquals(36, database.openHelper.writableDatabase.version)
-                runBlocking(Dispatchers.IO) {
-                    val result = database.runtimeRunDao().runtimeResults().single()
-                    val archive = database.runtimeRunDao().archivedRunHeaders().single()
-                    val checkpoint = database.conversationDao().contextCheckpoint("conv-1")
-                    assertEquals("保留的结果", result.content)
-                    assertEquals("保留的归档", archive.content)
-                    assertEquals(delivery, result.virtualDeliveryCompleted)
-                    assertEquals(delivery, archive.virtualDeliveryCompleted)
-                    assertEquals(if (cloud) "preserved-cloud" else "", checkpoint?.cloudUsageJson)
-                }
-            } finally {
-                database.close()
-            }
-        } finally {
-            context.deleteDatabase(name)
         }
     }
 
@@ -486,7 +226,7 @@ class EtaDatabaseMigrationTest {
                             "INSERT INTO model_providers " +
                                 "(id, type, name, base_url, api_key, is_enabled, is_built_in, sort_order, " +
                                 "system_prompt, custom_headers_json, custom_body_json, created_at, endpoint_mode, anthropic_version) " +
-                                "VALUES ('provider-1', 'openai_compatible', 'Provider', 'https://example.com/v1', '', 1, 0, 0, " +
+                                "VALUES ('provider-1', 'openai_compatible', 'Provider', 'https://example.com/v1', 'fixture-existing-api-key', 1, 0, 0, " +
                                 "NULL, '[]', '[]', 1, 'chat_completions', '2023-06-01')"
                         )
                         db.execSQL(providerModelInsert("built-in-id", "built-in", 1, 0))

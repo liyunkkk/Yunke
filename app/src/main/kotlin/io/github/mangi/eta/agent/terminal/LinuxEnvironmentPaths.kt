@@ -34,11 +34,4 @@ internal object LinuxEnvironmentPaths {
         if (rootfsPath.isNullOrBlank()) return false
         return File(rootfsPath, READY_MARKER).isFile
     }
-
-    /** 标记存在即视为已安装；读得到内容时再核对修订。Root 解包后 App 可能暂时读不到正文。 */
-    fun markerSatisfied(marker: File, expectedLine: String): Boolean {
-        if (!marker.isFile) return false
-        val lines = runCatching { marker.readLines() }.getOrNull() ?: return true
-        return lines.any { it.trim() == expectedLine }
-    }
 }

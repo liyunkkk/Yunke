@@ -79,8 +79,7 @@ class AgentLocalSkillResourceToolTest {
             """.trimIndent(),
         )
         val indexService = SkillIndexService(context, skillsRoot)
-        val entries = indexService.listSkillsForManagement(forceRefresh = true)
-            .filter { it.id == "resource-demo" }
+        indexService.listSkillsForManagement(forceRefresh = true)
         return Fixture(
             skillRoot = skillRoot,
             tools = AgentLocalTools(
@@ -90,7 +89,6 @@ class AgentLocalSkillResourceToolTest {
                 skillIndexService = indexService,
                 skillResourceReader = SkillResourceReader(skillsRoot),
                 runAvailableSkillIds = setOf("resource-demo"),
-                runSkillEntries = entries,
             ),
         )
     }

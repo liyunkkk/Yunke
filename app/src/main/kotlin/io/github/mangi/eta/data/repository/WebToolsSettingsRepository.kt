@@ -4,12 +4,7 @@ import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import io.github.mangi.eta.agent.web.WebToolsRuntimeConfig
-import androidx.datastore.preferences.core.edit
-import androidx.datastore.preferences.core.stringPreferencesKey
-import androidx.datastore.preferences.preferencesDataStore
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.CancellationException
+import io.github.mangi.eta.data.datastore.SettingsDataStore
 import io.github.mangi.eta.data.model.DeepSeekWebConfig
 import io.github.mangi.eta.data.model.ProviderSourceTypes
 import io.github.mangi.eta.data.model.WebToolsCredentials
@@ -27,31 +22,17 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 
-private val Context.webToolsDataStore by preferencesDataStore(name = "eta_web_tools")
-
 internal object WebToolsSettingsRepository {
-    @Volatile private var applicationContext: Context? = null
-    private val settingsKey = stringPreferencesKey("settings_json")
-
-    fun init(context: Context) { applicationContext = context.applicationContext }
-
-    private fun store() = checkNotNull(applicationContext) {
-        "WebToolsSettingsRepository.init(context) must run before reading settings"
-    }.webToolsDataStore
     private const val PREFS_NAME = "eta_web_tools_secrets"
     private const val KEY_CREDENTIALS = "credentials"
     private const val KEYSTORE_ALIAS = "eta_web_tools_credentials_v1"
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
-    fun settingsFlow(): Flow<WebToolsSettings> = store().data.map { prefs ->
-        prefs[settingsKey]?.let { json.decodeFromString<WebToolsSettings>(it) } ?: WebToolsSettings()
-    }
+    fun settingsFlow(): Flow<WebToolsSettings> = SettingsDataStore.webToolsSettingsFlow()
 
-    suspend fun settings(): WebToolsSettings = settingsFlow().first()
+    suspend fun settings(): WebToolsSettings = SettingsDataStore.webToolsSettings()
 
-    suspend fun save(settings: WebToolsSettings) {
-        store().edit { it[settingsKey] = json.encodeToString(settings) }
-    }
+    suspend fun save(settings: WebToolsSettings) = SettingsDataStore.setWebToolsSettings(settings)
 
     suspend fun credentials(context: Context): WebToolsCredentials = withContext(Dispatchers.IO) {
         val encoded = context.applicationContext
@@ -87,28 +68,19 @@ internal object WebToolsSettingsRepository {
 
     /** 查找模型提供商中已配置的 DeepSeek API Key 与 Base URL，供网页工具零配置复用。 */
     suspend fun deepSeekProviderCredentials(): Pair<String, String>? = withContext(Dispatchers.IO) {
-        try {
+        runCatching {
             val builtin = ProviderRepository.providerById(BuiltinProviders.DEEPSEEK_ID)
                 ?.takeIf { it.apiKey.isNotBlank() }
             val provider = builtin ?: ProviderRepository.allProviders().firstOrNull {
                 ProviderSourceRegistry.resolve(it) == ProviderSourceTypes.DEEPSEEK && it.apiKey.isNotBlank()
             }
             provider?.let { it.apiKey.trim() to it.baseUrl.trim() }
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (_: Exception) {
-            null
-        }
+        }.getOrNull()
     }
 
     suspend fun resolveRuntimeConfig(context: Context): WebToolsRuntimeConfig = withContext(Dispatchers.IO) {
-        init(context)
-        val settings = try { settings() } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (_: Exception) { WebToolsSettings() }
-        val credentials = try { credentials(context) } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (_: Exception) { WebToolsCredentials() }
+        val settings = runCatching { settings() }.getOrDefault(WebToolsSettings())
+        val credentials = runCatching { credentials(context) }.getOrDefault(WebToolsCredentials())
         val providerDeepSeek = deepSeekProviderCredentials()
         val deepSeekApiKey = credentials.deepSeekApiKey.trim().ifEmpty {
             providerDeepSeek?.first.orEmpty()

@@ -39,41 +39,6 @@ class WebHttpTransportTest {
         }
     }
 
-    @Test fun crossOriginRedirectStripsCredentialsButKeepsPublicHeaders() {
-        WebFixtureServer { WebFixtureResponse(body = "ok".toByteArray()) }.use { target ->
-            WebFixtureServer { WebFixtureResponse(302, headers = mapOf("Location" to target.url("/target"))) }.use { origin ->
-                WebHttpTransport(OkHttpClient()).use { transport ->
-                    transport.request(origin.url("/start"), headers = mapOf(
-                        "Authorization" to "Bearer private",
-                        "Proxy-Authorization" to "Basic private",
-                        "Cookie" to "session=private",
-                        "X-Api-Key" to "private",
-                        "X-Access-Token" to "private",
-                        "X-Client-Secret" to "private",
-                        "Accept-Language" to "zh-CN",
-                    ))
-                    assertTrue(origin.requests.single().contains("Authorization: Bearer private"))
-                    val forwarded = target.requests.single()
-                    assertFalse(forwarded.contains("private"))
-                    assertTrue(forwarded.contains("Accept-Language: zh-CN"))
-                }
-            }
-        }
-    }
-
-    @Test fun sameOriginRedirectRetainsExplicitAuthentication() {
-        WebFixtureServer { path ->
-            if (path == "/start") WebFixtureResponse(302, headers = mapOf("Location" to "/article"))
-            else WebFixtureResponse(body = "ok".toByteArray())
-        }.use { server ->
-            WebHttpTransport(OkHttpClient()).use { transport ->
-                transport.request(server.url("/start"), headers = mapOf("Authorization" to "Bearer test"))
-                assertEquals(2, server.requests.size)
-                assertTrue(server.requests.all { it.contains("Authorization: Bearer test") })
-            }
-        }
-    }
-
     @Test fun boundedReadReturnsPrefixAndDistinguishesExactEof() {
         WebFixtureServer { path -> WebFixtureResponse(body = "a".repeat(if (path == "/exact") 16 else 17).toByteArray()) }.use { server ->
             WebHttpTransport(OkHttpClient()).use { transport ->

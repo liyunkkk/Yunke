@@ -1,12 +1,14 @@
 package io.github.mangi.eta.agent.runtime
 
 import android.content.Context
+import io.github.mangi.eta.agent.model.AgentContextSnapshot
 import io.github.mangi.eta.agent.model.AgentConversationCodec
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.data.db.EtaDatabase
 import io.github.mangi.eta.data.db.RuntimeArchiveEventEntity
 import io.github.mangi.eta.data.db.RuntimeArchiveRunEntity
-import io.github.mangi.eta.data.db.RuntimeRunDao
+import io.github.mangi.eta.data.db.RuntimeArchiveRunWithEvents
+import java.util.Collections
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
@@ -20,8 +22,11 @@ import org.json.JSONArray
  * thinking and tool activity that third-party assistant surfaces cannot show.
  */
 internal object AgentRunArchiveStore {
-    private const val MAX_ARCHIVED = 32
-    private const val MAX_AGE_MS = 7L * 24L * 60L * 60L * 1000L
+
+    fun createEventBuffer(handoff: AgentRuntimeWire.EntryHandoff?): MutableList<AgentEvent>? {
+        if (handoff == null || AgentExternalArchivePayload.from(handoff.payload) == null) return null
+        return Collections.synchronizedList(mutableListOf())
+    }
 
     data class ArchivedRun(
         val handoff: AgentRuntimeWire.EntryHandoff,
@@ -41,19 +46,14 @@ internal object AgentRunArchiveStore {
                 run = compacted.toEntity(archiveRunId),
                 events = compacted.toEventEntities(archiveRunId),
             )
-            prune(dao)
         }
     }
 
     fun list(context: Context): List<ArchivedRun> {
         val appContext = context.applicationContext
         return runBlocking(Dispatchers.IO) {
-            val dao = EtaDatabase.get(appContext).runtimeRunDao()
-            prune(dao).mapNotNull { run ->
-                runCatching {
-                    run.toDomain(loadArchiveEvents(dao, run.archiveRunId))
-                }.getOrNull()
-            }
+            EtaDatabase.get(appContext).runtimeRunDao().archivedRuns()
+                .mapNotNull { it.toDomain() }
         }
     }
 
@@ -65,24 +65,6 @@ internal object AgentRunArchiveStore {
                 .runtimeRunDao()
                 .deleteArchivedRun(runId)
         }
-    }
-
-    private suspend fun prune(dao: RuntimeRunDao): List<RuntimeArchiveRunEntity> {
-        val now = System.currentTimeMillis()
-        val headers = dao.archivedRunHeaders()
-        val retained = headers
-            .filter { now - it.createdAt <= MAX_AGE_MS }
-            .sortedBy { it.createdAt }
-            .takeLast(MAX_ARCHIVED)
-        val retainedIds = retained.mapTo(mutableSetOf()) { it.archiveRunId }
-        headers
-            .asSequence()
-            .filterNot { it.archiveRunId in retainedIds }
-            .forEach { run ->
-                dao.deleteArchivedEvents(run.archiveRunId)
-                dao.deleteArchivedRunByArchiveId(run.archiveRunId)
-            }
-        return retained
     }
 
     private val ArchivedRun.archiveRunId: String
@@ -101,9 +83,11 @@ internal object AgentRunArchiveStore {
             error = result.error,
             reasoningContent = result.reasoningContent,
             transcriptJson = AgentConversationCodec.encodeTranscriptForStorage(result.transcript),
+            contextSnapshotJson = result.contextSnapshot?.encode().orEmpty(),
+            operation = result.operation,
+            rewriteTargetMessageId = result.rewriteTargetMessageId,
             userImagePreviewsJson = JSONArray(userImagePreviews).toString(),
             createdAt = createdAt,
-            virtualDeliveryCompleted = result.virtualDeliveryCompleted,
         )
 
     private fun ArchivedRun.toEventEntities(archiveRunId: String): List<RuntimeArchiveEventEntity> =
@@ -111,41 +95,41 @@ internal object AgentRunArchiveStore {
             RuntimeArchiveEventEntity(
                 archiveRunId = archiveRunId,
                 sortIndex = index,
-                eventJson = AgentEventJsonCodec.encodeForCheckpoint(event).json,
+                eventJson = AgentEventJsonCodec.encode(event),
             )
         }
 
-    private fun RuntimeArchiveRunEntity.toDomain(
-        events: List<RuntimeArchiveEventEntity>,
-    ): ArchivedRun? =
+    private fun RuntimeArchiveRunWithEvents.toDomain(): ArchivedRun? =
         runCatching {
             ArchivedRun(
                 handoff = AgentRuntimeWire.EntryHandoff(
-                    id = handoffId,
-                    source = handoffSource,
-                    payload = handoffPayload,
-                    dismissEntrySurfaceOnForegroundOperation = dismissEntrySurface,
+                    id = run.handoffId,
+                    source = run.handoffSource,
+                    payload = run.handoffPayload,
+                    dismissEntrySurfaceOnForegroundOperation = run.dismissEntrySurface,
                 ),
                 result = AgentRuntimeWire.RunResult(
-                    runId = runId.ifBlank { archiveRunId },
-                    ok = ok,
-                    content = content,
-                    error = error,
-                    reasoningContent = reasoningContent,
-                    virtualDeliveryCompleted = virtualDeliveryCompleted,
-                    transcript = AgentConversationCodec.decodeTranscript(transcriptJson).ifEmpty {
-                        if (!ok || content.isBlank()) return@ifEmpty emptyList()
+                    runId = run.runId.ifBlank { run.archiveRunId },
+                    ok = run.ok,
+                    content = run.content,
+                    error = run.error,
+                    reasoningContent = run.reasoningContent,
+                    contextSnapshot = AgentContextSnapshot.decode(run.contextSnapshotJson),
+                    operation = run.operation,
+                    rewriteTargetMessageId = run.rewriteTargetMessageId,
+                    transcript = AgentConversationCodec.decodeTranscript(run.transcriptJson).ifEmpty {
+                        if (!run.ok || run.content.isBlank()) return@ifEmpty emptyList()
                         listOf(
                             AgentModelClient.ConversationMessage(
                                 role = "assistant",
-                                content = content,
-                                reasoningContent = reasoningContent,
+                                content = run.content,
+                                reasoningContent = run.reasoningContent,
                             )
                         )
                     },
                 ),
-                createdAt = createdAt,
-                userImagePreviews = JSONArray(userImagePreviewsJson).let { previews ->
+                createdAt = run.createdAt,
+                userImagePreviews = JSONArray(run.userImagePreviewsJson).let { previews ->
                     buildList {
                         for (index in 0 until previews.length()) {
                             previews.optString(index)
@@ -160,35 +144,10 @@ internal object AgentRunArchiveStore {
             )
         }.getOrNull()
 
-    private suspend fun loadArchiveEvents(
-        dao: RuntimeRunDao,
-        archiveRunId: String,
-    ): List<RuntimeArchiveEventEntity> = buildList {
-        var offset = 0
-        while (true) {
-            val page = dao.archivedEvents(
-                archiveRunId = archiveRunId,
-                limit = ARCHIVE_EVENT_PAGE_SIZE,
-                offset = offset,
-            )
-            if (page.isEmpty()) break
-            addAll(page)
-            offset += page.size
-            if (page.size < ARCHIVE_EVENT_PAGE_SIZE) break
-        }
-    }
-
-    private const val ARCHIVE_EVENT_PAGE_SIZE = 8
-
     private fun compactEvents(events: List<AgentEvent>): List<AgentEvent> {
         val compacted = mutableListOf<AgentEvent>()
-        events.forEach { event ->
-            if (
-                event is AgentEvent.AssistantBlockDelta &&
-                event.kind == AgentEvent.AssistantBlockKind.TOOL_CALL
-            ) {
-                return@forEach
-            }
+        events.forEach { rawEvent ->
+            val event = rawEvent.recoveryProjection() ?: return@forEach
             val previous = compacted.lastOrNull()
             val merged = when {
                 previous is AgentEvent.AssistantBlockDelta &&

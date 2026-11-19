@@ -11,114 +11,45 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AgentRuntimeSessionTest {
-    @Test fun selfAppOverlayDoesNotResolveAskOrChangeBackgroundRouting() {
-        val modes = io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.entries
-        for (mode in modes) {
-            val session = AgentRuntimeSession("self-$mode", taskSurfaceMode = mode)
-            assertEquals(mode, session.overlaySurfaceMode)
-            session.setSelfAppOverlayActive(true)
-            assertEquals(mode, session.taskSurfaceMode)
-            assertEquals(io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.FOREGROUND, session.overlaySurfaceMode)
-            assertTrue(io.github.mangi.eta.agent.overlay.AgentOverlayVisibilityPolicy.shouldRevealFor(
-                AgentEvent.ToolStarted(1, "self", "launch_app", ""), session.overlaySurfaceMode,
-            ))
-            session.setSelfAppOverlayActive(false)
-            assertEquals(mode, session.taskSurfaceMode)
-            assertEquals(mode, session.overlaySurfaceMode)
+    @Test
+    fun searchSuggestionsSurviveActiveReplayButStopAtCancellationAndBudget() {
+        val delivered = mutableListOf<AgentEvent>()
+        val session = AgentRuntimeSession("search", eventSink = delivered::add)
+        val event = AgentEvent.SearchSuggestions(1, 0, "<div>搜索建议</div>")
+        assertTrue(session.emit(event))
+        assertFalse(session.emit(event))
+        repeat(SearchSuggestionsPayload.MAX_FRAGMENTS - 1) { index ->
+            assertTrue(session.emit(event.copy(index = index + 1)))
         }
+        assertFalse(session.emit(event.copy(index = 20)))
+        assertFalse(session.emit(event.copy(html = "x".repeat(SearchSuggestionsPayload.MAX_HTML_BYTES + 1))))
+        val replay = mutableListOf<AgentEvent>()
+        assertTrue(session.attach(replay::add, {}))
+        assertEquals(delivered, replay)
+        assertTrue(session.cancel("已停止"))
+        assertFalse(session.emit(event.copy(round = 2)))
+        assertFalse(session.attach({ error("取消后不能回放 HTML") }, {}))
     }
 
-    @Test fun stoppedOrTerminalSelfAppCannotReactivateOverlay() {
-        val background = io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.BACKGROUND
-        val stopped = AgentRuntimeSession("self-stop", taskSurfaceMode = background)
-        stopped.signalStop()
-        assertFalse(stopped.setSelfAppOverlayActive(true))
-        assertEquals(background, stopped.overlaySurfaceMode)
-        val finished = AgentRuntimeSession("self-finished", taskSurfaceMode = background)
-        finished.complete(AgentRuntimeWire.RunResult("self-finished", true, "done"))
-        assertFalse(finished.setSelfAppOverlayActive(true))
-        assertEquals(background, finished.overlaySurfaceMode)
+    @Test
+    fun compactionDoesNotAcceptPendingTaskInstructions() {
+        val session = AgentRuntimeSession("compact", operation = AgentRuntimeWire.OP_COMPACT)
+        assertFalse(session.steer("继续执行设备操作"))
+        assertEquals(null, session.steer("继续执行设备操作") { error("不应登记补充事件") })
+        assertFalse(session.controller.hasPendingSteering)
     }
 
-    @Test fun selfAppOverlayDoesNotLeakToOtherSessionsAndKeepsAskUnresolved() {
-        val ask = io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.ASK
-        val first = AgentRuntimeSession("self-a", taskSurfaceMode = ask)
-        val other = AgentRuntimeSession("self-b", taskSurfaceMode = ask)
-        first.setSelfAppOverlayActive(true)
-        assertEquals(ask, other.overlaySurfaceMode)
-        assertTrue(first.resolveTaskSurface(io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.BACKGROUND))
-        assertEquals(io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.FOREGROUND, first.overlaySurfaceMode)
-        first.setSelfAppOverlayActive(false)
-        assertEquals(io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.BACKGROUND, first.overlaySurfaceMode)
-        // 胶囊口径：后台虚拟屏同样会显现浮层（用户需要微缩镜与接管入口）。
-        assertTrue(io.github.mangi.eta.agent.overlay.AgentOverlayVisibilityPolicy.shouldRevealFor(
-            AgentEvent.ToolStarted(1, "background", "launch_app", ""), first.overlaySurfaceMode,
-        ))
-    }
-
-    @Test fun historyQueriesAreFrozenBoundedAndDoNotStopOrSubscribe() {
-        val session = AgentRuntimeSession("run")
-        val history = mutableListOf(io.github.mangi.eta.agent.model.AgentModelClient.ConversationMessage("user", "task", turnId = "run"))
-        val first = session.publishHistorySnapshot(1, history)
-        history.clear()
-        assertEquals("task", session.historySnapshot(first)!!.history.single().content)
-        assertFalse(session.controller.isCancelled)
-        assertFalse(session.controller.isPaused)
-        val second = session.publishHistorySnapshot(2, listOf(io.github.mangi.eta.agent.model.AgentModelClient.ConversationMessage("user", "second")))
-        assertTrue(session.historySnapshot(first) != null)
-        session.publishHistorySnapshot(3, listOf(io.github.mangi.eta.agent.model.AgentModelClient.ConversationMessage("user", "third")))
-        assertTrue(session.historySnapshot(first) == null)
-        assertEquals(2, session.historySnapshot(second)!!.round)
-        assertTrue(session.historySnapshot("unknown") == null)
-        session.signalStop()
-        assertTrue(session.historySnapshot(second) == null)
-        assertEquals("", session.publishHistorySnapshot(4, emptyList()))
-    }
-
-    @Test fun userStopWaitsForTranscriptCommitAndPublishesOnce() {
-        val results = mutableListOf<AgentRuntimeWire.RunResult>()
-        val session = AgentRuntimeSession("run", resultSink = results::add)
-        assertTrue(session.requestStop())
-        assertFalse(session.requestStop())
-        assertTrue(session.controller.isCancelled)
-        assertFalse(session.steer("must not resume"))
-        assertTrue(results.isEmpty())
-        val transcript = listOf(io.github.mangi.eta.agent.model.AgentModelClient.ConversationMessage(
-            "assistant", "already completed work", turnId = "run"))
-        var saved = false
-        assertTrue(session.complete(AgentRuntimeWire.RunResult("run", true, "", transcript = transcript)) { terminal ->
-            assertFalse(terminal.ok)
-            assertEquals("已停止", terminal.error)
-            assertEquals(transcript, terminal.transcript)
-            assertTrue(results.isEmpty())
-            saved = true
-        })
-        assertTrue(saved)
-        assertEquals(transcript, results.single().transcript)
-        assertFalse(results.single().ok)
-        assertFalse(session.complete(AgentRuntimeWire.RunResult("run", true, "late")))
-    }
-
-    @Test fun stopCannotOverrideAlreadyCommittingResult() {
-        val session = AgentRuntimeSession("run")
-        assertTrue(session.complete(AgentRuntimeWire.RunResult("run", true, "done")) {
-            assertFalse(session.requestStop())
-        })
-        assertTrue(session.terminalResult!!.ok)
-    }
-
-    @Test fun pausedSupplementIsAcknowledgedBeforeResuming() {
-        val controller = AgentRunController()
-        controller.pause()
-        var acknowledged = false
-        val session = AgentRuntimeSession("paused", controller, eventSink = {
-            assertTrue(controller.isPaused)
-            acknowledged = true
-        })
-        session.steer("new instruction", "[]") { AgentEvent.UserSupplementReceived(1, "new instruction") }
-        assertTrue(acknowledged)
-        assertFalse(controller.isPaused)
-        assertTrue(controller.hasPendingSteering)
+    @Test
+    fun cancellationDeliversCommittedContextAndRejectsLaterUpdates() {
+        val delivered = mutableListOf<AgentRuntimeWire.RunResult>()
+        val session = AgentRuntimeSession("run", resultSink = delivered::add)
+        val snapshot = io.github.mangi.eta.agent.model.AgentContextSnapshot(operationId = "run", messages = emptyList())
+        session.updateContext(snapshot)
+        assertTrue(session.cancel("已停止"))
+        session.updateContext(snapshot.copy(coveredUserTurns = 2))
+        assertEquals(snapshot, delivered.single().contextSnapshot)
+        assertEquals(snapshot, session.contextSnapshot)
+        assertFalse(session.complete(AgentRuntimeWire.RunResult("run", true, "不应送达")))
     }
 
     @Test
@@ -408,19 +339,4 @@ class AgentRuntimeSessionTest {
         assertEquals(1, results.size)
         assertFalse(session.cancel("late"))
     }
-    @Test fun explicitChildCompactionRejectionNeverFallsBackToMainController() {
-        val session = AgentRuntimeSession("main")
-        val seen = mutableListOf<String>()
-        session.childCompactor = { id, _, _ -> seen += id; id == "running-child" }
-        assertTrue(session.requestCompact(childTaskId = "running-child"))
-        assertFalse(session.requestCompact(childTaskId = "finished-child"))
-        assertEquals(listOf("running-child", "finished-child"), seen)
-        assertFalse(session.controller.hasPendingCompact)
-        session.childCompactor = null
-        assertFalse(session.requestCompact(childTaskId = "running-child"))
-        assertFalse(session.controller.hasPendingCompact)
-        assertTrue(session.requestCompact())
-        assertTrue(session.controller.hasPendingCompact)
-    }
-
 }

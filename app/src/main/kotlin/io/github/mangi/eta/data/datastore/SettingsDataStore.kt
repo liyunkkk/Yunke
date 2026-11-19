@@ -5,210 +5,254 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
-import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import io.github.mangi.eta.data.model.AppearanceAccentColor
 import io.github.mangi.eta.data.model.AppearancePaletteStyle
-import io.github.mangi.eta.data.model.AnswerFoldLevel
 import io.github.mangi.eta.data.model.AppearanceSettings
 import io.github.mangi.eta.data.model.AppearanceThemeMode
 import io.github.mangi.eta.data.model.AppearanceTopBarBlurStyle
-import io.github.mangi.eta.data.model.ErrorReconnectPolicy
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.data.model.AssistantOverlaySettings
+import io.github.mangi.eta.data.model.ConversationTitleSettings
+import io.github.mangi.eta.data.model.SpeechSettings
+import io.github.mangi.eta.data.model.SubagentSettings
+import io.github.mangi.eta.data.model.WebToolsSettings
+import kotlinx.serialization.json.Json
 import io.github.mangi.eta.data.model.Settings
-import io.github.mangi.eta.data.repository.ConversationUsageTotals
-import io.github.mangi.eta.data.repository.ModelUsageDelta
-import java.io.File
-import io.github.mangi.eta.ui.components.StreamPerformanceDiagnostics
-import java.time.LocalDate
-import org.json.JSONObject
+import java.io.IOException
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 
 internal object SettingsDataStore {
-    private val CONVERSATION_TITLE_SETTINGS = stringPreferencesKey("conversation_title_settings")
-    private val routingJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true; encodeDefaults = true }
+    private val SPEECH_SETTINGS = stringPreferencesKey("speech_settings_v1")
+    private val WEB_TOOLS_SETTINGS = stringPreferencesKey("web_tools_settings_v1")
+    private val SUBAGENT_SETTINGS = stringPreferencesKey("subagent_settings_v1")
+    private val CONVERSATION_TITLE_SETTINGS = stringPreferencesKey("conversation_title_settings_v1")
+    private val ASSISTANT_OVERLAY_SETTINGS = stringPreferencesKey("assistant_overlay_settings_v1")
+    private val speechJson = Json {
+        ignoreUnknownKeys = true
+        encodeDefaults = true
+        coerceInputValues = true
+    }
 
-    fun conversationTitleSettingsFlow(): Flow<io.github.mangi.eta.data.model.ConversationTitleSettings> {
+    fun speechSettingsFlow(): Flow<SpeechSettings> {
         ensureInitialized()
         return dataStore.data.map { prefs ->
-            prefs[CONVERSATION_TITLE_SETTINGS]?.let { value ->
-                runCatching { routingJson.decodeFromString<io.github.mangi.eta.data.model.ConversationTitleSettings>(value) }.getOrNull()
-            } ?: run {
-                // Preserve the pre-port custom title selection until the user explicitly saves new settings.
-                val legacy = io.github.mangi.eta.agent.model.ModelFeaturePreferences.selection(io.github.mangi.eta.agent.model.ModelFeature.TITLE)
-                io.github.mangi.eta.data.model.ConversationTitleSettings(modelId = legacy.modelId.takeIf { legacy.custom && it.isNotBlank() })
-            }
-        }.distinctUntilChanged()
+            prefs[SPEECH_SETTINGS]?.let { speechJson.decodeFromString<SpeechSettings>(it) }
+                ?: SpeechSettings()
+        }
     }
-    suspend fun conversationTitleSettings() = conversationTitleSettingsFlow().first()
-    suspend fun setConversationTitleSettings(value: io.github.mangi.eta.data.model.ConversationTitleSettings) {
+
+    suspend fun speechSettings() = speechSettingsFlow().first()
+
+    suspend fun setSpeechSettings(settings: SpeechSettings) {
         ensureInitialized()
-        dataStore.edit { it[CONVERSATION_TITLE_SETTINGS] = routingJson.encodeToString(io.github.mangi.eta.data.model.ConversationTitleSettings.serializer(), value) }
+        dataStore.edit { it[SPEECH_SETTINGS] = speechJson.encodeToString(settings) }
     }
+
+    fun webToolsSettingsFlow(): Flow<WebToolsSettings> {
+        ensureInitialized()
+        return dataStore.data
+            .catch { cause ->
+                if (cause is IOException) emit(emptyPreferences()) else throw cause
+            }
+            .map { prefs ->
+                prefs[WEB_TOOLS_SETTINGS]?.let { raw ->
+                    runCatching { speechJson.decodeFromString<WebToolsSettings>(raw) }.getOrNull()
+                } ?: WebToolsSettings()
+            }
+    }
+
+    suspend fun webToolsSettings(): WebToolsSettings = webToolsSettingsFlow().first()
+
+    suspend fun setWebToolsSettings(settings: WebToolsSettings) {
+        ensureInitialized()
+        dataStore.edit { it[WEB_TOOLS_SETTINGS] = speechJson.encodeToString(settings) }
+    }
+
+    fun subagentSettingsFlow(): Flow<SubagentSettings> {
+        ensureInitialized()
+        return dataStore.data
+            .catch { cause ->
+                if (cause is IOException) emit(emptyPreferences()) else throw cause
+            }
+            .map { prefs ->
+                prefs[SUBAGENT_SETTINGS]?.let { raw ->
+                    runCatching { speechJson.decodeFromString<SubagentSettings>(raw) }.getOrNull()
+                } ?: SubagentSettings()
+            }
+    }
+
+    suspend fun subagentSettings(): SubagentSettings = subagentSettingsFlow().first()
+
+    suspend fun setSubagentSettings(settings: SubagentSettings) {
+        ensureInitialized()
+        dataStore.edit { it[SUBAGENT_SETTINGS] = speechJson.encodeToString(settings) }
+    }
+
+    fun conversationTitleSettingsFlow(): Flow<ConversationTitleSettings> {
+        ensureInitialized()
+        return dataStore.data
+            .catch { cause ->
+                if (cause is IOException) emit(emptyPreferences()) else throw cause
+            }
+            .map { prefs ->
+                prefs[CONVERSATION_TITLE_SETTINGS]?.let { raw ->
+                    runCatching { speechJson.decodeFromString<ConversationTitleSettings>(raw) }.getOrNull()
+                } ?: ConversationTitleSettings()
+            }
+    }
+
+    suspend fun conversationTitleSettings(): ConversationTitleSettings = conversationTitleSettingsFlow().first()
+
+    suspend fun setConversationTitleSettings(settings: ConversationTitleSettings) {
+        ensureInitialized()
+        dataStore.edit { it[CONVERSATION_TITLE_SETTINGS] = speechJson.encodeToString(settings) }
+    }
+
+    fun assistantOverlaySettingsFlow(): Flow<AssistantOverlaySettings> {
+        ensureInitialized()
+        return dataStore.data
+            .catch { cause ->
+                if (cause is IOException) emit(emptyPreferences()) else throw cause
+            }
+            .map { prefs ->
+                prefs[ASSISTANT_OVERLAY_SETTINGS]?.let { raw ->
+                    runCatching { speechJson.decodeFromString<AssistantOverlaySettings>(raw) }.getOrNull()
+                } ?: AssistantOverlaySettings()
+            }
+    }
+
+    suspend fun assistantOverlaySettings(): AssistantOverlaySettings = assistantOverlaySettingsFlow().first()
+
+    suspend fun setAssistantOverlaySettings(settings: AssistantOverlaySettings) {
+        ensureInitialized()
+        dataStore.edit { it[ASSISTANT_OVERLAY_SETTINGS] = speechJson.encodeToString(settings) }
+    }
+
     private const val STORE_NAME = "eta_settings"
 
     private val SELECTED_PROVIDER_ID = stringPreferencesKey("selected_provider_id")
     private val SELECTED_MODEL_ID = stringPreferencesKey("selected_model_id")
-    private val SELECTED_TRANSLATION_PROVIDER_ID =
-        stringPreferencesKey("selected_translation_provider_id")
-    private val SELECTED_TRANSLATION_MODEL_ID =
-        stringPreferencesKey("selected_translation_model_id")
+    private val OFFICIAL_MODEL_CATALOG_REVISION = intPreferencesKey("official_model_catalog_revision")
     private val MEMORY_ENABLED = booleanPreferencesKey("memory_enabled")
-    private val FILE_LOGGING_ENABLED = booleanPreferencesKey("file_logging_enabled")
     private val LINUX_DISTRIBUTION = stringPreferencesKey("linux_distribution")
+    private val APPEARANCE_UI_STYLE = stringPreferencesKey("appearance_ui_style")
     private val APPEARANCE_THEME_MODE = stringPreferencesKey("appearance_theme_mode")
     private val APPEARANCE_MONET_ENABLED = booleanPreferencesKey("appearance_monet_enabled")
     private val APPEARANCE_PALETTE_STYLE = stringPreferencesKey("appearance_palette_style")
     private val APPEARANCE_ACCENT_COLOR = stringPreferencesKey("appearance_accent_color")
     private val APPEARANCE_PURE_BLACK_ENABLED = booleanPreferencesKey("appearance_pure_black_enabled")
     private val APPEARANCE_BLUR_ENABLED = booleanPreferencesKey("appearance_blur_enabled")
+    private val APPEARANCE_PROGRESSIVE_BLUR_ENABLED =
+        booleanPreferencesKey("appearance_progressive_blur_enabled")
     private val APPEARANCE_TOP_BAR_BLUR_STYLE = stringPreferencesKey("appearance_top_bar_blur_style")
     private val APPEARANCE_SWIPE_DISMISS_ENABLED =
         booleanPreferencesKey("appearance_swipe_dismiss_enabled")
     private val APPEARANCE_PREDICTIVE_BACK_ENABLED =
         booleanPreferencesKey("appearance_predictive_back_enabled")
     private val APPEARANCE_INTERFACE_SCALE = floatPreferencesKey("appearance_interface_scale")
-    private val APPEARANCE_MORPH_LOADING_INDICATOR =
-        booleanPreferencesKey("appearance_morph_loading_indicator")
-    private val APPEARANCE_MORPH_LOADING_BEFORE_RESPONSE =
-        booleanPreferencesKey("appearance_morph_loading_before_response")
-    private val APPEARANCE_MESSAGE_TIMESTAMPS_ENABLED =
-        booleanPreferencesKey("appearance_message_timestamps_enabled")
-    private val APPEARANCE_ANSWER_FOLD_LEVEL =
-        stringPreferencesKey("appearance_answer_fold_level")
-    private val APP_LAUNCH_COUNT = intPreferencesKey("app_launch_count")
-    private val UPDATE_DISMISSED_VERSION = stringPreferencesKey("update_dismissed_version")
-    private val UPDATE_LAST_CHECK_AT = longPreferencesKey("update_last_check_at")
-    private val RETIRED_INPUT_TOKENS = longPreferencesKey("retired_input_tokens")
-    private val RETIRED_OUTPUT_TOKENS = longPreferencesKey("retired_output_tokens")
-    private val RETIRED_CACHED_TOKENS = longPreferencesKey("retired_cached_tokens")
-    private val RETIRED_CONVERSATIONS = intPreferencesKey("retired_conversations")
-    private val RETIRED_MESSAGES = intPreferencesKey("retired_messages")
-    private val RETIRED_HEATMAP_JSON = stringPreferencesKey("retired_heatmap_json")
     private const val SELECTED_MODEL_BY_PROVIDER_PREFIX = "selected_model_id_by_provider."
-    private const val SELECTED_TRANSLATION_MODEL_BY_PROVIDER_PREFIX =
-        "selected_translation_model_id_by_provider."
-    private const val LINUX_BACKEND_PREFIX = "linux_backend."
 
-    private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(
-        name = STORE_NAME,
-        produceMigrations = { context -> listOf(ErrorReconnectPolicyMigration(), UsageLedgerRollbackMigration(
-            File(context.filesDir, "datastore/eta_usage_ledger.json"),
-        )) },
-    )
+    private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = STORE_NAME)
 
     @Volatile
     private lateinit var dataStore: DataStore<Preferences>
 
-    private lateinit var usageLedger: PreferencesUsageLedger
+    @Volatile
+    private var cachedSettings: Settings? = null
 
-    @Synchronized
     fun init(context: Context) {
         if (!::dataStore.isInitialized) {
-            val preferencesStore = context.applicationContext.dataStore
-            usageLedger = PreferencesUsageLedger(preferencesStore) { transform ->
-                diagnosticEdit("usage.editEntryWait", "usage.transform", "usage.commitTail", transform)
-            }
-            // The delegate's DataMigration gates every read/edit, including non-ledger settings.
-            // Publication here is NOT migration completion; failures propagate from the first access.
-            dataStore = preferencesStore
+            dataStore = context.applicationContext.dataStore
         }
     }
 
+    fun cachedSettingsOrNull(): Settings? = cachedSettings
+
     fun settingsFlow(): Flow<Settings> {
         ensureInitialized()
-        // Migration/read failures propagate: never emit a plausible default configuration.
         return dataStore.data
-            .map { preferences -> preferences.toSettings() }
-            .distinctUntilChanged()
+            .catch { cause ->
+                if (cause is IOException) {
+                    emit(emptyPreferences())
+                } else {
+                    throw cause
+                }
+            }
+            .map { preferences -> preferences.toSettings().also { cachedSettings = it } }
     }
 
     suspend fun settings(): Settings = settingsFlow().first()
 
+    suspend fun officialModelCatalogRevision(): Int {
+        ensureInitialized()
+        return dataStore.data.first()[OFFICIAL_MODEL_CATALOG_REVISION] ?: 0
+    }
+
+    suspend fun setOfficialModelCatalogRevision(revision: Int) {
+        ensureInitialized()
+        dataStore.edit { preferences ->
+            preferences[OFFICIAL_MODEL_CATALOG_REVISION] = revision
+        }
+    }
+
     suspend fun updateSettings(transform: (Settings) -> Settings) {
         ensureInitialized()
-        diagnosticEdit("settings.editEntryWait", "settings.transform", "settings.commitTail") { prefs ->
+        dataStore.edit { prefs ->
             val current = prefs.toSettings()
             val updated = transform(current)
             prefs.putOrRemove(SELECTED_PROVIDER_ID, updated.selectedProviderId)
             prefs.putOrRemove(SELECTED_MODEL_ID, updated.selectedModelId)
-            prefs.putOrRemove(
-                SELECTED_TRANSLATION_PROVIDER_ID,
-                updated.selectedTranslationProviderId,
-            )
-            prefs.putOrRemove(SELECTED_TRANSLATION_MODEL_ID, updated.selectedTranslationModelId)
             prefs[MEMORY_ENABLED] = updated.memoryEnabled
-            prefs[FILE_LOGGING_ENABLED] = updated.fileLoggingEnabled
-            // Unrelated settings edits must not downgrade an unknown/future choice.
-            if (updated.errorReconnectPolicy != current.errorReconnectPolicy) {
-                prefs[ERROR_RECONNECT_POLICY] = updated.errorReconnectPolicy.persistedValue
-                prefs[ERROR_RECONNECT_POLICY_VERSION] = ErrorReconnectPolicy.STORAGE_VERSION
-            }
             prefs.putAppearance(updated.appearance.normalized())
         }
     }
 
     fun selectedProviderIdFlow(): Flow<String?> =
-        settingsFlow().map { it.selectedProviderId }.distinctUntilChanged()
+        settingsFlow().map { it.selectedProviderId }
 
     fun selectedModelIdFlow(): Flow<String?> =
-        settingsFlow().map { it.selectedModelId }.distinctUntilChanged()
-    fun selectedTranslationProviderIdFlow(): Flow<String?> =
-        settingsFlow().map { it.selectedTranslationProviderId }
-    fun selectedTranslationModelIdFlow(): Flow<String?> =
-        settingsFlow().map { it.selectedTranslationModelId }
+        settingsFlow().map { it.selectedModelId }
 
     suspend fun selectedModelIdForProvider(providerId: String): String? {
         ensureInitialized()
         return dataStore.data
+            .catch { cause ->
+                if (cause is IOException) {
+                    emit(emptyPreferences())
+                } else {
+                    throw cause
+                }
+            }
             .map { prefs -> prefs[selectedModelByProviderKey(providerId)] }
-            .first()
-    }
-    suspend fun selectedTranslationModelIdForProvider(providerId: String): String? {
-        ensureInitialized()
-        return dataStore.data
-            .map { prefs -> prefs[selectedTranslationModelByProviderKey(providerId)] }
             .first()
     }
 
     fun memoryEnabledFlow(): Flow<Boolean> =
-        settingsFlow().map { it.memoryEnabled }.distinctUntilChanged()
-
-    fun fileLoggingEnabledFlow(): Flow<Boolean> =
-        settingsFlow().map { it.fileLoggingEnabled }.distinctUntilChanged()
-
-    suspend fun setFileLoggingEnabled(enabled: Boolean) {
-        updateSettings { it.copy(fileLoggingEnabled = enabled) }
-    }
-
-    fun errorReconnectPolicyFlow(): Flow<ErrorReconnectPolicy> =
-        settingsFlow().map { it.errorReconnectPolicy }.distinctUntilChanged()
-
-    suspend fun setErrorReconnectPolicy(policy: ErrorReconnectPolicy) {
-        ensureInitialized()
-        dataStore.edit { prefs ->
-            // An explicit choice, including NONE, owns its schema version.
-            prefs[ERROR_RECONNECT_POLICY] = policy.persistedValue
-            prefs[ERROR_RECONNECT_POLICY_VERSION] = ErrorReconnectPolicy.STORAGE_VERSION
-        }
-    }
+        settingsFlow().map { it.memoryEnabled }
 
     fun linuxDistributionFlow(): Flow<String?> {
         ensureInitialized()
         return dataStore.data
+            .catch { cause ->
+                if (cause is IOException) emit(emptyPreferences()) else throw cause
+            }
             .map { preferences -> preferences[LINUX_DISTRIBUTION] }
-            .distinctUntilChanged()
     }
 
     fun linuxBackendFlow(distribution: String): Flow<String?> {
         ensureInitialized()
-        return dataStore.data.map { it[stringPreferencesKey("linux_backend.$distribution")] }.distinctUntilChanged()
+        return dataStore.data.catch { cause ->
+            if (cause is IOException) emit(emptyPreferences()) else throw cause
+        }.map { it[stringPreferencesKey("linux_backend.$distribution")] }
     }
 
     suspend fun setLinuxBackend(distribution: String, backend: String?) {
@@ -220,7 +264,7 @@ internal object SettingsDataStore {
     }
 
     fun appearanceSettingsFlow(): Flow<AppearanceSettings> =
-        settingsFlow().map { it.appearance }.distinctUntilChanged()
+        settingsFlow().map { it.appearance }
 
     suspend fun setSelectedProviderId(id: String?) {
         updateSettings { it.copy(selectedProviderId = id) }
@@ -247,27 +291,6 @@ internal object SettingsDataStore {
         }
     }
 
-    suspend fun setSelectedTranslationProviderId(id: String?) {
-        updateSettings { it.copy(selectedTranslationProviderId = id) }
-    }
-    suspend fun setSelectedTranslationModelId(id: String?) {
-        updateSettings { it.copy(selectedTranslationModelId = id) }
-    }
-    suspend fun setTranslationSelection(providerId: String?, modelId: String?) {
-        ensureInitialized()
-        dataStore.edit { prefs ->
-            val previousProviderId = prefs[SELECTED_TRANSLATION_PROVIDER_ID]
-            val previousModelId = prefs[SELECTED_TRANSLATION_MODEL_ID]
-            if (previousProviderId != null && previousModelId != null) {
-                prefs[selectedTranslationModelByProviderKey(previousProviderId)] = previousModelId
-            }
-            prefs.putOrRemove(SELECTED_TRANSLATION_PROVIDER_ID, providerId)
-            prefs.putOrRemove(SELECTED_TRANSLATION_MODEL_ID, modelId)
-            if (providerId != null && modelId != null) {
-                prefs[selectedTranslationModelByProviderKey(providerId)] = modelId
-            }
-        }
-    }
     suspend fun clearSelectedModelIdForProvider(providerId: String) {
         ensureInitialized()
         dataStore.edit { prefs ->
@@ -284,92 +307,6 @@ internal object SettingsDataStore {
         dataStore.edit { preferences -> preferences.putOrRemove(LINUX_DISTRIBUTION, value) }
     }
 
-    suspend fun backupSnapshot(): EtaSettingsBackup {
-        ensureInitialized()
-        // One committed Preferences version contains BOTH settings and statistics.
-        val prefs = usageLedger.preferencesSnapshot()
-        val settings = prefs.toSettings()
-        return EtaSettingsBackup(
-            selectedProviderId = settings.selectedProviderId,
-            selectedModelId = settings.selectedModelId,
-            memoryEnabled = settings.memoryEnabled,
-            fileLoggingEnabled = settings.fileLoggingEnabled,
-            errorReconnectPolicy = prefs[ERROR_RECONNECT_POLICY],
-            errorReconnectPolicyVersion = prefs[ERROR_RECONNECT_POLICY_VERSION],
-            conversationTitleSettingsJson = prefs[CONVERSATION_TITLE_SETTINGS],
-            linuxDistribution = prefs[LINUX_DISTRIBUTION],
-            linuxBackends = stringMap(prefs, LINUX_BACKEND_PREFIX),
-            selectedModelByProvider = stringMap(prefs, SELECTED_MODEL_BY_PROVIDER_PREFIX),
-            appearance = settings.appearance,
-            modelUsageJson = prefs[MODEL_USAGE_JSON].orEmpty(),
-            retiredInputTokens = prefs[RETIRED_INPUT_TOKENS] ?: 0L,
-            retiredOutputTokens = prefs[RETIRED_OUTPUT_TOKENS] ?: 0L,
-            retiredCachedTokens = prefs[RETIRED_CACHED_TOKENS] ?: 0L,
-            retiredConversations = prefs[RETIRED_CONVERSATIONS] ?: 0,
-            retiredMessages = prefs[RETIRED_MESSAGES] ?: 0,
-            retiredHeatmapJson = prefs[RETIRED_HEATMAP_JSON].orEmpty(),
-        )
-    }
-
-    suspend fun restoreBackup(snapshot: EtaSettingsBackup) {
-        require(snapshot.errorReconnectPolicyVersion == null ||
-            snapshot.errorReconnectPolicyVersion in 0..ErrorReconnectPolicy.STORAGE_VERSION) {
-            "Unsupported error reconnect settings version; existing settings were not changed."
-        }
-        ensureInitialized()
-        // Keep the outer EtaBackupRepository journal intact. This function commits metadata
-        // and ledger together, or neither; no file replacement can precede this Preferences edit.
-        dataStore.edit { prefs ->
-            prefs.asMap().keys
-                .filter { key ->
-                    key.name.startsWith(LINUX_BACKEND_PREFIX) ||
-                        key.name.startsWith(SELECTED_MODEL_BY_PROVIDER_PREFIX)
-                }
-                .forEach { key -> prefs.remove(key) }
-            prefs.putOrRemove(SELECTED_PROVIDER_ID, snapshot.selectedProviderId)
-            prefs.putOrRemove(SELECTED_MODEL_ID, snapshot.selectedModelId)
-            prefs[MEMORY_ENABLED] = snapshot.memoryEnabled
-            prefs[FILE_LOGGING_ENABLED] = snapshot.fileLoggingEnabled
-            prefs[ERROR_RECONNECT_POLICY] =
-                ErrorReconnectPolicy.fromStoredSettings(
-                    snapshot.errorReconnectPolicy, snapshot.errorReconnectPolicyVersion,
-                ).persistedValue
-            prefs[ERROR_RECONNECT_POLICY_VERSION] = ErrorReconnectPolicy.STORAGE_VERSION
-            snapshot.conversationTitleSettingsJson?.let { prefs[CONVERSATION_TITLE_SETTINGS] = it }
-            prefs.putOrRemove(LINUX_DISTRIBUTION, snapshot.linuxDistribution)
-            prefs.putAppearance(snapshot.appearance.normalized())
-            snapshot.linuxBackends.forEach { (distribution, backend) ->
-                if (distribution.isNotBlank() && backend.isNotBlank()) {
-                    prefs[stringPreferencesKey("$LINUX_BACKEND_PREFIX$distribution")] = backend
-                }
-            }
-            snapshot.selectedModelByProvider.forEach { (providerId, modelId) ->
-                if (providerId.isNotBlank() && modelId.isNotBlank()) {
-                    prefs[selectedModelByProviderKey(providerId)] = modelId
-                }
-            }
-            snapshot.modelUsageJson?.let { usageLedger.replaceIn(prefs, it) }
-            snapshot.retiredHeatmapJson?.let { raw ->
-                prefs.putOrRemove(RETIRED_HEATMAP_JSON, raw.takeIf { it.isNotBlank() })
-            }
-            snapshot.retiredInputTokens?.let { value ->
-                if (value > 0L) prefs[RETIRED_INPUT_TOKENS] = value else prefs.remove(RETIRED_INPUT_TOKENS)
-            }
-            snapshot.retiredOutputTokens?.let { value ->
-                if (value > 0L) prefs[RETIRED_OUTPUT_TOKENS] = value else prefs.remove(RETIRED_OUTPUT_TOKENS)
-            }
-            snapshot.retiredCachedTokens?.let { value ->
-                if (value > 0L) prefs[RETIRED_CACHED_TOKENS] = value else prefs.remove(RETIRED_CACHED_TOKENS)
-            }
-            snapshot.retiredConversations?.let { value ->
-                if (value > 0) prefs[RETIRED_CONVERSATIONS] = value else prefs.remove(RETIRED_CONVERSATIONS)
-            }
-            snapshot.retiredMessages?.let { value ->
-                if (value > 0) prefs[RETIRED_MESSAGES] = value else prefs.remove(RETIRED_MESSAGES)
-            }
-        }
-    }
-
     suspend fun setAppearanceSettings(settings: AppearanceSettings) {
         updateSettings { it.copy(appearance = settings.normalized()) }
     }
@@ -380,214 +317,21 @@ internal object SettingsDataStore {
         }
     }
 
-    suspend fun launchCount(): Int {
+    suspend fun selectUiStyle(style: AppearanceUiStyle) {
+        ensureInitialized()
+        dataStore.edit { prefs ->
+            prefs[APPEARANCE_UI_STYLE] = style.persistedValue
+        }
+    }
+
+    suspend fun hasSavedUiStyle(): Boolean {
         ensureInitialized()
         return dataStore.data
-            .map { prefs -> prefs[APP_LAUNCH_COUNT] ?: 0 }
-            .first()
-    }
-
-    suspend fun incrementLaunchCount() {
-        ensureInitialized()
-        dataStore.edit { prefs ->
-            prefs[APP_LAUNCH_COUNT] = (prefs[APP_LAUNCH_COUNT] ?: 0) + 1
-        }
-    }
-
-    suspend fun updateDismissedVersion(): String {
-        ensureInitialized()
-        return dataStore.data
-            .map { prefs -> prefs[UPDATE_DISMISSED_VERSION].orEmpty() }
-            .first()
-    }
-
-    suspend fun setUpdateDismissedVersion(version: String) {
-        ensureInitialized()
-        dataStore.edit { prefs ->
-            prefs.putOrRemove(UPDATE_DISMISSED_VERSION, version.trim().takeIf { it.isNotEmpty() })
-        }
-    }
-
-    suspend fun updateLastCheckAt(): Long {
-        ensureInitialized()
-        return dataStore.data
-            .map { prefs -> prefs[UPDATE_LAST_CHECK_AT] ?: 0L }
-            .first()
-    }
-
-    suspend fun setUpdateLastCheckAt(epochMillis: Long) {
-        ensureInitialized()
-        dataStore.edit { prefs ->
-            prefs[UPDATE_LAST_CHECK_AT] = epochMillis
-        }
-    }
-
-    suspend fun retiredUsage(): RetiredUsage {
-        ensureInitialized()
-        // Storage/migration failure is not a successfully loaded zero-statistics snapshot.
-        return dataStore.data
-            .map { prefs ->
-                RetiredUsage(
-                    inputTokens = prefs[RETIRED_INPUT_TOKENS] ?: 0L,
-                    outputTokens = prefs[RETIRED_OUTPUT_TOKENS] ?: 0L,
-                    cachedTokens = prefs[RETIRED_CACHED_TOKENS] ?: 0L,
-                    conversations = prefs[RETIRED_CONVERSATIONS] ?: 0,
-                    messages = prefs[RETIRED_MESSAGES] ?: 0,
-                    heatmap = decodeHeatmap(prefs[RETIRED_HEATMAP_JSON]),
-                )
+            .catch { cause ->
+                if (cause is IOException) emit(emptyPreferences()) else throw cause
             }
             .first()
-    }
-
-    suspend fun addRetiredUsage(
-        inputTokens: Long = 0L,
-        outputTokens: Long = 0L,
-        cachedTokens: Long = 0L,
-        conversations: Int = 0,
-        messages: Int = 0,
-        heatmap: Map<LocalDate, Int> = emptyMap(),
-    ) {
-        if (
-            inputTokens <= 0L &&
-            outputTokens <= 0L &&
-            cachedTokens <= 0L &&
-            conversations <= 0 &&
-            messages <= 0 &&
-            heatmap.isEmpty()
-        ) {
-            return
-        }
-        ensureInitialized()
-        dataStore.edit { prefs ->
-            prefs[RETIRED_INPUT_TOKENS] =
-                (prefs[RETIRED_INPUT_TOKENS] ?: 0L) + inputTokens.coerceAtLeast(0L)
-            prefs[RETIRED_OUTPUT_TOKENS] =
-                (prefs[RETIRED_OUTPUT_TOKENS] ?: 0L) + outputTokens.coerceAtLeast(0L)
-            prefs[RETIRED_CACHED_TOKENS] =
-                (prefs[RETIRED_CACHED_TOKENS] ?: 0L) + cachedTokens.coerceAtLeast(0L)
-            prefs[RETIRED_CONVERSATIONS] =
-                (prefs[RETIRED_CONVERSATIONS] ?: 0) + conversations.coerceAtLeast(0)
-            prefs[RETIRED_MESSAGES] =
-                (prefs[RETIRED_MESSAGES] ?: 0) + messages.coerceAtLeast(0)
-            if (heatmap.isNotEmpty()) {
-                val merged = decodeHeatmap(prefs[RETIRED_HEATMAP_JSON]).toMutableMap()
-                heatmap.forEach { (day, count) ->
-                    if (count > 0) merged[day] = (merged[day] ?: 0) + count
-                }
-                prefs[RETIRED_HEATMAP_JSON] = encodeHeatmap(merged)
-            }
-        }
-    }
-
-    suspend fun clearRetiredUsage() {
-        ensureInitialized()
-        dataStore.edit { prefs ->
-            prefs.remove(RETIRED_INPUT_TOKENS)
-            prefs.remove(RETIRED_OUTPUT_TOKENS)
-            prefs.remove(RETIRED_CACHED_TOKENS)
-            prefs.remove(RETIRED_CONVERSATIONS)
-            prefs.remove(RETIRED_MESSAGES)
-            prefs.remove(RETIRED_HEATMAP_JSON)
-        }
-    }
-
-    fun modelUsageFlow(): Flow<String> {
-        ensureInitialized()
-        return usageLedger.rawFlow().distinctUntilChanged()
-    }
-
-    fun conversationUsageFlow(id: String?): Flow<ConversationUsageTotals?> {
-        ensureInitialized()
-        return usageLedger.conversationFlow(id)
-    }
-
-    suspend fun modelUsageJson(): String {
-        ensureInitialized()
-        return usageLedger.snapshot()
-    }
-
-    suspend fun recordModelUsage(delta: ModelUsageDelta) {
-        ensureInitialized()
-        usageLedger.record(delta)
-    }
-
-    suspend fun flushModelUsage() {
-        ensureInitialized()
-        // Compatibility fence only: each record already returned AFTER its atomic commit.
-        usageLedger.snapshot()
-    }
-
-    suspend fun addModelUsage(deltaJson: String) {
-        if (deltaJson.isBlank()) return
-        ensureInitialized()
-        usageLedger.replace(deltaJson)
-    }
-
-    suspend fun updateModelUsage(transform: (String) -> String) {
-        ensureInitialized()
-        usageLedger.update(transform)
-    }
-
-    /**
-     * There is no caller mutex here: entry wait is DataStore's edit-entry wall time.
-     * commitTail is transform exit to edit return/throw (queueing, dispatch and persistence),
-     * NOT pure disk time. The thread-local attribution surrounds synchronous slices only.
-     */
-    private suspend fun diagnosticEdit(
-        entryStage: String,
-        transformStage: String,
-        tailStage: String,
-        transform: (MutablePreferences) -> Unit,
-    ) {
-        if (!StreamPerformanceDiagnostics.enabled) {
-            dataStore.edit { prefs -> transform(prefs) }
-            return
-        }
-        val attribution = StreamPerformanceDiagnostics.captureAttribution()
-        val started = System.nanoTime()
-        var transformExited: Long? = null
-        try {
-            dataStore.edit { prefs ->
-                StreamPerformanceDiagnostics.withAttribution(attribution) {
-                    StreamPerformanceDiagnostics.record(entryStage, System.nanoTime() - started)
-                    try {
-                        StreamPerformanceDiagnostics.measure(transformStage) { transform(prefs) }
-                    } finally {
-                        transformExited = System.nanoTime()
-                    }
-                }
-            }
-        } finally {
-            val exited = transformExited
-            if (exited != null) {
-                val elapsed = System.nanoTime() - exited
-                StreamPerformanceDiagnostics.withAttribution(attribution) {
-                    StreamPerformanceDiagnostics.record(tailStage, elapsed)
-                }
-            }
-        }
-    }
-
-    private fun decodeHeatmap(raw: String?): Map<LocalDate, Int> {
-        if (raw.isNullOrBlank()) return emptyMap()
-        return runCatching {
-            val json = JSONObject(raw)
-            buildMap {
-                json.keys().forEach { key ->
-                    val day = runCatching { LocalDate.parse(key) }.getOrNull() ?: return@forEach
-                    val count = json.optInt(key, 0)
-                    if (count > 0) put(day, count)
-                }
-            }
-        }.getOrDefault(emptyMap())
-    }
-
-    private fun encodeHeatmap(days: Map<LocalDate, Int>): String {
-        val json = JSONObject()
-        days.forEach { (day, count) ->
-            if (count > 0) json.put(day.toString(), count)
-        }
-        return json.toString()
+            .contains(APPEARANCE_UI_STYLE)
     }
 
     private fun ensureInitialized() {
@@ -598,20 +342,6 @@ internal object SettingsDataStore {
 
     private fun selectedModelByProviderKey(providerId: String): Preferences.Key<String> =
         stringPreferencesKey("$SELECTED_MODEL_BY_PROVIDER_PREFIX$providerId")
-    private fun selectedTranslationModelByProviderKey(
-        providerId: String,
-    ): Preferences.Key<String> =
-        stringPreferencesKey("$SELECTED_TRANSLATION_MODEL_BY_PROVIDER_PREFIX$providerId")
-
-    private fun stringMap(prefs: Preferences, prefix: String): Map<String, String> =
-        prefs.asMap().mapNotNull { (key, value) ->
-            val name = key.name
-            if (name.startsWith(prefix) && value is String && value.isNotBlank()) {
-                name.removePrefix(prefix) to value
-            } else {
-                null
-            }
-        }.toMap()
 
     private fun MutablePreferences.putOrRemove(key: Preferences.Key<String>, value: String?) {
         if (value.isNullOrBlank()) {
@@ -624,82 +354,40 @@ internal object SettingsDataStore {
     private fun Preferences.toSettings(): Settings = Settings(
         selectedProviderId = this[SELECTED_PROVIDER_ID],
         selectedModelId = this[SELECTED_MODEL_ID],
-        selectedTranslationProviderId = this[SELECTED_TRANSLATION_PROVIDER_ID],
-        selectedTranslationModelId = this[SELECTED_TRANSLATION_MODEL_ID],
         memoryEnabled = this[MEMORY_ENABLED] ?: true,
-        fileLoggingEnabled = this[FILE_LOGGING_ENABLED] ?: true,
-        errorReconnectPolicy = ErrorReconnectPolicy.fromStoredSettings(
-            this[ERROR_RECONNECT_POLICY], this[ERROR_RECONNECT_POLICY_VERSION],
-        ),
         appearance = AppearanceSettings(
+            uiStyle = AppearanceUiStyle.fromPersistedValue(this[APPEARANCE_UI_STYLE]),
             themeMode = AppearanceThemeMode.fromPersistedValue(this[APPEARANCE_THEME_MODE]),
-            monetEnabled = true,
+            monetEnabled = this[APPEARANCE_MONET_ENABLED] ?: false,
             paletteStyle = AppearancePaletteStyle.fromPersistedValue(this[APPEARANCE_PALETTE_STYLE]),
             accentColor = AppearanceAccentColor.fromPersistedValue(this[APPEARANCE_ACCENT_COLOR]),
             pureBlackEnabled = this[APPEARANCE_PURE_BLACK_ENABLED] ?: false,
             blurEnabled = this[APPEARANCE_BLUR_ENABLED] ?: true,
+            progressiveBlurEnabled = this[APPEARANCE_PROGRESSIVE_BLUR_ENABLED] ?: true,
             topBarBlurStyle = AppearanceTopBarBlurStyle.fromPersistedValue(
                 this[APPEARANCE_TOP_BAR_BLUR_STYLE],
             ),
             swipeDismissEnabled = this[APPEARANCE_SWIPE_DISMISS_ENABLED] ?: true,
-            predictiveBackEnabled = this[APPEARANCE_PREDICTIVE_BACK_ENABLED] ?: false,
+            predictiveBackEnabled = this[APPEARANCE_PREDICTIVE_BACK_ENABLED] ?: true,
             interfaceScale = this[APPEARANCE_INTERFACE_SCALE] ?: 1f,
-            morphLoadingIndicator = this[APPEARANCE_MORPH_LOADING_INDICATOR] ?: true,
-            morphLoadingBeforeResponseOnly = this[APPEARANCE_MORPH_LOADING_BEFORE_RESPONSE] ?: false,
-            messageTimestampsEnabled = this[APPEARANCE_MESSAGE_TIMESTAMPS_ENABLED] ?: false,
-            answerFoldLevel = AnswerFoldLevel.fromPersistedValue(this[APPEARANCE_ANSWER_FOLD_LEVEL]),
         ).normalized(),
     )
 
     private fun MutablePreferences.putAppearance(settings: AppearanceSettings) {
+        val currentStyle = AppearanceUiStyle.fromPersistedValue(this[APPEARANCE_UI_STYLE])
+        if (contains(APPEARANCE_UI_STYLE) || settings.uiStyle != currentStyle) {
+            this[APPEARANCE_UI_STYLE] = settings.uiStyle.persistedValue
+        }
         this[APPEARANCE_THEME_MODE] = settings.themeMode.persistedValue
         this[APPEARANCE_MONET_ENABLED] = settings.monetEnabled
         this[APPEARANCE_PALETTE_STYLE] = settings.paletteStyle.persistedValue
         this[APPEARANCE_ACCENT_COLOR] = settings.accentColor.persistedValue
         this[APPEARANCE_PURE_BLACK_ENABLED] = settings.pureBlackEnabled
         this[APPEARANCE_BLUR_ENABLED] = settings.blurEnabled
+        this[APPEARANCE_PROGRESSIVE_BLUR_ENABLED] = settings.progressiveBlurEnabled
         this[APPEARANCE_TOP_BAR_BLUR_STYLE] = settings.topBarBlurStyle.persistedValue
         this[APPEARANCE_SWIPE_DISMISS_ENABLED] = settings.swipeDismissEnabled
         this[APPEARANCE_PREDICTIVE_BACK_ENABLED] = settings.predictiveBackEnabled
         this[APPEARANCE_INTERFACE_SCALE] = settings.interfaceScale
-        this[APPEARANCE_MORPH_LOADING_INDICATOR] = settings.morphLoadingIndicator
-        this[APPEARANCE_MORPH_LOADING_BEFORE_RESPONSE] = settings.morphLoadingBeforeResponseOnly
-        this[APPEARANCE_MESSAGE_TIMESTAMPS_ENABLED] = settings.messageTimestampsEnabled
-        this[APPEARANCE_ANSWER_FOLD_LEVEL] = settings.answerFoldLevel.persistedValue
     }
 }
-
-@kotlinx.serialization.Serializable
-internal data class EtaSettingsBackup(
-    val selectedProviderId: String? = null,
-    val selectedModelId: String? = null,
-    val memoryEnabled: Boolean = true,
-    val fileLoggingEnabled: Boolean = true,
-    val linuxDistribution: String? = null,
-    val linuxBackends: Map<String, String> = emptyMap(),
-    val selectedModelByProvider: Map<String, String> = emptyMap(),
-    val appearance: AppearanceSettings = AppearanceSettings(),
-    // Missing in an older/partial backup means preserve; explicit "" still means reset.
-    val modelUsageJson: String? = null,
-    // Missing retired fields also preserve; explicit zero/empty is still an exact restore.
-    val retiredInputTokens: Long? = null,
-    val retiredOutputTokens: Long? = null,
-    val retiredCachedTokens: Long? = null,
-    val retiredConversations: Int? = null,
-    val retiredMessages: Int? = null,
-    val retiredHeatmapJson: String? = null,
-    // An old backup has no choice version; only its legacy off/missing default is upgraded.
-    val errorReconnectPolicy: String? = null,
-    val errorReconnectPolicyVersion: Int? = null,
-    // Absent in an older backup means preserve the independent model routing.
-    val conversationTitleSettingsJson: String? = null,
-)
-
-internal data class RetiredUsage(
-    val inputTokens: Long = 0L,
-    val outputTokens: Long = 0L,
-    val cachedTokens: Long = 0L,
-    val conversations: Int = 0,
-    val messages: Int = 0,
-    val heatmap: Map<LocalDate, Int> = emptyMap(),
-)

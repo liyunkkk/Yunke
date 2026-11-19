@@ -37,11 +37,13 @@ internal sealed interface ApkAnalysisInstallResult {
     data class Failed(val stage: ApkAnalysisInstallStage) : ApkAnalysisInstallResult
 }
 
-internal fun linuxApkAnalysisReady(rootfs: File): Boolean =
-    LinuxEnvironmentPaths.markerSatisfied(
-        File(rootfs, AlpineEnvironmentPaths.APK_ANALYSIS_MARKER),
-        "profile=${AlpineEnvironmentPaths.APK_ANALYSIS_REVISION}",
-    )
+internal fun linuxApkAnalysisReady(rootfs: File): Boolean {
+    val marker = File(rootfs, AlpineEnvironmentPaths.APK_ANALYSIS_MARKER)
+    if (!marker.isFile) return false
+    return marker.useLines { lines ->
+        lines.any { line -> line.trim() == "profile=${AlpineEnvironmentPaths.APK_ANALYSIS_REVISION}" }
+    }
+}
 
 internal fun linuxApkJavaInstallCommand(distribution: LinuxDistribution): String =
     when (distribution) {
@@ -370,7 +372,7 @@ internal class LinuxApkAnalysisInstaller(
                 val path = File(localBin, name).toPath()
                 java.nio.file.Files.deleteIfExists(path)
                 val relative = if (name == "jadx") "jadx/bin/jadx" else "bin/$name"
-                java.nio.file.Files.createSymbolicLink(path, java.nio.file.Path.of("../../../opt/eta/apk-analysis/current/$relative"))
+                java.nio.file.Files.createSymbolicLink(path, java.nio.file.Paths.get("../../../opt/eta/apk-analysis/current/$relative"))
             }
             File(rootfs, AlpineEnvironmentPaths.APK_ANALYSIS_MARKER).delete()
             return true
@@ -462,7 +464,7 @@ internal class LinuxApkAnalysisInstaller(
             #!/bin/sh
             case "${'$'}{1:-}" in
               b|build)
-                echo "APKTOOL_BUILD_UNAVAILABLE: YUNKe APK 分析档案暂不包含 ARM64 AAPT2，仅支持解码与检查。" >&2
+                echo "APKTOOL_BUILD_UNAVAILABLE: Eta APK 分析档案暂不包含 ARM64 AAPT2，仅支持解码与检查。" >&2
                 exit 64
                 ;;
             esac

@@ -1,16 +1,20 @@
 package io.github.mangi.eta.agent.runtime
 
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.os.Parcel
 import android.util.Base64
 import io.github.mangi.eta.agent.media.AgentImageCodec
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.data.model.ModelReasoningCapabilities
+import io.github.mangi.eta.data.model.ProviderAuthModes
 import io.github.mangi.eta.data.model.ReasoningEffort
 import java.io.File
 import java.io.FileOutputStream
+import java.io.ByteArrayOutputStream
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
@@ -22,77 +26,225 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+@Config(sdk = [33, 36])
 class AgentRuntimeWireTest {
-    private fun emptyHistoryDescriptor(): android.os.ParcelFileDescriptor {
-        val pipe = android.os.ParcelFileDescriptor.createPipe()
-        java.io.FileOutputStream(pipe[1].fileDescriptor).use { output ->
-            output.write("[]".toByteArray(Charsets.UTF_8))
-            output.flush()
+    @Test
+    fun searchSuggestionsCapabilityIsOptionalAndHtmlIsNeverDurable() {
+        val request = AgentRuntimeWire.RunRequest(
+            runId = "search", prompt = "测试", images = emptyList(),
+            config = AgentModelClient.ModelConfig(
+                baseUrl = "https://example.invalid", apiKey = "fixture", model = "fixture", systemPrompt = "",
+                supportsSearchSuggestions = true,
+            ),
+        )
+        val bundle = AgentRuntimeWire.toLegacyBundle(request)
+        assertTrue(AgentRuntimeWire.runRequestFromBundle(bundle).config.supportsSearchSuggestions)
+        bundle.remove("supports_search_suggestions")
+        assertFalse(AgentRuntimeWire.runRequestFromBundle(bundle).config.supportsSearchSuggestions)
+
+        val event = AgentEvent.SearchSuggestions(2, 4, "<div>搜索建议</div>")
+        assertEquals(event, AgentRuntimeWire.eventFromBundle(AgentRuntimeWire.eventToBundle(event)))
+        assertNull(event.recoveryProjection())
+        assertEquals(event, event.replayProjection())
+        assertThrows(IllegalArgumentException::class.java) { AgentEventJsonCodec.encode(event) }
+        assertNull(AgentEventJsonCodec.decode("""{"type":"search_suggestions","round":2,"index":4,"html":"不得恢复"}"""))
+        val oversized = AgentRuntimeWire.eventToBundle(event).apply {
+            putString("html", "中".repeat(SearchSuggestionsPayload.MAX_HTML_BYTES))
         }
-        return pipe[0]
+        assertNull(AgentRuntimeWire.eventFromBundle(oversized))
+        assertFalse(event.toLogLine().contains("搜索建议"))
     }
 
-    @Test fun childContextAndCompactingModelSurviveIpcAndReplay() {
-        val stats = io.github.mangi.eta.agent.delegation.SubAgentContextStats(
-            "child-task", 4, "implementation", "model-id", "Model name", "Provider", 128000,
-            contextTokens = 64000, isCompacting = true)
-        listOf(AgentEvent.ChildContextUpdated(stats), AgentEvent.ContextCompactionStarted(2, "Main model")).forEach { event ->
-            assertEquals(event, AgentRuntimeWire.eventFromBundle(AgentRuntimeWire.eventToBundle(event)))
+    @Test
+    fun oauthWireCarriesOnlyAuthenticationModeAndDropsLegacySecrets() {
+        val request = AgentRuntimeWire.RunRequest(
+            runId = "oauth-wire", prompt = "测试", images = emptyList(),
+            config = AgentModelClient.ModelConfig(
+                providerId = "oauth-provider", authMode = ProviderAuthModes.OPENAI_CHATGPT,
+                baseUrl = "https://api.openai.com/v1", apiKey = "fixture-must-not-cross-ipc",
+                model = "fixture", systemPrompt = "",
+            ),
+        )
+        val bundle = AgentRuntimeWire.toLegacyBundle(request)
+        assertEquals(ProviderAuthModes.OPENAI_CHATGPT, bundle.getString("auth_mode"))
+        assertEquals("", bundle.getString("api_key"))
+        bundle.putString("api_key", "fixture-untrusted-bundle-secret")
+        val restored = AgentRuntimeWire.runRequestFromBundle(bundle)
+        assertEquals("", restored.config.apiKey)
+        assertEquals(ProviderAuthModes.OPENAI_CHATGPT, restored.config.authMode)
+
+        bundle.remove("auth_mode")
+        val legacy = AgentRuntimeWire.runRequestFromBundle(bundle)
+        assertEquals(ProviderAuthModes.API_KEY, legacy.config.authMode)
+        assertEquals("fixture-untrusted-bundle-secret", legacy.config.apiKey)
+    }
+
+    @Test
+    fun automaticCompactionSettingSurvivesIpcAndDefaultsForOldRequests() {
+        val config = AgentModelClient.ModelConfig(
+            baseUrl = "https://example.invalid", apiKey = "fixture", model = "fixture", systemPrompt = "",
+            contextWindow = 900_000,
+            reasoningEffort = ReasoningEffort.OFF,
+        )
+        for (enabled in listOf(false, true)) {
+            val request = AgentRuntimeWire.RunRequest(
+                runId = "automatic-compaction", prompt = "继续", config = config.copy(autoCompactionEnabled = enabled),
+                images = emptyList(),
+            )
+            val bundle = AgentRuntimeWire.toLegacyBundle(request)
+            assertEquals(request, AgentRuntimeWire.runRequestFromBundle(bundle))
+            bundle.remove("auto_compaction_enabled")
+            assertTrue(AgentRuntimeWire.runRequestFromBundle(bundle).config.autoCompactionEnabled)
+        }
+    }
+
+    @Test
+    fun compactionUsageIsOptionalAndOldMeasuredFieldsRemainReadable() {
+        for (event in listOf(
+            AgentEvent.ContextCompaction("manual", "started"),
+            AgentEvent.ContextCompaction("automatic", "completed", tokensBefore = 765_000),
+            AgentEvent.ContextCompaction("legacy", "completed", tokensBefore = 9_000, tokensAfter = 2_000),
+            AgentEvent.ContextCompaction(
+                operationId = "rich",
+                phase = "completed",
+                tokensBefore = 100_000,
+                usage = AgentTokenUsage(
+                    inputTokens = 98_000,
+                    outputTokens = 1_200,
+                    cachedTokens = 94_000,
+                    cacheWriteTokens = 1_000,
+                    requestKind = AgentTokenUsage.REQUEST_KIND_COMPACTION,
+                ),
+                archiveId = "fold-2",
+            ),
+        )) {
+            val bundle = AgentRuntimeWire.eventToBundle(event)
+            assertEquals(event.tokensBefore != null, bundle.containsKey("tokens_before"))
+            assertEquals(event.tokensAfter != null, bundle.containsKey("tokens_after"))
+            assertEquals(event, AgentRuntimeWire.eventFromBundle(bundle))
             assertEquals(event, AgentEventJsonCodec.decode(AgentEventJsonCodec.encode(event)))
         }
     }
 
     @Test
-    fun completionTimestampSurvivesWireAndDurableEventReplay() {
-        val event = AgentEvent.RunFinished(3, 100, 1_800_000_000_000L)
-        assertEquals(event, AgentRuntimeWire.eventFromBundle(AgentRuntimeWire.eventToBundle(event)))
-        assertEquals(event, AgentEventJsonCodec.decode(AgentEventJsonCodec.encode(event)))
-        val legacy = AgentEvent.RunFinished(1, 20)
-        assertEquals(legacy, AgentRuntimeWire.eventFromBundle(AgentRuntimeWire.eventToBundle(legacy)))
-    }
-
-    @Test fun assistantIdentityTravelsWithConfigAndMissingIdentityDoesNotUseActiveAssistant() {
-        val config = AgentModelClient.ModelConfig(baseUrl = "https://example.invalid", apiKey = "test",
-            model = "test", systemPrompt = "A", assistantId = "assistant-a")
-        val request = AgentRuntimeWire.RunRequest(runId = "identity", prompt = "test", config = config, images = emptyList())
-        val bundle = AgentRuntimeWire.toLegacyBundle(request, emptyHistoryDescriptor())
-        bundle.remove(AgentRuntimeWire.KEY_HISTORY_FD)
-        bundle.putParcelableArrayList(AgentRuntimeWire.KEY_HISTORY, java.util.ArrayList())
-        val restored = AgentRuntimeWire.runRequestFromBundle(bundle)
-        assertEquals("assistant-a", restored.assistantId)
-        assertEquals("assistant-a", restored.config.assistantId)
-        bundle.remove("assistant_id")
-        assertEquals("", AgentRuntimeWire.runRequestFromBundle(bundle).assistantId)
+    fun screenshotsKeepExactBytesAndFormatAcrossDescriptorAndInlineTransport() {
+        val bitmap = Bitmap.createBitmap(32, 24, Bitmap.Config.ARGB_8888).apply {
+            eraseColor(android.graphics.Color.argb(128, 96, 128, 192))
+        }
+        try {
+            for ((format, mime) in listOf(
+                Bitmap.CompressFormat.PNG to "image/png",
+                Bitmap.CompressFormat.JPEG to "image/jpeg",
+                Bitmap.CompressFormat.WEBP_LOSSLESS to "image/webp",
+            )) {
+                val original = ByteArrayOutputStream().use { output ->
+                    assertTrue(bitmap.compress(format, 83, output))
+                    output.toByteArray()
+                }
+                val image = AgentImageCodec.fromScreenBytes(original, "custom_capture_label", mime)
+                val request = AgentRuntimeWire.RunRequest(
+                    runId = "raw-screen", prompt = "解释当前屏幕", images = listOf(image),
+                    config = AgentModelClient.ModelConfig(
+                        baseUrl = "https://example.invalid", apiKey = "fixture", model = "fixture", systemPrompt = "",
+                        reasoningEffort = ReasoningEffort.OFF,
+                    ),
+                )
+                AgentRuntimeImageTransfer.prepare(RuntimeEnvironment.getApplication(), request.images).use { prepared ->
+                    assertTrue(prepared.images.single().preserveOriginal)
+                    val result = AgentRuntimeImageTransfer.materialize(AgentRuntimeWire.incomingRunRequestFromBundle(
+                        AgentRuntimeWire.toBundle(request, prepared.images),
+                    )).images.single()
+                    assertEquals(mime, result.mimeType)
+                    assertTrue(result.preserveOriginal)
+                    assertEquals(32, result.width)
+                    assertEquals(24, result.height)
+                    assertArrayEquals(original, Base64.decode(result.reference.substringAfter("base64,"), Base64.DEFAULT))
+                }
+                val inline = AgentRuntimeWire.toLegacyBundle(request)
+                assertEquals(request, AgentRuntimeWire.runRequestFromBundle(inline))
+                val restored = AgentRuntimeImageTransfer.materialize(
+                    AgentRuntimeWire.incomingRunRequestFromBundle(inline),
+                ).images.single()
+                assertEquals(mime, restored.mimeType)
+                assertTrue(restored.preserveOriginal)
+                assertArrayEquals(original, Base64.decode(restored.reference.substringAfter("base64,"), Base64.DEFAULT))
+                inline.getParcelableArrayList("images", android.os.Bundle::class.java)!!.single().remove("preserve_original")
+                assertFalse(AgentRuntimeWire.runRequestFromBundle(inline).images.single().preserveOriginal)
+            }
+        } finally { bitmap.recycle() }
     }
 
     @Test
-    fun visionCapabilitySurvivesIpcAndMissingKeyStaysClosed() {
-        val config = AgentModelClient.ModelConfig(
-            baseUrl = "https://example.invalid",
-            apiKey = "test",
-            model = "grok-4.6",
-            systemPrompt = "",
-            supportsVision = true,
-            supportsVideo = true,
-        )
+    fun assistantScreenContextRoundTripsSeparatelyFromPromptAndDefaultsForOldSenders() {
         val request = AgentRuntimeWire.RunRequest(
-            runId = "vision",
-            prompt = "看图",
-            config = config,
-            images = emptyList(),
+            runId = "assistant-context", prompt = "这是什么？", images = emptyList(),
+            config = AgentModelClient.ModelConfig(baseUrl = "https://example.invalid", apiKey = "test", model = "test", systemPrompt = "", reasoningEffort = ReasoningEffort.OFF),
+            assistantScreenContext = "当前应用与画面内容",
         )
-        val bundle = AgentRuntimeWire.toLegacyBundle(request, emptyHistoryDescriptor())
-        bundle.remove(AgentRuntimeWire.KEY_HISTORY_FD)
-        bundle.putParcelableArrayList(AgentRuntimeWire.KEY_HISTORY, java.util.ArrayList())
-        val restored = AgentRuntimeWire.runRequestFromBundle(bundle)
-        assertTrue(restored.config.supportsVision)
-        assertTrue(restored.config.supportsVideo)
-        bundle.remove("supports_vision")
-        bundle.remove("supports_video")
-        val missing = AgentRuntimeWire.runRequestFromBundle(bundle)
-        assertFalse(missing.config.supportsVision)
-        assertFalse(missing.config.supportsVideo)
+        val bundle = AgentRuntimeWire.toLegacyBundle(request)
+        assertEquals(request, AgentRuntimeWire.runRequestFromBundle(bundle))
+        bundle.remove("assistant_screen_context")
+        val legacy = AgentRuntimeWire.runRequestFromBundle(bundle)
+        assertEquals("", legacy.assistantScreenContext)
+        assertEquals(request.prompt, legacy.prompt)
+        assertThrows(IllegalArgumentException::class.java) {
+            AgentRuntimeWire.toLegacyBundle(request.copy(assistantScreenContext = "x".repeat(24_001)))
+        }
+        bundle.putString("assistant_screen_context", "x".repeat(24_001))
+        assertThrows(IllegalArgumentException::class.java) { AgentRuntimeWire.runRequestFromBundle(bundle) }
+    }
+
+    @Test
+    fun replyRewriteTargetSurvivesRequestResultAndDrain() {
+        val request = AgentRuntimeWire.RunRequest(
+            runId = "rewrite-1", prompt = "原回复", images = emptyList(),
+            config = AgentModelClient.ModelConfig(baseUrl = "https://example.invalid", apiKey = "test", model = "test", systemPrompt = "",
+                reasoningEffort = ReasoningEffort.OFF),
+            operation = AgentRuntimeWire.OP_REWRITE_REPLY, rewriteTargetMessageId = "assistant-1",
+        )
+        assertEquals(request, AgentRuntimeWire.runRequestFromBundle(AgentRuntimeWire.toLegacyBundle(request)))
+        val result = AgentRuntimeWire.RunResult("rewrite-1", true, "新回复", operation = AgentRuntimeWire.OP_REWRITE_REPLY,
+            rewriteTargetMessageId = "assistant-1")
+        assertEquals(result, AgentRuntimeWire.runResultFromBundle(AgentRuntimeWire.toBundle(result)))
+        val completed = AgentRuntimeWire.CompletedRun(
+            AgentRuntimeWire.EntryHandoff("rewrite-1", AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE, "conversation"), result, 1,
+        )
+        val drained = AgentRuntimeWire.completedRunsFromBundle(AgentRuntimeWire.completedRunsToBundle(listOf(completed))).single()
+        assertEquals("assistant-1", drained.result.rewriteTargetMessageId)
+        assertEquals(AgentRuntimeWire.OP_REWRITE_REPLY, drained.result.operation)
+    }
+
+    @Test
+    fun replyRewriteDoesNotAcceptSteering() {
+        val session = AgentRuntimeSession("rewrite-1", operation = AgentRuntimeWire.OP_REWRITE_REPLY)
+        assertFalse(session.steer("额外请求"))
+        assertNull(session.steer("额外请求") { AgentEvent.UserSupplementReceived(1, "额外请求") })
+    }
+
+    @Test
+    fun contextSnapshotRoundTripsDirectlyAndDrainOnlyCarriesReference() {
+        val snapshot = io.github.mangi.eta.agent.model.AgentContextSnapshot(
+            operationId = "compact-1", consumedUserTurns = 4, coveredUserTurns = 3,
+            messages = listOf(AgentModelClient.ConversationMessage("assistant", "摘要内容", contextSummary = true, compactedUserTurns = 3)),
+        )
+        val result = AgentRuntimeWire.RunResult("compact-1", true, "", contextSnapshot = snapshot,
+            operation = AgentRuntimeWire.OP_COMPACT)
+        assertEquals(result, AgentRuntimeWire.runResultFromBundle(AgentRuntimeWire.toBundle(result)))
+        val completed = AgentRuntimeWire.CompletedRun(
+            AgentRuntimeWire.EntryHandoff("compact-1", AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE, "conversation"), result, 1,
+        )
+        val drained = AgentRuntimeWire.completedRunsFromBundle(AgentRuntimeWire.completedRunsToBundle(listOf(completed))).single()
+        assertNull(drained.result.contextSnapshot)
+        assertEquals("compact-1", drained.result.contextSnapshotRef)
+        val event = AgentEvent.ContextCompaction("operation", "completed", 9000, 2000)
+        assertEquals(event, AgentEventJsonCodec.decode(AgentEventJsonCodec.encode(event)))
+        val legacy = AgentRuntimeWire.toBundle(result).apply {
+            remove("complete_result_json")
+            remove("context_snapshot")
+            remove("operation")
+        }
+        assertNull(AgentRuntimeWire.runResultFromBundle(legacy).contextSnapshot)
+        assertEquals(AgentRuntimeWire.OP_CHAT, AgentRuntimeWire.runResultFromBundle(legacy).operation)
     }
 
     @Test
@@ -110,9 +262,7 @@ class AgentRuntimeWireTest {
                 payload = AgentUiHandoffPayload("conversation-1").toJson(),
             ),
         )
-        val bundle = AgentRuntimeWire.toLegacyBundle(request, emptyHistoryDescriptor())
-        bundle.remove(AgentRuntimeWire.KEY_HISTORY_FD)
-        bundle.putParcelableArrayList(AgentRuntimeWire.KEY_HISTORY, java.util.ArrayList())
+        val bundle = AgentRuntimeWire.toLegacyBundle(request)
         assertEquals(request, AgentRuntimeWire.runRequestFromBundle(bundle))
         bundle.remove("model_session_id")
         assertEquals("conversation-1", AgentRuntimeWire.runRequestFromBundle(bundle).effectiveModelSessionId)
@@ -120,41 +270,11 @@ class AgentRuntimeWireTest {
         assertEquals("run-session", AgentRuntimeWire.runRequestFromBundle(bundle).effectiveModelSessionId)
     }
 
-    @Test fun reconnectPolicyAndEventsSurviveWireAndDurableReplay() {
-        val config = AgentModelClient.ModelConfig(baseUrl = "https://example.invalid", apiKey = "test",
-            model = "test", systemPrompt = "", errorReconnectPolicy = "continuous")
-        val request = AgentRuntimeWire.RunRequest(runId = "reconnect", prompt = "test", config = config, images = emptyList())
-        val bundle = AgentRuntimeWire.toLegacyBundle(request, emptyHistoryDescriptor())
-        bundle.remove(AgentRuntimeWire.KEY_HISTORY_FD)
-        bundle.putParcelableArrayList(AgentRuntimeWire.KEY_HISTORY, java.util.ArrayList())
-        assertEquals("continuous", AgentRuntimeWire.runRequestFromBundle(bundle).config.errorReconnectPolicy)
-        bundle.remove("error_reconnect_policy")
-        assertEquals("none", AgentRuntimeWire.runRequestFromBundle(bundle).config.errorReconnectPolicy)
-        assertEquals(config, AgentRuntimeWire.compactModelConfigFromBundle(
-            AgentRuntimeWire.compactBundle("reconnect", compressModelConfig = config)))
-        for (status in listOf("running", "succeeded", "failed", "stopped")) {
-            val event = AgentEvent.ErrorReconnectChanged(7, "same-disconnect", status, 5_000_000_000L, "HTTP_401", "safe detail")
-            assertEquals(event, AgentRuntimeWire.eventFromBundle(AgentRuntimeWire.eventToBundle(event)))
-            assertEquals(event, AgentEventJsonCodec.decode(AgentEventJsonCodec.encode(event)))
-            assertEquals(event, event.recoveryProjection())
-        }
-    }
-
     @Test
     fun retryEventSurvivesIpcAndArchiveJson() {
-        val event = AgentEvent.ModelRetryScheduled(7, 2, 3, 4_000, "HTTP_429", "服务端：Model busy；Retry-After：45")
+        val event = AgentEvent.ModelRetryScheduled(7, 2, 3, 4_000, "MODEL_TIMEOUT")
         assertEquals(event, AgentRuntimeWire.eventFromBundle(AgentRuntimeWire.eventToBundle(event)))
         assertEquals(event, AgentEventJsonCodec.decode(AgentEventJsonCodec.encode(event)))
-    }
-
-    @Test
-    fun oldRetryEventWithoutReasonDetailRemainsReadable() {
-        val old = AgentEvent.ModelRetryScheduled(1, 1, 3, 2000, "HTTP_429")
-        val bundle = AgentRuntimeWire.eventToBundle(old)
-        bundle.remove("reason_detail")
-        assertEquals(old, AgentRuntimeWire.eventFromBundle(bundle))
-        assertTrue(!old.displayMessage.contains("原因："))
-        assertTrue(old.copy(reasonDetail = "Model busy").displayMessage.contains("原因：Model busy"))
     }
 
     @Test
@@ -190,13 +310,24 @@ class AgentRuntimeWireTest {
         )
 
         assertThrows(AgentRuntimeWire.PayloadTooLargeException::class.java) {
-            AgentRuntimeWire.toLegacyBundle(request, emptyHistoryDescriptor())
+            AgentRuntimeWire.toLegacyBundle(request)
         }
     }
 
     @Test
     fun largeImageBodyUsesFileDescriptorAndStaysOutOfBinderBundle() {
-        val imageBytes = ByteArray(600_000) { index -> (index % 251).toByte() }
+        val random = kotlin.random.Random(7)
+        val bitmap = Bitmap.createBitmap(
+            IntArray(640 * 640) { random.nextInt() or 0xff000000.toInt() },
+            640, 640, Bitmap.Config.ARGB_8888,
+        )
+        val imageBytes = try {
+            ByteArrayOutputStream().use { output ->
+                assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, output))
+                output.toByteArray()
+            }
+        } finally { bitmap.recycle() }
+        assertTrue(imageBytes.size > 600_000)
         val dataUrl = "data:image/png;base64,${Base64.encodeToString(imageBytes, Base64.NO_WRAP)}"
         val request = AgentRuntimeWire.RunRequest(
             runId = "run-large-image",
@@ -222,7 +353,7 @@ class AgentRuntimeWireTest {
             RuntimeEnvironment.getApplication(),
             request.images,
         ).use { prepared ->
-            val bundle = AgentRuntimeWire.toBundle(request, prepared.images, emptyHistoryDescriptor())
+            val bundle = AgentRuntimeWire.toBundle(request, prepared.images)
             val parcel = Parcel.obtain()
             try {
                 parcel.writeBundle(bundle)
@@ -235,9 +366,19 @@ class AgentRuntimeWireTest {
                 AgentRuntimeWire.incomingRunRequestFromBundle(bundle)
             )
             assertEquals(request.copy(images = emptyList()), materialized.copy(images = emptyList()))
-            assertEquals(request.images.single().reference, materialized.images.single().reference)
-            assertEquals(request.images.single().mimeType, materialized.images.single().mimeType)
-            assertEquals(request.images.single().bytes, materialized.images.single().bytes)
+            assertEquals(imageBytes.size, prepared.images.single().bytes)
+            val receivedImage = materialized.images.single()
+            assertEquals("image/jpeg", receivedImage.mimeType)
+            val decodedBytes = Base64.decode(receivedImage.reference.substringAfter("base64,"), Base64.DEFAULT)
+            assertEquals(decodedBytes.size, receivedImage.bytes)
+            val decodedBitmap = BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
+                ?: error("传输后的图片无法解码")
+            try {
+                assertEquals(640, decodedBitmap.width)
+                assertEquals(640, decodedBitmap.height)
+                assertEquals(decodedBitmap.width, receivedImage.width)
+                assertEquals(decodedBitmap.height, receivedImage.height)
+            } finally { decodedBitmap.recycle() }
             assertEquals(request.images.single().source, materialized.images.single().source)
         }
     }
@@ -277,12 +418,19 @@ class AgentRuntimeWireTest {
                 assertTrue(prepared.images.single().fileDescriptor != null)
                 val materialized = AgentRuntimeImageTransfer.materialize(
                     AgentRuntimeWire.incomingRunRequestFromBundle(
-                        AgentRuntimeWire.toBundle(request, prepared.images, emptyHistoryDescriptor())
+                        AgentRuntimeWire.toBundle(request, prepared.images)
                     )
                 )
                 assertTrue(materialized.images.single().reference.startsWith("data:image/"))
                 assertTrue(materialized.images.single().reference.contains(";base64,"))
-                assertEquals(sourceFile.length().toInt(), materialized.images.single().bytes)
+                val receivedImage = materialized.images.single()
+                assertEquals("image/jpeg", receivedImage.mimeType)
+                assertEquals(8, receivedImage.width)
+                assertEquals(8, receivedImage.height)
+                assertEquals(
+                    Base64.decode(receivedImage.reference.substringAfter("base64,"), Base64.DEFAULT).size,
+                    receivedImage.bytes,
+                )
             }
         } finally {
             sourceFile.delete()
@@ -355,7 +503,6 @@ class AgentRuntimeWireTest {
     fun runRequestBundleRoundTripPreservesConfigHistoryAndImages() {
         val request = AgentRuntimeWire.RunRequest(
             runId = "run-1",
-            turnId = "original-user-turn",
             prompt = "继续分析",
             config = AgentModelClient.ModelConfig(
                 providerSourceType = "bailian",
@@ -404,21 +551,11 @@ class AgentRuntimeWireTest {
             ),
         )
 
-        val prepared = AgentRuntimeHistoryTransfer.prepare(
-            RuntimeEnvironment.getApplication(),
-            request.history,
-        )
-        val roundTripped = try {
-            val bundle = AgentRuntimeWire.toLegacyBundle(request, prepared.descriptor)
-            assertEquals(true, bundle.containsKey("browser_tools"))
-            assertEquals(true, bundle.getBoolean("browser_tools"))
-            AgentRuntimeWire.runRequestFromBundle(bundle)
-        } finally {
-            prepared.close()
-        }
+        val bundle = AgentRuntimeWire.toLegacyBundle(request)
+        assertEquals(true, bundle.containsKey("browser_tools"))
+        assertEquals(true, bundle.getBoolean("browser_tools"))
+        val roundTripped = AgentRuntimeWire.runRequestFromBundle(bundle)
 
-        assertEquals("original-user-turn", roundTripped.effectiveTurnId)
-        assertEquals("run-1", request.copy(turnId = "").effectiveTurnId)
         assertEquals(request, roundTripped)
         assertEquals(262_144, roundTripped.config.contextWindow)
         assertEquals(ReasoningEffort.HIGH, roundTripped.config.reasoningEffort)
@@ -438,7 +575,7 @@ class AgentRuntimeWireTest {
             ),
             images = emptyList(),
         )
-        val legacyBundle = AgentRuntimeWire.toLegacyBundle(request, emptyHistoryDescriptor()).apply {
+        val legacyBundle = AgentRuntimeWire.toLegacyBundle(request).apply {
             remove("browser_tools")
             remove("context_window")
             remove("reasoning_effort")
@@ -468,7 +605,7 @@ class AgentRuntimeWireTest {
             ),
             images = emptyList(),
         )
-        val legacyBundle = AgentRuntimeWire.toLegacyBundle(request, emptyHistoryDescriptor()).apply {
+        val legacyBundle = AgentRuntimeWire.toLegacyBundle(request).apply {
             remove("device_direct_tools")
             remove("device_sensitive_read_tools")
             remove("device_sensitive_action_tools")
@@ -528,6 +665,7 @@ class AgentRuntimeWireTest {
                 round = 2,
                 kind = AgentEvent.AssistantBlockKind.THINKING,
                 index = 0,
+                startedAtEpochMs = 1_760_000_000_000L,
             ),
             AgentEvent.AssistantBlockDelta(
                 round = 2,
@@ -542,6 +680,7 @@ class AgentRuntimeWireTest {
                 index = 0,
                 contentChars = 4,
                 replacementContent = "思考",
+                elapsedMs = 4_200L,
             ),
             AgentEvent.AssistantReceived(
                 round = 2,
@@ -557,6 +696,8 @@ class AgentRuntimeWireTest {
                     outputTokens = 320,
                     reasoningTokens = 80,
                     cachedTokens = 900,
+                    cacheWriteTokens = 150,
+                    requestKind = AgentTokenUsage.REQUEST_KIND_CHAT,
                 ),
             ),
             AgentEvent.ToolStarted(
@@ -584,26 +725,20 @@ class AgentRuntimeWireTest {
                 imageCount = 0,
                 imageBytes = 0,
             ),
-            AgentEvent.ContextCompactionStarted(round = 2),
-            AgentEvent.ContextCompacted(
-                round = 2,
-                applied = true,
-                originalCount = 12,
-                compactedCount = 5,
-                history = listOf(
-                    AgentModelClient.ConversationMessage(
-                        role = "system",
-                        content = "[对话摘要]\n旧上下文",
-                    ),
-                    AgentModelClient.ConversationMessage(role = "user", content = "继续"),
-                ),
-                compressorLabel = "魚 · grok",
-            ),
         )
 
         events.forEach { event ->
             assertEquals(event, AgentRuntimeWire.eventFromBundle(AgentRuntimeWire.eventToBundle(event)))
+            assertEquals(event, AgentEventJsonCodec.decode(AgentEventJsonCodec.encode(event)))
         }
+        val shortEnd = AgentEvent.AssistantBlockEnd(
+            round = 1,
+            kind = AgentEvent.AssistantBlockKind.THINKING,
+            index = 0,
+            contentChars = 2,
+            elapsedMs = 500L,
+        )
+        assertEquals(shortEnd, AgentEventJsonCodec.decode(AgentEventJsonCodec.encode(shortEnd)))
     }
 
     @Test
@@ -631,7 +766,7 @@ class AgentRuntimeWireTest {
     fun entryHandoffBundleRoundTripPreservesEntrySurfacePolicy() {
         val handoff = AgentRuntimeWire.EntryHandoff(
             id = "handoff-1",
-            source = "breeno",
+            source = AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE,
             payload = """{"userText":"打开微信"}""",
             dismissEntrySurfaceOnForegroundOperation = true,
         )
@@ -657,28 +792,11 @@ class AgentRuntimeWireTest {
     }
 
     @Test
-    fun legacyBreenoHandoffDefaultsToDismissingEntrySurface() {
+    fun missingDismissFlagDefaultsToKeepingEntrySurfaceVisible() {
         val bundle = AgentRuntimeWire.toBundle(
             AgentRuntimeWire.EntryHandoff(
                 id = "handoff-1",
-                source = "breeno",
-                payload = "{}",
-            )
-        ).apply {
-            remove("handoff_dismiss_entry_surface_on_foreground_operation")
-        }
-
-        val handoff = AgentRuntimeWire.entryHandoffFromBundle(bundle)
-
-        assertEquals(true, handoff.dismissEntrySurfaceOnForegroundOperation)
-    }
-
-    @Test
-    fun legacyNonBreenoHandoffDefaultsToKeepingEntrySurfaceVisible() {
-        val bundle = AgentRuntimeWire.toBundle(
-            AgentRuntimeWire.EntryHandoff(
-                id = "handoff-1",
-                source = "app",
+                source = AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE,
                 payload = "{}",
             )
         ).apply {
@@ -691,158 +809,18 @@ class AgentRuntimeWireTest {
     }
 
     @Test
-    fun runRequestBundleRoundTripPreservesHistoryAlreadyCompacted() {
-        val config = AgentModelClient.ModelConfig(
-            baseUrl = "https://example.invalid/v1",
-            apiKey = "test-key",
-            model = "test-model",
-            systemPrompt = "",
-            reasoningEffort = ReasoningEffort.OFF,
-        )
-        val compacted = AgentRuntimeWire.RunRequest(
-            runId = "run-compacted",
-            prompt = "hello",
-            config = config,
-            images = emptyList(),
-            historyAlreadyCompacted = true,
-        )
-        val compactedRoundTrip = AgentRuntimeWire.runRequestFromBundle(
-            AgentRuntimeWire.toLegacyBundle(compacted, emptyHistoryDescriptor()),
-        )
-        assertTrue(compactedRoundTrip.historyAlreadyCompacted)
-        assertEquals(null, compactedRoundTrip.calibratedInputTokens)
-        val seeded = AgentRuntimeWire.runRequestFromBundle(
-            AgentRuntimeWire.toLegacyBundle(compacted.copy(calibratedInputTokens = 284_260), emptyHistoryDescriptor()),
-        )
-        assertEquals(284_260, seeded.calibratedInputTokens)
+    fun steerBundlesRoundTripTextAndAcceptanceStatus() {
+        val requestBundle = AgentRuntimeWire.steerBundle("run-steer", "改用另一种实现")
+        assertEquals("run-steer", AgentRuntimeWire.runIdFromBundle(requestBundle))
+        assertEquals("改用另一种实现", AgentRuntimeWire.steerTextFromBundle(requestBundle))
 
-        val missingKey = AgentRuntimeWire.toLegacyBundle(
-            compacted.copy(runId = "run-legacy"),
-            emptyHistoryDescriptor(),
-        ).apply {
-            remove("history_already_compacted")
-        }
-        val legacyRoundTrip = AgentRuntimeWire.runRequestFromBundle(missingKey)
-        assertFalse(legacyRoundTrip.historyAlreadyCompacted)
-    }
+        val acceptedBundle = AgentRuntimeWire.steerResponseBundle("run-steer", accepted = true, supplementIndex = 3)
+        assertEquals("run-steer", AgentRuntimeWire.runIdFromBundle(acceptedBundle))
+        assertEquals(true, AgentRuntimeWire.steerAcceptedFromBundle(acceptedBundle))
+        assertEquals(3, AgentRuntimeWire.steerSupplementIndexFromBundle(acceptedBundle))
 
-    @Test
-    fun unknownContextSendPermissionRoundTripsAndOldBundleDefaultsFalse() {
-        val config = AgentModelClient.ModelConfig(
-            baseUrl = "https://example.invalid/v1", apiKey = "test", model = "test", systemPrompt = "",
-        )
-        val request = AgentRuntimeWire.RunRequest(
-            runId = "unknown-context", prompt = "hello", config = config, images = emptyList(),
-        )
-        assertFalse(request.allowUnmeasuredContextSend)
-        for (allowed in listOf(false, true)) {
-            // Both encoders share requestBundle; verify the current and legacy entry points.
-            val restored = AgentRuntimeWire.runRequestFromBundle(AgentRuntimeWire.toBundle(
-                request.copy(allowUnmeasuredContextSend = allowed), emptyList(), emptyHistoryDescriptor(),
-            ))
-            assertEquals(allowed, restored.allowUnmeasuredContextSend)
-            assertNull(restored.calibratedInputTokens) // Permission must never become trusted usage.
-            val seeded = AgentRuntimeWire.runRequestFromBundle(AgentRuntimeWire.toLegacyBundle(
-                request.copy(allowUnmeasuredContextSend = allowed, calibratedInputTokens = 100_000),
-                emptyHistoryDescriptor(),
-            ))
-            assertEquals(allowed, seeded.allowUnmeasuredContextSend)
-            assertEquals(100_000, seeded.calibratedInputTokens)
-        }
-        val oldBundle = AgentRuntimeWire.toLegacyBundle(
-            request.copy(allowUnmeasuredContextSend = true), emptyHistoryDescriptor(),
-        ).apply { remove("allow_unmeasured_context_send") }
-        assertFalse(AgentRuntimeWire.runRequestFromBundle(oldBundle).allowUnmeasuredContextSend)
-    }
-
-    @Test
-    fun largeResultTranscriptUsesFileDescriptorAndStaysOutOfBinderBundle() {
-        val transcript = List(20) { index ->
-            AgentModelClient.ConversationMessage(
-                role = "assistant",
-                content = "answer-$index-${"x".repeat(20_000)}",
-            )
-        }
-        val result = AgentRuntimeWire.RunResult(
-            runId = "run-large-transcript",
-            ok = true,
-            content = "final-answer",
-            transcript = transcript,
-        )
-
-        AgentRuntimeTranscriptTransfer.prepare(
-            RuntimeEnvironment.getApplication(),
-            transcript,
-        ).use { prepared ->
-            val bundle = AgentRuntimeWire.toBundle(result, prepared.descriptor)
-            val parcel = Parcel.obtain()
-            try {
-                parcel.writeBundle(bundle)
-                assertTrue(parcel.dataSize() < 64_000)
-            } finally {
-                parcel.recycle()
-            }
-
-            assertNull(bundle.getString(AgentRuntimeWire.KEY_TRANSCRIPT_JSON))
-            val roundTripped = AgentRuntimeWire.runResultFromBundle(bundle)
-            assertEquals(result.runId, roundTripped.runId)
-            assertEquals(result.ok, roundTripped.ok)
-            assertEquals(result.content, roundTripped.content)
-            assertEquals(transcript.size, roundTripped.transcript.size)
-            assertEquals(transcript.first().content, roundTripped.transcript.first().content)
-            assertEquals(transcript.last().content, roundTripped.transcript.last().content)
-        }
-    }
-
-
-    @Test
-    fun oversizedContextCompactedHistoryIsDowngradedBeforePersistence() {
-        val event = AgentEvent.ContextCompacted(
-            round = 3,
-            applied = true,
-            originalCount = 9_000,
-            compactedCount = 420,
-            history = List(420) { index ->
-                io.github.mangi.eta.agent.model.AgentModelClient.ConversationMessage(
-                    role = "user",
-                    content = "消息 $index " + "x".repeat(4096),
-                    reasoningContent = "",
-                )
-            },
-            compressorLabel = "测试压缩器",
-        )
-
-        val encoding = AgentEventJsonCodec.encodeForCheckpoint(event)
-        val encodedBytes = encoding.json.toByteArray(Charsets.UTF_8).size
-        assertTrue(
-            "encoded event must stay under the cursor window budget: $encodedBytes",
-            encodedBytes <= AgentEventJsonCodec.MAX_CHECKPOINT_EVENT_BYTES,
-        )
-        assertTrue("oversized event must be marked degraded", encoding.degraded)
-        val decoded = AgentEventJsonCodec.decode(encoding.json)
-        assertTrue(decoded is AgentEvent.ContextCompacted)
-        val compacted = decoded as AgentEvent.ContextCompacted
-        assertEquals(true, compacted.applied)
-        assertEquals(9_000, compacted.originalCount)
-        assertEquals(420, compacted.compactedCount)
-        assertTrue(compacted.history.isEmpty())
-    }
-
-    @Test
-    fun smallContextCompactedHistorySurvivesPersistenceIntact() {
-        val event = AgentEvent.ContextCompacted(
-            round = 1,
-            applied = true,
-            originalCount = 12,
-            compactedCount = 6,
-            history = List(6) { index ->
-                io.github.mangi.eta.agent.model.AgentModelClient.ConversationMessage(
-                    role = "user",
-                    content = "短消息 $index",
-                    reasoningContent = "",
-                )
-            },
-        )
-        assertEquals(event, AgentEventJsonCodec.decode(AgentEventJsonCodec.encode(event)))
+        val rejectedBundle = AgentRuntimeWire.steerResponseBundle("run-steer", accepted = false)
+        assertEquals(false, AgentRuntimeWire.steerAcceptedFromBundle(rejectedBundle))
+        assertEquals(0, AgentRuntimeWire.steerSupplementIndexFromBundle(rejectedBundle))
     }
 }

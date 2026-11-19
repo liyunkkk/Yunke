@@ -3,15 +3,14 @@ package io.github.mangi.eta.data.db
 import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.PrimaryKey
+import io.github.mangi.eta.data.model.McpDiscoveryTruncation
 import io.github.mangi.eta.data.model.McpServerSetting
 import io.github.mangi.eta.data.model.McpToolDefinition
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.SetSerializer
 import kotlinx.serialization.builtins.serializer
-import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
-@Serializable
 @Entity(tableName = "mcp_servers")
 internal data class McpServerEntity(
     @PrimaryKey val id: String,
@@ -27,6 +26,7 @@ internal data class McpServerEntity(
     @ColumnInfo(name = "last_refreshed_at") val lastRefreshedAt: Long?,
     @ColumnInfo(name = "last_protocol_version") val lastProtocolVersion: String?,
     @ColumnInfo(name = "tools_expire_at") val toolsExpireAt: Long?,
+    @ColumnInfo(name = "tools_truncation_reason") val toolsTruncationReason: String? = null,
 )
 
 private val mcpJson = Json {
@@ -48,6 +48,7 @@ internal fun McpServerSetting.toEntity(): McpServerEntity = McpServerEntity(
     lastRefreshedAt = lastRefreshedAt,
     lastProtocolVersion = lastProtocolVersion,
     toolsExpireAt = toolsExpireAt,
+    toolsTruncationReason = toolsTruncationReason?.wireValue,
 )
 
 internal fun McpServerEntity.toDomain(): McpServerSetting = McpServerSetting(
@@ -68,4 +69,5 @@ internal fun McpServerEntity.toDomain(): McpServerSetting = McpServerSetting(
     lastRefreshedAt = lastRefreshedAt,
     lastProtocolVersion = lastProtocolVersion,
     toolsExpireAt = toolsExpireAt,
+    toolsTruncationReason = McpDiscoveryTruncation.fromWireValue(toolsTruncationReason),
 )

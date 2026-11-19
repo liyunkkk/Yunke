@@ -18,9 +18,6 @@ internal interface ProviderDao {
     @Query("SELECT * FROM model_providers ORDER BY sort_order ASC")
     suspend fun providers(): List<ProviderWithModels>
 
-    @Query("UPDATE model_providers SET sort_order = :order WHERE id = :id")
-    suspend fun updateProviderSortOrder(id: String, order: Int)
-
     @Query("DELETE FROM provider_models")
     suspend fun deleteAllModels()
 
@@ -58,8 +55,33 @@ internal interface ProviderDao {
     @Update
     suspend fun updateProvider(provider: ProviderEntity): Int
 
+    @Query(
+        "UPDATE model_providers SET auth_mode = :authMode, is_enabled = :isEnabled " +
+            "WHERE id = :providerId AND auth_mode = 'api_key' AND api_key = '' AND is_enabled = 0"
+    )
+    suspend fun activateRestoredOAuthProvider(providerId: String, authMode: String, isEnabled: Boolean): Int
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertModels(models: List<ProviderModelEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertModelsIgnoringConflicts(models: List<ProviderModelEntity>)
+
+    @Query(
+        """
+        UPDATE provider_models
+        SET reasoning_capabilities_json = :updatedJson
+        WHERE id = :modelId AND provider_id = :providerId AND model_id = :apiModelId
+            AND source = 'catalog' AND reasoning_capabilities_json = :previousJson
+        """
+    )
+    suspend fun updateCatalogReasoningCapabilitiesIfUnchanged(
+        providerId: String,
+        modelId: String,
+        apiModelId: String,
+        previousJson: String,
+        updatedJson: String,
+    ): Int
 
     @Query("DELETE FROM provider_models WHERE provider_id = :providerId")
     suspend fun deleteModelsForProvider(providerId: String)
@@ -88,6 +110,25 @@ internal interface ProviderDao {
         if (models.isNotEmpty()) {
             upsertModels(models)
         }
+    }
+
+    @Transaction
+    suspend fun appendModelsIfAbsent(
+        providerId: String,
+        candidates: List<ProviderModelEntity>,
+    ) {
+        if (candidates.isEmpty()) return
+        val stored = models(providerId)
+        val knownModelIds = stored.mapTo(mutableSetOf()) { it.modelId.trim().lowercase() }
+        var nextSortOrder = (stored.maxOfOrNull { it.sortOrder } ?: -1) + 1
+        val missing = candidates.mapNotNull { candidate ->
+            if (candidate.modelId.isBlank() || !knownModelIds.add(candidate.modelId.trim().lowercase())) {
+                null
+            } else {
+                candidate.copy(providerId = providerId, sortOrder = nextSortOrder++)
+            }
+        }
+        if (missing.isNotEmpty()) insertModelsIgnoringConflicts(missing)
     }
 
     @Transaction

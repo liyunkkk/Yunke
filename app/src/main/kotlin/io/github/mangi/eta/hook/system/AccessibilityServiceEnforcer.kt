@@ -8,9 +8,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
-import android.content.pm.ServiceInfo
 import android.database.ContentObserver
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.SystemClock
@@ -57,6 +57,7 @@ internal class AccessibilityServiceEnforcer(
     private var lastRestoreLogAt = 0L
 
     fun start(context: Context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return
         if (!started.compareAndSet(false, true)) return
         if (!schedule(context, reason = "system_ready", delayMs = 0L)) {
             started.set(false)
@@ -207,7 +208,7 @@ internal class AccessibilityServiceEnforcer(
                 )
                 packageReceiverRegistered = true
             } catch (failure: RuntimeException) {
-                logFailure("无法监听 YUNKe 包变化", failure)
+                logFailure("无法监听 Eta 包变化", failure)
             }
         }
 
@@ -261,7 +262,7 @@ internal class AccessibilityServiceEnforcer(
                 packageReceiver?.let(context::unregisterReceiver)
                 packageReceiverRegistered = false
             } catch (failure: RuntimeException) {
-                logFailure("无法注销 YUNKe 包监听", failure)
+                logFailure("无法注销 Eta 包监听", failure)
             }
         }
         if (lifecycleReceiverRegistered) {
@@ -276,6 +277,8 @@ internal class AccessibilityServiceEnforcer(
 
     private fun createControlReceiver(): BroadcastReceiver = object : BroadcastReceiver() {
         override fun onReceive(receiverContext: Context, intent: Intent) {
+            // 保护控制依赖系统附带的发送者身份，旧系统不接受降级后的身份校验。
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return
             val senderUid = sentFromUid
             val ordered = isOrderedBroadcast
             val action = intent.action
@@ -537,7 +540,7 @@ internal class AccessibilityServiceEnforcer(
             )
         ) {
             repairInProgress.set(false)
-            logFailure("无法临时关闭 YUNKe 无障碍服务")
+            logFailure("无法临时关闭 Eta 无障碍服务")
             return
         }
 
@@ -550,7 +553,7 @@ internal class AccessibilityServiceEnforcer(
             }
         ) {
             repairInProgress.set(false)
-            logFailure("无法调度 YUNKe 无障碍服务重启")
+            logFailure("无法调度 Eta 无障碍服务重启")
             schedule(context, "repair_schedule_failed", delayMs = 0L)
         }
     }
@@ -564,7 +567,7 @@ internal class AccessibilityServiceEnforcer(
                 enforce(context, "repair_${attempt.number}")
             }
         } catch (failure: RuntimeException) {
-            logFailure("无法重新启用 YUNKe 无障碍服务", failure)
+            logFailure("无法重新启用 Eta 无障碍服务", failure)
         } finally {
             repairInProgress.set(false)
         }
@@ -740,10 +743,16 @@ internal class AccessibilityServiceEnforcer(
         } catch (_: PackageManager.NameNotFoundException) {
             return false
         } catch (failure: RuntimeException) {
-            logFailure("无法校验 YUNKe 无障碍服务组件", failure)
+            logFailure("无法校验 Eta 无障碍服务组件", failure)
             return false
         }
-        return isAccessibilityProtectionServiceValid(serviceInfo, SERVICE_COMPONENT)
+        val applicationInfo = serviceInfo.applicationInfo
+        val validComponent =
+            serviceInfo.enabled &&
+                applicationInfo.enabled &&
+                serviceInfo.exported &&
+                serviceInfo.permission == Manifest.permission.BIND_ACCESSIBILITY_SERVICE
+        return validComponent
     }
 
     private fun isControlCallerTrusted(
@@ -806,7 +815,7 @@ internal class AccessibilityServiceEnforcer(
         if (lastRestoreLogAt != 0L && now - lastRestoreLogAt < LOG_INTERVAL_MS) return
         lastRestoreLogAt = now
         logger.info(
-            "已恢复 YUNKe 无障碍: reason=$reason " +
+            "已恢复 Eta 无障碍: reason=$reason " +
                 "serviceList=$restoredServices masterSwitch=$restoredMasterSwitch",
         )
     }
@@ -814,7 +823,7 @@ internal class AccessibilityServiceEnforcer(
     private companion object {
         const val APP_PACKAGE = "io.github.mangi.eta"
         const val SERVICE_CLASS =
-            "com.google.android.accessibility.selecttospeak.SelectToSpeakService"
+            "io.github.mangi.eta.agent.accessibility.AgentAccessibilityService"
         const val DISABLED = 0
         const val ENABLED = 1
         const val LOG_INTERVAL_MS = 10_000L
@@ -949,22 +958,6 @@ internal class AccessibilityRestoreBackoff(
         }
     }
 }
-
-/**
- * The fixed component is bound by system_server, not by an ordinary external app.
- * Its manifest intentionally uses exported=false. Requiring exported=true here
- * rejected our own service even when the control caller and permission were valid.
- * Keep exact component identity, enabled state and the system binding permission.
- */
-internal fun isAccessibilityProtectionServiceValid(
-    serviceInfo: ServiceInfo,
-    expected: ComponentName,
-): Boolean =
-    serviceInfo.packageName == expected.packageName &&
-        serviceInfo.name == expected.className &&
-        serviceInfo.enabled &&
-        serviceInfo.applicationInfo?.enabled == true &&
-        serviceInfo.permission == Manifest.permission.BIND_ACCESSIBILITY_SERVICE
 
 internal fun isAccessibilityControlRequestValid(
     ordered: Boolean,

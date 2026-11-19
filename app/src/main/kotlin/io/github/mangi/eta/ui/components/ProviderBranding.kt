@@ -14,6 +14,8 @@ internal fun providerBrandLogoRes(provider: ProviderSetting): Int? =
 internal fun providerBrandLogoRes(sourceType: String): Int? =
     when (ProviderSourceRegistry.normalize(sourceType)) {
         ProviderSourceTypes.OPENAI -> R.drawable.provider_logo_openai
+        ProviderSourceTypes.XAI -> R.drawable.model_logo_grok
+        ProviderSourceTypes.GEMINI -> R.drawable.model_logo_gemini
         ProviderSourceTypes.ANTHROPIC -> R.drawable.provider_logo_anthropic
         ProviderSourceTypes.BAILIAN -> R.drawable.provider_logo_bailian
         ProviderSourceTypes.DEEPSEEK -> R.drawable.provider_logo_deepseek
@@ -23,8 +25,6 @@ internal fun providerBrandLogoRes(sourceType: String): Int? =
         ProviderSourceTypes.STEPFUN -> R.drawable.provider_logo_stepfun
         ProviderSourceTypes.SILICONFLOW -> R.drawable.provider_logo_siliconflow
         ProviderSourceTypes.OPENROUTER -> R.drawable.provider_logo_openrouter
-        ProviderSourceTypes.ANTIGRAVITY -> R.drawable.provider_logo_antigravity
-        ProviderSourceTypes.DOUBAO_SPEECH -> R.drawable.model_logo_doubao
         else -> null
     }
 

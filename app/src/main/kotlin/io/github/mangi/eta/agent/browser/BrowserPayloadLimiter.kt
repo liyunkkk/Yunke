@@ -62,7 +62,7 @@ internal object BrowserPayloadLimiter {
         listOf(
             "ok", "tool", "action", "status", "code", "message", "content_source",
             "network_policy", "url", "display_url", "host", "title", "http_status",
-            "risk_challenge", "tab_id",
+            "risk_challenge",
         ).forEach { key ->
             if (!envelope.has(key)) return@forEach
             val value = envelope.opt(key)

@@ -90,7 +90,6 @@ internal fun SkillInstallErrorCode.toUiFailureCode(): SkillZipImportOutcome.Fail
     SkillInstallErrorCode.MULTIPLE_SKILLS_FOUND -> SkillZipImportOutcome.FailureCode.MULTIPLE_SKILLS
     SkillInstallErrorCode.INVALID_SELECTION -> SkillZipImportOutcome.FailureCode.PACKAGE_CHANGED
     SkillInstallErrorCode.INVALID_SKILL,
-    SkillInstallErrorCode.INCOMPATIBLE_SKILL,
     SkillInstallErrorCode.DUPLICATE_SKILL_ID,
     -> SkillZipImportOutcome.FailureCode.INVALID_SKILL
 

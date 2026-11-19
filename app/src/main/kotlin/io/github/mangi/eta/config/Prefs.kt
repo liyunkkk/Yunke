@@ -3,14 +3,17 @@ package io.github.mangi.eta.config
 import android.content.Context
 import android.content.SharedPreferences
 import io.github.libxposed.service.XposedService
-import io.github.mangi.eta.agent.device.AgentTaskSurface
-import io.github.mangi.eta.agent.model.AgentToolCatalog
+import io.github.mangi.eta.agent.context.PersonalSearchTools
+import io.github.mangi.eta.agent.model.AgentFileToolCatalog
+import io.github.mangi.eta.agent.model.AgentPhoneToolCatalog
+import io.github.mangi.eta.agent.model.AgentTerminalToolCatalog
+import io.github.mangi.eta.data.model.ReasoningEffort
 import org.json.JSONArray
 
 /**
  * 模块配置中枢。
  *
- * - Hook 进程（system_server / SystemUI / Google / 系统助手等）在模块加载时调用
+ * - Hook 进程（system_server / SystemUI / Google / 识屏与系统记忆等）在模块加载时调用
  *   [attachRemote]，缓存框架提供的只读 [SharedPreferences]；之后所有拦截回调用 [isEnabled]
  *   读取当前进程持有的 remote preferences。
  * - Eta Runtime 自己消费的开关保存在 App 私有配置中，不依赖 Xposed Service。
@@ -33,78 +36,38 @@ internal object Prefs {
         // 兼容旧版布尔协议；新 UI 不再写入，缺少三态配置时 true 仍表示 Gemini。
         const val POWER_KEY_TAKEOVER = "power_key_takeover"
         const val ASSISTANT_AUTO_CONFIG = "assistant_auto_config"
-        const val HOTWORD_SELF_HEAL = "hotword_self_heal"
         const val GESTURE_BAR_CIRCLE_TO_SEARCH = "gesture_bar_circle_to_search"
         const val DOUBLE_FINGER_CIRCLE_TO_SEARCH = "double_finger_circle_to_search"
-        const val LOCKSCREEN_VOICE_COMMAND = "lockscreen_voice_command"
-        const val SCREEN_ON_VOICE_COMMAND = "screen_on_voice_command"
-        const val AGENT_CUSTOM_MODEL = "agent_custom_model"
-        const val AGENT_REQUIRE_PREFIX = "agent_require_prefix"
-        const val AGENT_DISABLED_TOOLS_JSON = "agent_disabled_tools_json"
         const val AGENT_TERMINAL_TOOLS = "agent_terminal_tools"
         const val AGENT_BROWSER_TOOLS = "agent_browser_tools"
         const val AGENT_DEVICE_DIRECT_TOOLS = "agent_device_direct_tools"
         const val AGENT_DEVICE_SENSITIVE_READ_TOOLS = "agent_device_sensitive_read_tools"
         const val AGENT_DEVICE_SENSITIVE_ACTION_TOOLS = "agent_device_sensitive_action_tools"
         const val AGENT_THINKING_ENABLED = "agent_thinking_enabled"
+        const val AGENT_DEFAULT_REASONING_EFFORT = "agent_default_reasoning_effort"
+        const val AGENT_AUTO_COMPACTION_ENABLED = "agent_auto_compaction_enabled"
+        const val AGENT_SUBAGENT_ENABLED = "agent_subagent_enabled"
+        const val AGENT_VIRTUAL_DISPLAY_ENABLED = "agent_virtual_display_enabled"
+        const val AGENT_KEEP_SCREEN_ON_ENABLED = "agent_keep_screen_on_enabled"
         const val AGENT_RUNTIME_CONFIG_JSON = "agent_runtime_config_json"
-        const val AGENT_AUTO_COMPRESS_ENABLED = "agent_auto_compress_enabled"
-        /** 子代理轮询退避门禁；默认关闭，需在子代理设置页显式开启。 */
-        const val SUBAGENT_POLL_GUARD = "agent_subagent_poll_guard"
-        /** 模型请求重试次数；仅支持 0/3/5/8，默认 3。 */
-        const val MODEL_RETRY_COUNT = "model_retry_count"
-        /** 模型请求重试退避是否叠加 ±20% 抖动；默认开启。 */
-        const val MODEL_RETRY_JITTER = "model_retry_jitter"
-        const val AGENT_COMPRESS_MODEL_PROVIDER_ID = "agent_compress_model_provider_id"
-        const val AGENT_COMPRESS_MODEL_ID = "agent_compress_model_id"
-        const val AGENT_COMPRESS_CUSTOM_MODEL_ENABLED = "agent_compress_custom_model_enabled"
-        const val AGENT_MANUAL_COMPRESS_MODEL_PROVIDER_ID = "agent_manual_compress_model_provider_id"
-        const val AGENT_MANUAL_COMPRESS_MODEL_ID = "agent_manual_compress_model_id"
-        const val AGENT_COMPRESS_ENDPOINT_MODE = "agent_compress_endpoint_mode"
-        const val AGENT_MANUAL_COMPRESS_ENDPOINT_MODE = "agent_manual_compress_endpoint_mode"
-        const val AGENT_TTS_MODE = "agent_tts_mode"
-        const val AGENT_TTS_MODEL_PROVIDER_ID = "agent_tts_model_provider_id"
-        const val AGENT_TTS_MODEL_ID = "agent_tts_model_id"
-        const val AGENT_TTS_VOICE = "agent_tts_voice"
-        const val AGENT_VOICE_CONVERSATION_MODE = "agent_voice_conversation_mode"
-        const val AGENT_VOICE_CONVERSATION_PROVIDER_ID = "agent_voice_conversation_provider_id"
-        const val AGENT_VOICE_CONVERSATION_MODEL_ID = "agent_voice_conversation_model_id"
-        const val AGENT_VOICE_CONVERSATION_VOICE = "agent_voice_conversation_voice"
-        const val AGENT_VOICE_LAST_ENTRY = "agent_voice_last_entry"
-        const val AGENT_VOICE_DOUBAO_PROVIDER_ID = "agent_voice_doubao_provider_id"
-        const val AGENT_VOICE_DOUBAO_VOICE = "agent_voice_doubao_voice"
-        const val AGENT_VOICE_DOUBAO_INSTRUCTIONS = "agent_voice_doubao_instructions"
-        const val HAPTIC_TOUCH_FEEDBACK = "haptic_touch_feedback"
-        const val HAPTIC_MESSAGE_GENERATION = "haptic_message_generation"
-        const val HAPTIC_BACKGROUND = "haptic_background"
-        const val HAPTIC_BACKGROUND_REASONING = "haptic_background_reasoning"
-        const val HAPTIC_INTENSITY = "haptic_intensity"
+        const val AGENT_DISABLED_TOOLS_JSON = "agent_disabled_tools_json"
 
         /** 全部布尔开关及其默认值。 */
         val BOOLEAN_DEFAULTS: Map<String, Boolean> = mapOf(
             POWER_KEY_TAKEOVER to false,
             ASSISTANT_AUTO_CONFIG to false,
-            HOTWORD_SELF_HEAL to false,
             GESTURE_BAR_CIRCLE_TO_SEARCH to true,
             DOUBLE_FINGER_CIRCLE_TO_SEARCH to false,
-            LOCKSCREEN_VOICE_COMMAND to false,
-            SCREEN_ON_VOICE_COMMAND to false,
-            AGENT_CUSTOM_MODEL to true,
-            AGENT_REQUIRE_PREFIX to false,
             AGENT_TERMINAL_TOOLS to true,
             AGENT_BROWSER_TOOLS to true,
             AGENT_DEVICE_DIRECT_TOOLS to true,
             AGENT_DEVICE_SENSITIVE_READ_TOOLS to true,
             AGENT_DEVICE_SENSITIVE_ACTION_TOOLS to true,
             AGENT_THINKING_ENABLED to true,
-            AGENT_AUTO_COMPRESS_ENABLED to false,
-            SUBAGENT_POLL_GUARD to false,
-            MODEL_RETRY_JITTER to false,
-            AGENT_COMPRESS_CUSTOM_MODEL_ENABLED to false,
-            HAPTIC_TOUCH_FEEDBACK to true,
-            HAPTIC_MESSAGE_GENERATION to true,
-            HAPTIC_BACKGROUND to true,
-            HAPTIC_BACKGROUND_REASONING to true,
+            AGENT_AUTO_COMPACTION_ENABLED to true,
+            AGENT_SUBAGENT_ENABLED to true,
+            AGENT_VIRTUAL_DISPLAY_ENABLED to true,
+            AGENT_KEEP_SCREEN_ON_ENABLED to true,
         )
 
         /** 由 Eta Runtime 最终裁决、不要求 Xposed 框架在线的开关。 */
@@ -115,14 +78,10 @@ internal object Prefs {
             AGENT_DEVICE_SENSITIVE_READ_TOOLS,
             AGENT_DEVICE_SENSITIVE_ACTION_TOOLS,
             AGENT_THINKING_ENABLED,
-            AGENT_AUTO_COMPRESS_ENABLED,
-            SUBAGENT_POLL_GUARD,
-            MODEL_RETRY_JITTER,
-            AGENT_COMPRESS_CUSTOM_MODEL_ENABLED,
-            HAPTIC_TOUCH_FEEDBACK,
-            HAPTIC_MESSAGE_GENERATION,
-            HAPTIC_BACKGROUND,
-            HAPTIC_BACKGROUND_REASONING,
+            AGENT_AUTO_COMPACTION_ENABLED,
+            AGENT_SUBAGENT_ENABLED,
+            AGENT_VIRTUAL_DISPLAY_ENABLED,
+            AGENT_KEEP_SCREEN_ON_ENABLED,
         )
     }
 
@@ -133,34 +92,6 @@ internal object Prefs {
     @Volatile
     private var localAgent: SharedPreferences? = null
 
-    /** 读取 Agent 本地 Int 配置。 */
-    fun getInt(key: String, default: Int): Int {
-        return localAgent?.getInt(key, default) ?: default
-    }
-
-    /** 读取字符串配置。本地 Agent 配置优先，避免和只读 remote 重载抢同一参数。 */
-    fun getString(key: String, default: String = ""): String {
-        localAgent?.let { prefs ->
-            if (prefs.contains(key)) return prefs.getString(key, default) ?: default
-        }
-        return remote?.getString(key, default) ?: default
-    }
-
-    /** 写入 Agent 本地 Int 配置。 */
-    fun putInt(key: String, value: Int) {
-        localAgent?.edit()?.putInt(key, value)?.apply()
-    }
-
-    /** 写入 Agent 本地 String 配置。 */
-    fun putString(key: String, value: String) {
-        localAgent?.edit()?.putString(key, value)?.apply()
-    }
-
-    /** 写入 Agent 本地 Boolean 配置。 */
-    fun putBoolean(key: String, value: Boolean) {
-        localAgent?.edit()?.putBoolean(key, value)?.apply()
-    }
-
     /** App 进程调用：初始化不依赖 Xposed Service 的 Agent 配置。 */
     fun initLocal(context: Context) {
         if (localAgent == null) {
@@ -169,13 +100,10 @@ internal object Prefs {
                     localAgent = context.applicationContext.getSharedPreferences(
                         LOCAL_AGENT_GROUP,
                         Context.MODE_PRIVATE,
-                    )
+                    ).also(::migrateLegacyGroupSwitchesIfNeeded)
                 }
             }
         }
-        // 一次性迁移必须在任何 Agent 偏好读取之前完成；固定标记保证只跑一次。
-        localAgent?.let(::migrateLegacyGroupSwitchesIfNeeded)
-        AgentTaskSurface.migrateAskToForegroundOnce()
     }
 
     /** Hook 进程调用：缓存框架提供的只读 SharedPreferences。 */
@@ -200,6 +128,19 @@ internal object Prefs {
         return preferences?.getBoolean(key, default) ?: default
     }
 
+    fun getString(key: String): String {
+        return remote?.getString(key, "") ?: ""
+    }
+
+    fun defaultReasoningEffort(
+        preferences: SharedPreferences? = localAgent ?: remote,
+    ): ReasoningEffort {
+        val raw = runCatching {
+            preferences?.getString(Keys.AGENT_DEFAULT_REASONING_EFFORT, null)
+        }.getOrNull()
+        val parsed = ReasoningEffort.fromWireValue(raw)
+        return if (parsed != null && parsed != ReasoningEffort.OFF) parsed else ReasoningEffort.DEFAULT
+    }
 
     fun powerAssistantTarget(): PowerAssistantTarget = powerAssistantTarget(remote)
 
@@ -214,75 +155,87 @@ internal object Prefs {
         return PowerAssistantTarget.resolve(persistedValue, legacyTakeover)
     }
 
+    @Volatile
+    private var cachedRemoteService: XposedService? = null
+
+    @Volatile
+    private var cachedRemotePrefs: SharedPreferences? = null
+
+    /**
+     * 仅从进程内缓存读取已绑定服务的 RemotePreferences，避免 UI 首帧在主线程触发同步 Binder。
+     */
+    fun cachedRemotePreferencesForUi(service: XposedService?): SharedPreferences? {
+        if (service == null) return null
+        return cachedRemotePrefs?.takeIf { cachedRemoteService === service }
+    }
+
     /**
      * UI 进程获取可写的 RemotePreferences。
      *
      * [XposedService.getRemotePreferences] 的 commit 会同步等待 binder 提交到 LSPosed
      * 数据库，失败返回 false；service 未就绪时返回 null，让 UI 保持不可写。
      */
-    fun remotePreferencesForUi(service: XposedService?): SharedPreferences? =
-        runCatching { service?.getRemotePreferences(GROUP) }.getOrNull()
+    fun remotePreferencesForUi(service: XposedService?): SharedPreferences? {
+        if (service == null) {
+            cachedRemoteService = null
+            cachedRemotePrefs = null
+            return null
+        }
+        cachedRemotePrefs?.takeIf { cachedRemoteService === service }?.let { return it }
+        return runCatching { service.getRemotePreferences(GROUP) }
+            .getOrNull()
+            ?.also { resolved ->
+                cachedRemoteService = service
+                cachedRemotePrefs = resolved
+            }
+    }
 
     /** Eta 设置页与 Runtime 使用的本地 Agent 配置，不依赖 LSPosed。 */
     fun localAgentPreferences(): SharedPreferences? = localAgent
-
-    fun exportAgentPreferences(): Map<String, String> {
-        val prefs = localAgent ?: return emptyMap()
-        return prefs.all.mapNotNull { (key, value) ->
-            when (value) {
-                is Boolean -> key to "b:$value"
-                is Int -> key to "i:$value"
-                is Long -> key to "l:$value"
-                is String -> key to "s:$value"
-                else -> null
-            }
-        }.toMap()
-    }
-
-    fun restoreAgentPreferences(values: Map<String, String>) {
-        val prefs = requireNotNull(localAgent) { "Agent preferences 未初始化" }
-        val editor = prefs.edit().clear()
-        values.forEach { (key, encoded) ->
-            if (key.isBlank() || encoded.length < 2 || encoded[1] != ':') return@forEach
-            val payload = encoded.substring(2)
-            when (encoded[0]) {
-                'b' -> editor.putBoolean(key, payload.toBooleanStrictOrNull() ?: return@forEach)
-                'i' -> editor.putInt(key, payload.toIntOrNull() ?: return@forEach)
-                'l' -> editor.putLong(key, payload.toLongOrNull() ?: return@forEach)
-                's' -> editor.putString(key, payload)
-            }
-        }
-        check(editor.commit()) { "Agent preferences 恢复未落盘" }
-        // 恢复会清空并重写全部本地标量，可能抹掉刚写的一次性标记。
-        // 落盘后重新套用迁移：带标记的备份（迁移后导出）原样保留用户选择，
-        // 无标记的旧备份若存过 ASK 则补做一次迁移。
-        localAgent?.let(::migrateLegacyGroupSwitchesIfNeeded)
-        AgentTaskSurface.migrateAskToForegroundOnce()
-    }
-
-    /** 关闭时压缩用当前对话模型；已选过自定义模型的旧配置视为开启。 */
-    fun isCustomCompressModelEnabled(preferences: SharedPreferences? = localAgent): Boolean {
-        val prefs = preferences ?: return false
-        if (prefs.contains(Keys.AGENT_COMPRESS_CUSTOM_MODEL_ENABLED)) {
-            return prefs.getBoolean(Keys.AGENT_COMPRESS_CUSTOM_MODEL_ENABLED, false)
-        }
-        return !prefs.getString(Keys.AGENT_COMPRESS_MODEL_PROVIDER_ID, null).isNullOrBlank() &&
-            !prefs.getString(Keys.AGENT_COMPRESS_MODEL_ID, null).isNullOrBlank()
-    }
 
     /**
      * 首次升级优先把已有 RemotePreferences 值迁入本地；之后本地值是事实源，并在框架
      * 可用时回写远端，让仍在目标进程中组装请求的 Hook 入口拿到一致的初始配置。
      */
-    private val agentPreferenceReconciler = AgentPreferenceReconciler(
-        Keys.LOCAL_AGENT_KEYS.associateWith(Keys.BOOLEAN_DEFAULTS::getValue),
-    )
-
     fun reconcileAgentPreferences(service: XposedService?) {
         val local = localAgent ?: return
         val remotePreferences = remotePreferencesForUi(service) ?: return
-        agentPreferenceReconciler.reconcile(requireNotNull(service), local, remotePreferences)
-        migrateLegacyGroupSwitchesIfNeeded(local)
+        val localEditor = local.edit()
+        val remoteEditor = remotePreferences.edit()
+        var updateLocal = false
+        var updateRemote = false
+
+        Keys.LOCAL_AGENT_KEYS.forEach { key ->
+            val default = Keys.BOOLEAN_DEFAULTS.getValue(key)
+            when {
+                local.contains(key) -> {
+                    remoteEditor.putBoolean(key, local.getBoolean(key, default))
+                    updateRemote = true
+                }
+                remotePreferences.contains(key) -> {
+                    localEditor.putBoolean(key, remotePreferences.getBoolean(key, default))
+                    updateLocal = true
+                }
+            }
+        }
+        when {
+            local.contains(Keys.AGENT_DISABLED_TOOLS_JSON) -> {
+                remoteEditor.putString(
+                    Keys.AGENT_DISABLED_TOOLS_JSON,
+                    local.getString(Keys.AGENT_DISABLED_TOOLS_JSON, "[]"),
+                )
+                updateRemote = true
+            }
+            remotePreferences.contains(Keys.AGENT_DISABLED_TOOLS_JSON) -> {
+                localEditor.putString(
+                    Keys.AGENT_DISABLED_TOOLS_JSON,
+                    remotePreferences.getString(Keys.AGENT_DISABLED_TOOLS_JSON, "[]"),
+                )
+                updateLocal = true
+            }
+        }
+        if (updateLocal) localEditor.commit()
+        if (updateRemote) runCatching { remoteEditor.commit() }
     }
 
     /** 将运行时工具名映射为工具列表中的主开关标识，确保同一能力的不同动作变体受同一开关约束。 */
@@ -295,7 +248,7 @@ internal object Prefs {
         "browser_read", "browser_interact", "browser_screenshot" -> "browser_use"
         "search_coloros_notes" -> "search_notes"
         "search_coloros_memories" -> "search_system_memories"
-        else -> toolName
+        else -> PersonalSearchTools.canonical(toolName)
     }
 
     fun disabledTools(preferences: SharedPreferences? = localAgent ?: remote): Set<String> {
@@ -308,7 +261,7 @@ internal object Prefs {
             buildSet(array.length()) {
                 for (index in 0 until array.length()) {
                     val item = array.optString(index).trim()
-                    if (item.isNotEmpty()) add(canonicalToolSwitchId(item))
+                    if (item.isNotEmpty()) add(item)
                 }
             }
         }.getOrDefault(emptySet())
@@ -331,14 +284,12 @@ internal object Prefs {
         service: XposedService? = null,
     ): Boolean = setToolsEnabled(listOf(toolName), enabled, service)
 
-    @Synchronized
     fun setToolsEnabled(
         toolNames: Collection<String>,
         enabled: Boolean,
         service: XposedService? = null,
     ): Boolean {
         val local = localAgent ?: return false
-        migrateLegacyGroupSwitchesIfNeeded(local)
         val updated = disabledTools(local).toMutableSet()
         toolNames.forEach { rawName ->
             val canonical = canonicalToolSwitchId(rawName)
@@ -363,13 +314,49 @@ internal object Prefs {
         return committed
     }
 
-    internal fun migrateLegacyGroupSwitchesIfNeeded(local: SharedPreferences) {
+    private fun migrateLegacyGroupSwitchesIfNeeded(local: SharedPreferences) {
         if (local.contains(Keys.AGENT_DISABLED_TOOLS_JSON)) return
         val disabledLegacyGroups = LEGACY_TOOL_GROUP_KEYS.filter { key ->
             local.contains(key) && !local.getBoolean(key, true)
         }
         if (disabledLegacyGroups.isEmpty()) return
-        val migratedDisabled = disabledLegacyGroups.flatMap { AgentToolCatalog.legacyGroupToolNames(it) }.toSet()
+        val migratedDisabled = linkedSetOf<String>()
+        if (Keys.AGENT_BROWSER_TOOLS in disabledLegacyGroups) {
+            migratedDisabled += listOf("web_search", "fetch_url", "browser_use")
+        }
+        if (Keys.AGENT_TERMINAL_TOOLS in disabledLegacyGroups) {
+            migratedDisabled += AgentTerminalToolCatalog.names
+            migratedDisabled += AgentFileToolCatalog.names
+            migratedDisabled += "read_image"
+        }
+        if (Keys.AGENT_DEVICE_DIRECT_TOOLS in disabledLegacyGroups) {
+            migratedDisabled += AgentPhoneToolCatalog.direct
+            migratedDisabled += listOf(
+                "set_alarm", "set_timer", "device_status", "inspect_app",
+                "network_info", "top_memory_apps", "top_storage_apps",
+                "media_control", "set_volume",
+            )
+        }
+        if (Keys.AGENT_DEVICE_SENSITIVE_READ_TOOLS in disabledLegacyGroups) {
+            migratedDisabled += PersonalSearchTools.names
+            migratedDisabled += AgentPhoneToolCatalog.reads
+            migratedDisabled += listOf(
+                "read_personal_item", "summarize_bills", "get_setting", "wifi_credentials",
+                "recent_notifications", "search_notification_history", "recent_app_activity",
+                "app_usage_summary", "get_current_location", "get_device_environment",
+                "list_alarms", "list_active_timers", "search_clipboard_history",
+                "get_health_summary", "read_sms_code", "get_logcat", "search_media",
+                "search_audio", "search_recordings", "search_files", "search_calendar_events",
+                "search_contacts", "search_call_history", "search_messages", "search_downloads",
+                "search_notes", "search_coloros_recordings", "search_recording_summaries",
+                "search_system_memories", "search_saved_places", "search_personal_orders",
+                "search_qq_chat_images", "search_wechat_chat_images",
+            )
+        }
+        if (Keys.AGENT_DEVICE_SENSITIVE_ACTION_TOOLS in disabledLegacyGroups) {
+            migratedDisabled += AgentPhoneToolCatalog.writes
+            migratedDisabled += listOf("set_setting", "set_device_state", "app_state_control")
+        }
         val editor = local.edit()
             .putString(Keys.AGENT_DISABLED_TOOLS_JSON, JSONArray(migratedDisabled.sorted()).toString())
         disabledLegacyGroups.forEach { key -> editor.putBoolean(key, true) }

@@ -38,18 +38,13 @@ internal object AgentRunRecoveryCoordinator {
         val unresolved = uiCheckpoints.values
             .filterNot { it.runId in locallyObservedRunIds || it.runId in completedRunIds }
             .sortedBy { it.createdAt }
-        val active = if (activeStateKnown) {
-            unresolved.filter { it.runId in activeRunIds }
-        } else {
-            emptyList()
-        }
-        val activeIds = active.mapTo(mutableSetOf()) { it.runId }
+        val active = if (activeStateKnown) unresolved.filter { it.runId in activeRunIds } else emptyList()
 
         return Plan(
             completed = completed,
             reattach = active,
             interrupted = if (activeStateKnown && terminalStateKnown) {
-                unresolved.filterNot { it.runId in activeIds }
+                unresolved.filterNot { it.runId in activeRunIds }
             } else {
                 emptyList()
             },

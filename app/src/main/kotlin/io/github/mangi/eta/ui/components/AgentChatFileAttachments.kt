@@ -4,8 +4,11 @@ import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,12 +16,18 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.captionBar
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -26,393 +35,363 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.FolderOpen
-import androidx.compose.material.icons.outlined.Image
-import androidx.compose.material.icons.outlined.Videocam
-import androidx.compose.material.icons.outlined.Link
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import com.itos.coui.menu.CouiMenuItem
+import com.itos.coui.menu.Menu
+import com.itos.coui.menu.couiMenuAnchor
+import com.itos.coui.menu.rememberCouiMenuAnchor
 import io.github.mangi.eta.R
-import io.github.mangi.eta.ui.haptics.TouchHaptics
 import io.github.mangi.eta.agent.model.AgentFileReference
 import io.github.mangi.eta.agent.model.AgentFileReferenceKind
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.ui.components.coui.CouiInputDialog
 import io.github.mangi.eta.ui.model.PendingFileReferenceUi
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.PopupPositionProvider
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextField
+import top.yukonga.miuix.kmp.blur.Backdrop
+import top.yukonga.miuix.kmp.glass.GlassDialog
+import top.yukonga.miuix.kmp.glass.GlassPopupDefaults
+import top.yukonga.miuix.kmp.glass.GlassPopupItem
+import top.yukonga.miuix.kmp.glass.GlassPopupSizing
+import top.yukonga.miuix.kmp.glass.GlassTransformPopup
+import top.yukonga.miuix.kmp.glass.glassPopupAnchor
+import top.yukonga.miuix.kmp.glass.glassPopupAnchorContent
+import top.yukonga.miuix.kmp.glass.rememberGlassPopupAnchor
+import top.yukonga.miuix.kmp.icon.MiuixIcons
+import top.yukonga.miuix.kmp.icon.glass.Add
+import top.yukonga.miuix.kmp.icon.glass.Edit
+import top.yukonga.miuix.kmp.icon.glass.File
+import top.yukonga.miuix.kmp.icon.glass.FolderOutline
+import top.yukonga.miuix.kmp.icon.glass.ImageOutline
 import top.yukonga.miuix.kmp.squircle.squircleBorder
 import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import top.yukonga.miuix.kmp.window.WindowDialog
 
 internal val ChatInputPopupMargin = 8.dp
 internal val ChatInputActionSize = 40.dp
 internal val ChatInputActionIconSize = 24.dp
 
-/**
- * 附件选择器启动句柄。
- *
- * 输入栏「+」按钮的弹出菜单与工具箱面板共用同一套选择逻辑与回退路径，
- * 避免出现两份行为可能走样的实现。
- */
-internal class AttachmentPickerLaunchers(
-    val pickImage: () -> Unit,
-    val pickVideo: () -> Unit,
-    val pickFiles: () -> Unit,
-    val pickFolder: () -> Unit,
+internal data class InputBarPopupLayout(
+    val gap: Dp,
+    val maxHeight: Dp,
 )
 
 /**
- * 创建附件选择器启动句柄。
+ * 底部输入区弹窗需悬浮在整块输入容器上方，避免回退向上展开时压住按钮与输入栏本身。
  *
- * 存在 ActivityResultRegistry 时走 Compose 选择器；悬浮窗 Service 等场景没有
- * LocalActivityResultRegistryOwner，此时回退到 Trampoline Activity 调起系统选择器。
+ * `GlassTransformPopup` 内部按无 `ime` 的窗口底边判断是否向下展开；当软键盘抬高输入栏时，
+ * 下方看似空余极大而触发向下对齐，导致菜单压回输入框并被键盘裁切。这里按相同的窗口底边
+ * 提前判定实际对齐方向，并在向下对齐分支反推 `gap`，让菜单底边始终停在输入栏上方 [ChatInputPopupMargin]。
  */
-@Composable
-internal fun rememberAttachmentPickerLaunchers(
-    onAttachImage: (String) -> Unit,
-    onAttachVideo: (String) -> Unit,
-    onAttachFiles: (List<String>) -> Unit,
-    onAttachFolder: (String) -> Unit,
-): AttachmentPickerLaunchers {
-    val context = LocalContext.current
-    val registryOwner = androidx.activity.compose.LocalActivityResultRegistryOwner.current
+internal fun calculateInputBarPopupLayout(
+    inputContainerTopPx: Float,
+    anchorTopPx: Float,
+    anchorBottomPx: Float,
+    measuredHeightPx: Float,
+    statusBarTopPx: Float,
+    windowBottomPx: Float,
+    safeMarginPx: Float,
+    marginPx: Float,
+    density: Float,
+    defaultMaxHeightDp: Dp = GlassPopupDefaults.MaxHeight,
+): InputBarPopupLayout {
+    val maxHeightDp = if (inputContainerTopPx > statusBarTopPx) {
+        ((inputContainerTopPx - statusBarTopPx - marginPx - safeMarginPx) / density).dp
+    } else {
+        defaultMaxHeightDp
+    }.coerceIn(96.dp, defaultMaxHeightDp)
 
-    // 一次可选多张：PickMultipleVisualMedia 打开的是同一个系统相册，但允许多选。
-    // 回调仍是逐张 onAttachImage，调用方与悬浮窗那条路径都不用改。
-    val photoPicker = if (registryOwner != null) {
-        rememberLauncherForActivityResult(
-            contract = ActivityResultContracts.PickMultipleVisualMedia(),
-        ) { uris ->
-            uris.forEach { uri ->
-                runCatching {
-                    context.contentResolver.takePersistableUriPermission(
-                        uri,
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION,
-                    )
-                }
-                onAttachImage(uri.toString())
-            }
+    if (inputContainerTopPx <= 0f || anchorBottomPx <= 0f) {
+        return InputBarPopupLayout(gap = 0.dp, maxHeight = maxHeightDp)
+    }
+
+    val targetBottomPx = inputContainerTopPx - marginPx
+    val baseGapPx = (targetBottomPx - anchorBottomPx).coerceAtMost(0f)
+    val gapPx = if (measuredHeightPx > 0f && anchorTopPx > 0f) {
+        val minTopPx = statusBarTopPx + safeMarginPx
+        val shiftedTop = anchorTopPx + baseGapPx
+        val below = windowBottomPx - safeMarginPx - shiftedTop
+        val above = targetBottomPx - minTopPx
+        val willAlignTop = measuredHeightPx <= below || below >= above
+        if (willAlignTop) {
+            ((targetBottomPx - measuredHeightPx) - anchorTopPx).coerceAtMost(0f)
+        } else {
+            baseGapPx
         }
-    } else null
-    val videoPicker = if (registryOwner != null) {
-        rememberLauncherForActivityResult(
-            contract = ActivityResultContracts.PickVisualMedia(),
-        ) { uri ->
-            if (uri != null) {
-                runCatching {
-                    context.contentResolver.takePersistableUriPermission(
-                        uri,
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION,
-                    )
-                }
-                onAttachVideo(uri.toString())
-            }
-        }
-    } else null
-    val filePicker = if (registryOwner != null) {
-        rememberLauncherForActivityResult(
-            contract = ActivityResultContracts.OpenMultipleDocuments(),
-        ) { uris ->
-            uris.forEach { uri ->
-                runCatching {
-                    context.contentResolver.takePersistableUriPermission(
-                        uri,
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION,
-                    )
-                }
-            }
-            if (uris.isNotEmpty()) onAttachFiles(uris.map { it.toString() })
-        }
-    } else null
-    val folderPicker = if (registryOwner != null) {
-        rememberLauncherForActivityResult(
-            contract = ActivityResultContracts.OpenDocumentTree(),
-        ) { uri ->
-            if (uri != null) {
-                runCatching {
-                    context.contentResolver.takePersistableUriPermission(
-                        uri,
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION,
-                    )
-                }
-                onAttachFolder(uri.toString())
-            }
-        }
-    } else null
-    return AttachmentPickerLaunchers(
-        pickImage = {
-            if (photoPicker != null) {
-                photoPicker.launch(
-                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
-                )
-            } else {
-                AgentAttachmentPickerTrampolineActivity.pickImages(context) { uris ->
-                    uris.forEach { onAttachImage(it) }
-                }
-            }
-        },
-        pickVideo = {
-            if (videoPicker != null) {
-                videoPicker.launch(
-                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly),
-                )
-            } else {
-                AgentAttachmentPickerTrampolineActivity.pickVideo(context) { uri ->
-                    onAttachVideo(uri)
-                }
-            }
-        },
-        pickFiles = {
-            if (filePicker != null) {
-                filePicker.launch(arrayOf("*/*"))
-            } else {
-                AgentAttachmentPickerTrampolineActivity.pickFiles(context) { uris ->
-                    onAttachFiles(uris)
-                }
-            }
-        },
-        pickFolder = {
-            if (folderPicker != null) {
-                folderPicker.launch(null)
-            } else {
-                AgentAttachmentPickerTrampolineActivity.pickFolder(context) { uri ->
-                    onAttachFolder(uri)
-                }
-            }
-        },
-    )
+    } else {
+        baseGapPx
+    }
+    return InputBarPopupLayout(gap = (gapPx / density).dp, maxHeight = maxHeightDp)
+}
+
+@Composable
+internal fun rememberInputBarPopupLayout(
+    inputContainerTopPx: Float,
+    anchorTopPx: Float,
+    anchorBottomPx: Float,
+    measuredHeightPx: Float,
+): InputBarPopupLayout {
+    val density = LocalDensity.current
+    val statusBarTopPx = WindowInsets.statusBars.getTop(density).toFloat()
+    val navBarBottomPx = WindowInsets.navigationBars.getBottom(density).toFloat()
+    val captionBarBottomPx = WindowInsets.captionBar.getBottom(density).toFloat()
+    val windowBottomPx = LocalWindowInfo.current.containerSize.height - navBarBottomPx - captionBarBottomPx
+    return with(density) {
+        calculateInputBarPopupLayout(
+            inputContainerTopPx = inputContainerTopPx,
+            anchorTopPx = anchorTopPx,
+            anchorBottomPx = anchorBottomPx,
+            measuredHeightPx = measuredHeightPx,
+            statusBarTopPx = statusBarTopPx,
+            windowBottomPx = windowBottomPx,
+            safeMarginPx = GlassPopupDefaults.SafeMargin.toPx(),
+            marginPx = ChatInputPopupMargin.toPx(),
+            density = this.density,
+        )
+    }
 }
 
 @Composable
 internal fun AgentAttachmentPickerButton(
-    launchers: AttachmentPickerLaunchers,
-    onAttachFilePath: (String) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val view = LocalView.current
-    val menuState = rememberEtaMenuState()
-    var showPathDialog by remember { mutableStateOf(false) }
-    var pathInput by remember { mutableStateOf("") }
-
-    val keepIme = rememberKeepImeWhenOpeningMenu()
-    Box(modifier = modifier) {
-        ChatInputNonFocusableIconButton(
-            onClick = {
-                keepIme()
-                menuState.onAnchorClick()
-            },
-            contentDescription = stringResource(R.string.ui_add_attachment_dba9e8),
-        ) {
-            Icon(
-                imageVector = Icons.Rounded.Add,
-                contentDescription = null,
-                modifier = Modifier.size(ChatInputActionIconSize),
-                tint = MiuixTheme.colorScheme.onSurface,
-            )
-        }
-        EtaDropdownMenu(
-            expanded = menuState.expanded,
-            onDismissRequest = menuState::dismiss,
-            preferAbove = true,
-            minWidth = 0.dp,
-            focusable = false,
-        ) {
-            val options = listOf(
-                Triple(stringResource(R.string.attachment_image), Icons.Outlined.Image, 0),
-                Triple(stringResource(R.string.attachment_video), Icons.Outlined.Videocam, 1),
-                Triple(stringResource(R.string.attachment_file), Icons.Rounded.Description, 2),
-                Triple(stringResource(R.string.attachment_folder), Icons.Rounded.FolderOpen, 3),
-                Triple(stringResource(R.string.attachment_enter_path), Icons.Outlined.Link, 4),
-            )
-            options.forEach { (option, icon, index) ->
-                DropdownMenuItem(
-                    modifier = Modifier.height(40.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp),
-                    text = { androidx.compose.material3.Text(option) },
-                    leadingIcon = {
-                        androidx.compose.material3.Icon(
-                            imageVector = icon,
-                            contentDescription = null,
-                            modifier = Modifier.size(22.dp),
-                        )
-                    },
-                    onClick = {
-                        TouchHaptics.click(view)
-                        menuState.dismiss()
-                        when (index) {
-                            0 -> launchers.pickImage()
-                            1 -> launchers.pickVideo()
-                            2 -> launchers.pickFiles()
-                            3 -> launchers.pickFolder()
-                            4 -> {
-                                pathInput = ""
-                                showPathDialog = true
-                            }
-                        }
-                    },
-                )
-            }
-        }
-    }
-
-    WindowDialog(
-        show = showPathDialog,
-        title = stringResource(R.string.ui_input_file_path_36d474),
-        summary = stringResource(R.string.ui_supports_files_and_folders_under_internal_storage_or_520786),
-        onDismissRequest = { showPathDialog = false },
-    ) {
-        Column {
-            TextField(
-                value = pathInput,
-                onValueChange = { pathInput = it },
-                label = stringResource(R.string.ui_absolute_path_9ac6fc),
-                useLabelAsPlaceholder = true,
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                modifier = Modifier.fillMaxWidth(),
-            )
-            MiuixDialogActions(
-                confirmText = stringResource(R.string.attachment_add),
-                confirmEnabled = pathInput.trim().startsWith('/'),
-                onCancel = { showPathDialog = false },
-                onConfirm = {
-                    val path = pathInput.trim()
-                    showPathDialog = false
-                    onAttachFilePath(path)
-                },
-                modifier = Modifier.padding(top = 16.dp),
-            )
-        }
-    }
-}
-
-/**
- * 悬浮窗输入栏的附件入口按钮。
- *
- * 与主界面 [AgentAttachmentPickerButton] 共用同一套 [rememberAttachmentPickerLaunchers]：
- * 浮窗窗口没有 LocalActivityResultRegistryOwner，因此会自动回退到 Trampoline Activity。
- * 按钮可见尺寸沿用浮窗输入栏其它圆钮的 36dp，保持栏内按钮统一。
- */
-@Composable
-internal fun OverlayAttachmentPickerButton(
+    glassBackdrop: Backdrop?,
+    inputContainerTopPx: Float,
     onAttachImage: (String) -> Unit,
     onAttachFiles: (List<String>) -> Unit,
     onAttachFolder: (String) -> Unit,
     onAttachFilePath: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val view = LocalView.current
-    val launchers = rememberAttachmentPickerLaunchers(
-        onAttachImage = onAttachImage,
-        onAttachVideo = {},
-        onAttachFiles = onAttachFiles,
-        onAttachFolder = onAttachFolder,
-    )
-    var showMenu by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    var showPopup by remember { mutableStateOf(false) }
     var showPathDialog by remember { mutableStateOf(false) }
     var pathInput by remember { mutableStateOf("") }
-    Box(modifier = modifier) {
-        IconButton(
-            onClick = {
-                TouchHaptics.click(view)
-                showMenu = true
-            },
-            minWidth = 36.dp,
-            minHeight = 36.dp,
-            cornerRadius = 18.dp,
-        ) {
-            Icon(
-                imageVector = Icons.Rounded.Add,
-                contentDescription = stringResource(R.string.ui_add_attachment_dba9e8),
-                modifier = Modifier.size(18.dp),
-                tint = MiuixTheme.colorScheme.onSurface,
-            )
-        }
-        EtaDropdownMenu(
-            expanded = showMenu,
-            onDismissRequest = { showMenu = false },
-            preferAbove = true,
-            minWidth = 0.dp,
-            focusable = false,
-        ) {
-            val options = listOf(
-                Triple(stringResource(R.string.attachment_image), Icons.Outlined.Image, 0),
-                Triple(stringResource(R.string.attachment_file), Icons.Rounded.Description, 1),
-                Triple(stringResource(R.string.attachment_folder), Icons.Rounded.FolderOpen, 2),
-                Triple(stringResource(R.string.attachment_enter_path), Icons.Outlined.Link, 3),
-            )
-            options.forEach { (option, icon, index) ->
-                DropdownMenuItem(
-                    modifier = Modifier.height(40.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp),
-                    text = { androidx.compose.material3.Text(option) },
-                    leadingIcon = {
-                        androidx.compose.material3.Icon(
-                            imageVector = icon,
-                            contentDescription = null,
-                            modifier = Modifier.size(22.dp),
-                        )
-                    },
-                    onClick = {
-                        TouchHaptics.click(view)
-                        showMenu = false
-                        when (index) {
-                            0 -> launchers.pickImage()
-                            1 -> launchers.pickFiles()
-                            2 -> launchers.pickFolder()
-                            3 -> showPathDialog = true
-                        }
-                    },
+    var buttonTopPx by remember { mutableFloatStateOf(0f) }
+    var buttonBottomPx by remember { mutableFloatStateOf(0f) }
+    var measuredPopupHeightPx by remember { mutableFloatStateOf(0f) }
+    val popupAnchor = rememberGlassPopupAnchor()
+    val photoPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickMultipleVisualMedia(),
+    ) { uris ->
+        uris.forEach { uri ->
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
                 )
+            }
+            onAttachImage(uri.toString())
+        }
+    }
+    val filePicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments(),
+    ) { uris ->
+        if (uris.isNotEmpty()) onAttachFiles(uris.map { it.toString() })
+    }
+    val folderPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree(),
+    ) { uri ->
+        if (uri != null) onAttachFolder(uri.toString())
+    }
+
+    val anchor = rememberCouiMenuAnchor()
+    val options = listOf(
+        stringResource(R.string.attachment_image),
+        stringResource(R.string.attachment_file),
+        stringResource(R.string.attachment_folder),
+        stringResource(R.string.attachment_enter_path),
+    )
+    val onSelectOption: (Int) -> Unit = { index ->
+        when (index) {
+            0 -> photoPicker.launch(
+                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+            )
+            1 -> filePicker.launch(arrayOf("*/*"))
+            2 -> folderPicker.launch(null)
+            3 -> {
+                pathInput = ""
+                showPathDialog = true
             }
         }
     }
-    WindowDialog(
-        show = showPathDialog,
-        title = stringResource(R.string.ui_input_file_path_36d474),
-        summary = stringResource(R.string.ui_supports_files_and_folders_under_internal_storage_or_520786),
-        onDismissRequest = { showPathDialog = false },
-    ) {
-        Column {
-            TextField(
+
+    val uiStyle = LocalUiStyle.current
+    val isCoui = uiStyle == AppearanceUiStyle.COUI
+    val popupLayout = rememberInputBarPopupLayout(
+        inputContainerTopPx = inputContainerTopPx,
+        anchorTopPx = buttonTopPx,
+        anchorBottomPx = buttonBottomPx,
+        measuredHeightPx = measuredPopupHeightPx,
+    )
+    Box(modifier = modifier) {
+        IconButton(
+            onClick = { if (isCoui) anchor.open { showPopup = true } else showPopup = true },
+            minWidth = 34.dp,
+            minHeight = 34.dp,
+            modifier = if (isCoui) {
+                Modifier.couiMenuAnchor(anchor)
+            } else {
+                Modifier
+                    .glassPopupAnchor(
+                        anchor = popupAnchor,
+                        cornerRadius = 17.dp,
+                    )
+                    .onGloballyPositioned {
+                        val bounds = it.boundsInWindow()
+                        buttonTopPx = bounds.top
+                        buttonBottomPx = bounds.bottom
+                    }
+            },
+        ) {
+            Icon(
+                imageVector = if (isCoui) Icons.Rounded.Add else MiuixIcons.Glass.Add,
+                contentDescription = stringResource(R.string.ui_add_attachment_dba9e8),
+                modifier = Modifier
+                    .size(if (isCoui) 21.dp else 23.dp)
+                    .then(if (isCoui) Modifier else Modifier.glassPopupAnchorContent(popupAnchor)),
+                tint = MiuixTheme.colorScheme.onSurface.copy(alpha = 0.72f),
+            )
+        }
+        when (uiStyle) {
+            AppearanceUiStyle.COUI -> {
+                val menuItems = remember(options) {
+                    options.mapIndexed { index, label -> CouiMenuItem(value = index, text = label) }
+                }
+                Menu(
+                    expanded = showPopup,
+                    onDismissRequest = { showPopup = false },
+                    items = menuItems,
+                    onItemClick = { item ->
+                        showPopup = false
+                        onSelectOption(item.value)
+                    },
+                    anchor = anchor,
+                )
+            }
+            AppearanceUiStyle.MIUIX -> {
+                val overlayBackdrop = currentGlassOverlayBackdrop() ?: glassBackdrop
+                val optionIcons = remember {
+                    listOf(
+                        MiuixIcons.Glass.ImageOutline,
+                        MiuixIcons.Glass.File,
+                        MiuixIcons.Glass.FolderOutline,
+                        MiuixIcons.Glass.Edit,
+                    )
+                }
+                EtaTopLayer {
+                    GlassTransformPopup(
+                        show = showPopup,
+                        onDismissRequest = { showPopup = false },
+                        anchor = popupAnchor,
+                        backdrop = overlayBackdrop,
+                        gap = popupLayout.gap,
+                        sizing = GlassPopupSizing(maxHeight = popupLayout.maxHeight),
+                        onMeasured = { measuredPopupHeightPx = it.height },
+                        anchorContent = {
+                            Icon(
+                                imageVector = MiuixIcons.Glass.Add,
+                                contentDescription = null,
+                                modifier = Modifier.size(23.dp),
+                                tint = MiuixTheme.colorScheme.onSurface.copy(alpha = 0.72f),
+                            )
+                        },
+                    ) {
+                        options.forEachIndexed { index, option ->
+                            GlassPopupItem(
+                                text = option,
+                                icon = optionIcons[index],
+                                onClick = {
+                                    showPopup = false
+                                    onSelectOption(index)
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    when (uiStyle) {
+        AppearanceUiStyle.COUI -> {
+            CouiInputDialog(
+                visible = showPathDialog,
+                title = stringResource(R.string.ui_input_file_path_36d474),
+                message = stringResource(R.string.ui_supports_files_and_folders_under_internal_storage_or_520786),
                 value = pathInput,
                 onValueChange = { pathInput = it },
-                label = stringResource(R.string.ui_absolute_path_9ac6fc),
-                useLabelAsPlaceholder = true,
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                modifier = Modifier.fillMaxWidth(),
-            )
-            MiuixDialogActions(
+                placeholder = stringResource(R.string.ui_absolute_path_9ac6fc),
                 confirmText = stringResource(R.string.attachment_add),
                 confirmEnabled = pathInput.trim().startsWith('/'),
-                onCancel = { showPathDialog = false },
                 onConfirm = {
                     val path = pathInput.trim()
                     showPathDialog = false
                     onAttachFilePath(path)
                 },
-                modifier = Modifier.padding(top = 16.dp),
+                onDismissRequest = { showPathDialog = false },
             )
+        }
+        AppearanceUiStyle.MIUIX -> {
+            GlassDialog(
+                show = showPathDialog,
+                backdrop = currentGlassOverlayBackdrop() ?: glassBackdrop,
+                title = stringResource(R.string.ui_input_file_path_36d474),
+                summary = stringResource(R.string.ui_supports_files_and_folders_under_internal_storage_or_520786),
+                onDismissRequest = { showPathDialog = false },
+            ) {
+                Column {
+                    TextField(
+                        value = pathInput,
+                        onValueChange = { pathInput = it },
+                        label = stringResource(R.string.ui_absolute_path_9ac6fc),
+                        colors = glassOverlayTextFieldColors(),
+                        useLabelAsPlaceholder = true,
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    MiuixDialogActions(
+                        confirmText = stringResource(R.string.attachment_add),
+                        confirmEnabled = pathInput.trim().startsWith('/'),
+                        onCancel = { showPathDialog = false },
+                        onConfirm = {
+                            val path = pathInput.trim()
+                            showPathDialog = false
+                            onAttachFilePath(path)
+                        },
+                        modifier = Modifier.padding(top = 16.dp),
+                    )
+                }
+            }
         }
     }
 }
@@ -423,29 +402,48 @@ internal fun PendingFileReferenceStrip(
     onRemoveReference: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState()),
+    val listState = rememberLazyListState()
+    var previousCount by remember { mutableIntStateOf(references.size) }
+    LaunchedEffect(references.size) {
+        if (references.size > previousCount && references.isNotEmpty()) {
+            listState.animateScrollToItem(references.lastIndex)
+        }
+        previousCount = references.size
+    }
+    LazyRow(
+        state = listState,
+        modifier = modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        references.forEach { pending ->
+        items(
+            items = references,
+            key = { it.id },
+        ) { pending ->
             val reference = pending.reference
             Row(
                 modifier = Modifier
+                    .animateItem(
+                        fadeInSpec = null,
+                        placementSpec = spring(
+                            dampingRatio = Spring.DampingRatioNoBouncy,
+                            stiffness = Spring.StiffnessMediumLow,
+                        ),
+                        fadeOutSpec = tween(durationMillis = 120),
+                    )
+                    .attachmentItemEntrance()
                     .height(42.dp)
                     .widthIn(max = 250.dp)
                     .squircleSurface(
                         color = MiuixTheme.colorScheme.surfaceContainerHigh,
-                        cornerRadius = 14.dp,
+                        cornerRadius = 12.dp,
                     )
                     .squircleBorder(
                         width = 0.5.dp,
                         color = MiuixTheme.colorScheme.outline.copy(alpha = 0.5f),
-                        cornerRadius = 14.dp,
+                        cornerRadius = 12.dp,
                     )
-                    .padding(start = 12.dp, end = 6.dp),
+                    .padding(start = 12.dp, end = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
@@ -470,7 +468,7 @@ internal fun PendingFileReferenceStrip(
                 )
                 Box(
                     modifier = Modifier
-                        .size(28.dp)
+                        .size(32.dp)
                         .clip(CircleShape)
                         .clickable { onRemoveReference(pending.id) },
                     contentAlignment = Alignment.Center,
@@ -484,6 +482,30 @@ internal fun PendingFileReferenceStrip(
                 }
             }
         }
+    }
+}
+
+/**
+ * 附件胶囊与缩略图的入场动效：在 graphicsLayer 阶段驱动缩放、纵向微移与透明度，避免引发组合期重组。
+ */
+internal fun Modifier.attachmentItemEntrance(): Modifier = composed {
+    val progress = remember { Animatable(0f) }
+    LaunchedEffect(Unit) {
+        progress.animateTo(
+            targetValue = 1f,
+            animationSpec = spring(
+                dampingRatio = Spring.DampingRatioNoBouncy,
+                stiffness = 420f,
+            ),
+        )
+    }
+    graphicsLayer {
+        val p = progress.value
+        alpha = p
+        val scale = 0.9f + 0.1f * p
+        scaleX = scale
+        scaleY = scale
+        translationY = (1f - p) * 6.dp.toPx()
     }
 }
 

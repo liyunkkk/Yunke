@@ -36,10 +36,13 @@ internal object AlpineEnvironmentPaths {
 
     fun commonToolsReady(rootfsPath: String?): Boolean {
         if (!rootfsReady(rootfsPath)) return false
-        return LinuxEnvironmentPaths.markerSatisfied(
-            File(rootfsPath, COMMON_TOOLS_MARKER),
-            "toolset=$TOOLSET_REVISION",
-        )
+        val marker = File(rootfsPath, COMMON_TOOLS_MARKER)
+        if (!marker.isFile) return false
+        return runCatching {
+            marker.useLines { lines ->
+                lines.any { line -> line.trim() == "toolset=$TOOLSET_REVISION" }
+            }
+        }.getOrDefault(false)
     }
 
 }

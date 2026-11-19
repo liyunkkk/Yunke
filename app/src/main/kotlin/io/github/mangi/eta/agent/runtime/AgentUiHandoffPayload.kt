@@ -8,12 +8,16 @@ internal data class AgentUiHandoffPayload(
     val promptSupplement: Supplement? = null,
     val supplements: List<Supplement> = emptyList(),
 ) {
+    val lastSupplementIndex: Int
+        get() = (listOfNotNull(promptSupplement?.index) + supplements.map { it.index }).maxOrNull() ?: 0
+
+    fun promptMessageId(runId: String): String =
+        promptSupplement?.let { "user-$runId-supplement-${it.index}" } ?: "user-$runId"
+
     data class Supplement(
         val index: Int,
         val text: String,
         val createdAt: Long,
-        val requestId: String = "",
-        val imagesJson: String = "[]",
     )
 
     fun toJson(): String =
@@ -38,7 +42,7 @@ internal data class AgentUiHandoffPayload(
 
     companion object {
         private const val TYPE = "agent_ui_handoff"
-        private const val VERSION = 3
+        private const val VERSION = 2
 
         fun from(raw: String): AgentUiHandoffPayload {
             val trimmed = raw.trim()
@@ -69,8 +73,6 @@ internal data class AgentUiHandoffPayload(
                 index = optInt("index", defaultIndex),
                 text = text,
                 createdAt = optLong("createdAt"),
-                requestId = optString("requestId"),
-                imagesJson = optString("imagesJson", "[]"),
             )
         }
     }
@@ -80,6 +82,4 @@ internal data class AgentUiHandoffPayload(
             .put("index", index)
             .put("text", text)
             .put("createdAt", createdAt)
-            .put("requestId", requestId)
-            .put("imagesJson", imagesJson)
 }

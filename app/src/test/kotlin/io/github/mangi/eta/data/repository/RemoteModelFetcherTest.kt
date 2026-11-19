@@ -9,9 +9,129 @@ import io.github.mangi.eta.data.provider.OfficialModelCatalog
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class RemoteModelFetcherTest {
+    @Test
+    fun grokNativeCatalogUsesInferenceModelIdsAndExcludesHiddenOrUnsupportedRoutes() {
+        var skipped = 0
+        val models = RemoteModelFetcher.parseGrokModels(
+            """{"data":[
+              {"id":"display-key","model":"actual-model","name":"显示名称","context_window":131072,
+               "baseUrl":"https://untrusted.example","apiKey":"secret","extraHeaders":{"Authorization":"secret"}},
+              {"modelId":"second-model","api_backend":"responses"},
+              {"_meta":{"model":"meta-model","contextWindow":256000}},
+              {"id":"hidden-top","hidden":true},
+              {"id":"hidden-meta","_meta":{"hidden":true}},
+              {"id":"chat-model","apiBackend":"chat_completions"},
+              {"id":"messages-model","api_backend":"messages"}
+            ]}"""
+        ) { skipped = it }
+        assertEquals(listOf("actual-model", "second-model", "meta-model"), models.map { it.modelId })
+        assertEquals("显示名称", models.first().displayName)
+        assertEquals(256000, models.last().contextWindow)
+        assertEquals(2, skipped)
+        assertTrue(models.all { it.customHeaders.isEmpty() && it.customBody.isEmpty() })
+    }
+
+    @Test
+    fun grokCatalogUsesResponsesAndDistinguishesIncompatibleFromEmpty() {
+        val models = RemoteModelFetcher.parseGrokModels(
+            """{"object":"list","data":[
+              {"id":"grok-build","object":"model","owned_by":"xai","context_length":131072},
+              {"id":"grok-explicit-responses","apiBackend":"responses"},
+              {"id":"grok-default","api_backend":null}
+            ]}"""
+        )
+        assertEquals(3, models.size)
+        for (backend in listOf("chat_completions", "messages", "unknown")) {
+            val error = assertThrows(IllegalArgumentException::class.java) {
+                RemoteModelFetcher.parseGrokModels("""{"data":[{"id":"model","apiBackend":"$backend"}]}""")
+            }
+            assertTrue(error.message.orEmpty().contains("当前订阅连接"))
+        }
+        assertTrue(RemoteModelFetcher.parseGrokModels("""{"data":[]}""").isEmpty())
+        assertTrue(RemoteModelFetcher.parseGrokModels("""{"data":[{"id":"hidden","hidden":true}]}""").isEmpty())
+        assertTrue(runCatching { RemoteModelFetcher.parseGrokModels("""{"models":[]}""") }.isFailure)
+    }
+
+    @Test
+    fun grokCatalogDoesNotInterpretMalformedProtocolDeclarationsAsDefaults() {
+        for (backend in listOf("42", "true", "{}", "[]", "[\"responses\"]")) {
+            assertThrows(IllegalArgumentException::class.java) {
+                RemoteModelFetcher.parseGrokModels("""{"data":[{"id":"model","api_backend":$backend}]}""")
+            }
+        }
+    }
+
+    @Test
+    fun grokReasoningMenusUseAdvertisedLevelsAndDefaultsWithoutGuessing() {
+        val models = RemoteModelFetcher.parseGrokModels(
+            """{"data":[
+              {"id":"public-model","capabilities":{"reasoning_effort":["low","high","xhigh"],"default_reasoning_effort":"high"}},
+              {"id":"explicit-model","reasoningEfforts":[{"value":"none"},{"value":"high","default":true},"quantum"],
+               "capabilities":{"reasoning_effort":["low"],"default_reasoning_effort":"low"}},
+              {"id":"unknown-default","capabilities":{"reasoning_effort":["low","high"],"default_reasoning_effort":"medium"}},
+              {"id":"legacy-flag","supportsReasoningEffort":true},
+              {"id":"plain"}
+            ]}"""
+        ).associateBy { it.modelId }
+        val public = models.getValue("public-model").reasoningCapabilities!!
+        assertEquals(listOf(ReasoningEffort.LOW, ReasoningEffort.HIGH, ReasoningEffort.XHIGH), public.supportedEfforts)
+        assertEquals(ReasoningEffort.HIGH, public.defaultEffort)
+        assertTrue(public.mandatory)
+        val explicit = models.getValue("explicit-model").reasoningCapabilities!!
+        assertEquals(listOf(ReasoningEffort.HIGH), explicit.supportedEfforts)
+        assertEquals(ReasoningEffort.HIGH, explicit.defaultEffort)
+        assertTrue(explicit.canDisable)
+        assertFalse(explicit.mandatory)
+        assertEquals(null, models.getValue("unknown-default").reasoningCapabilities!!.defaultEffort)
+        assertEquals(listOf(ReasoningEffort.DEFAULT), models.getValue("legacy-flag").reasoningCapabilities!!.selectableEfforts)
+        assertEquals(null, models.getValue("plain").reasoningCapabilities)
+    }
+
+    @Test
+    fun codexCatalogUsesRemoteVisibilityCapabilitiesAndPriorityWithoutPresetEnrichment() {
+        val models = RemoteModelFetcher.parseCodexModels("""{"models":[
+          {"slug":"gpt-6-astra","display_name":"远端 Astra","visibility":"list","priority":20,
+           "input_modalities":["text"],"context_window":128000,
+           "supported_reasoning_levels":[{"effort":"none"},{"effort":"low"}],"default_reasoning_level":"none"},
+          {"slug":"gpt-6.1-sol","display_name":"远端 Sol","visibility":"list","priority":1,
+           "max_context_window":200000,"supported_in_api":false,
+           "supported_reasoning_levels":[{"effort":"high"},{"effort":"future-effort"}],"default_reasoning_level":"high"},
+          {"slug":"hidden","visibility":"hide"},
+          {"slug":"unlisted","visibility":"none"}
+        ]}""")
+        assertEquals(listOf("gpt-6.1-sol", "gpt-6-astra"), models.map { it.modelId })
+        assertEquals(listOf("远端 Sol", "远端 Astra"), models.map { it.displayName })
+        assertEquals(200000, models.first().contextWindow)
+        assertEquals(128000, models.last().contextWindow)
+        assertFalse(models.last().supportsVision)
+        assertEquals(listOf(ReasoningEffort.HIGH), models.first().reasoningCapabilities!!.supportedEfforts)
+        assertTrue(models.last().reasoningCapabilities!!.canDisable)
+        assertTrue(models.all { it.source == ModelSource.REMOTE })
+        assertTrue(RemoteModelFetcher.parseCodexModels("""{"models":[]}""").isEmpty())
+        for (invalid in listOf("""{"models":[{}]}""", """{"models":[{"slug":"model","visibility":"unknown"}]}""")) {
+            assertTrue(runCatching { RemoteModelFetcher.parseCodexModels(invalid) }.isFailure)
+        }
+    }
+
+    @Test
+    fun invalidCatalogAndServerErrorsAreNotReportedAsSuccessfulEmptyLists() {
+        val parsers = listOf<(String) -> List<Model>>(
+            RemoteModelFetcher::parseOpenAiModels,
+            RemoteModelFetcher::parseCodexModels,
+            RemoteModelFetcher::parseAnthropicModels,
+        )
+        parsers.forEach { parse ->
+            listOf("{}", "[]", """{"error":{"message":"fixture-error"}}""").forEach { body ->
+                assertTrue(runCatching { parse(body) }.isFailure)
+            }
+        }
+        assertTrue(RemoteModelFetcher.parseOpenAiModels("""{"data":[]}""").isEmpty())
+    }
+
     @Test
     fun parsesOpenAiCompatibleModelsFromExplicitMetadata() {
         val models = RemoteModelFetcher.parseOpenAiModels(
@@ -42,33 +162,8 @@ class RemoteModelFetcherTest {
         assertTrue(models.first().supportsTools)
         assertTrue(models.first().supportsReasoning)
         assertEquals(400000, models.first().contextWindow)
-        assertEquals("qwen3.7-plus", models.last().displayName)
+        assertEquals("Qwen 3.7 Plus", models.last().displayName)
         assertTrue(models.all { it.source == ModelSource.REMOTE })
-    }
-
-    @Test
-    fun parsesCodexModelsCatalog() {
-        val models = RemoteModelFetcher.parseOpenAiModels(
-            """
-            {
-              "models":[
-                {
-                  "slug":"gpt-5.4",
-                  "display_name":"GPT-5.4",
-                  "context_window":400000,
-                  "supported_in_api":true
-                },
-                {
-                  "slug":"gpt-5.4-mini",
-                  "display_name":"GPT-5.4 Mini"
-                }
-              ]
-            }
-            """.trimIndent()
-        )
-        assertEquals(listOf("gpt-5.4", "gpt-5.4-mini"), models.map { it.modelId })
-        assertEquals("gpt-5.4", models.first().displayName)
-        assertEquals(400000, models.first().contextWindow)
     }
 
     @Test
@@ -92,7 +187,7 @@ class RemoteModelFetcherTest {
         assertTrue(byId.getValue("kimi-k2.7-code").supportsVision)
         assertTrue(byId.getValue("kimi-k2.6").supportsVision)
         assertTrue(byId.getValue("kimi-k2.6").supportsTools)
-        assertEquals("kimi-k2.6", byId.getValue("kimi-k2.6").displayName)
+        assertEquals("Kimi K2.6", byId.getValue("kimi-k2.6").displayName)
     }
 
     @Test
@@ -249,7 +344,7 @@ class RemoteModelFetcherTest {
 
         val model = models.single()
         assertEquals("google/gemini-3.6-flash", model.modelId)
-        assertEquals("google/gemini-3.6-flash", model.displayName)
+        assertEquals("Google: Gemini 3.6 Flash", model.displayName)
         assertEquals(1_048_576, model.contextWindow)
         assertEquals(listOf("text", "image", "video"), model.inputModalities)
         assertEquals(listOf("text"), model.outputModalities)
@@ -258,6 +353,7 @@ class RemoteModelFetcherTest {
         assertTrue(model.supportsReasoning)
         assertEquals(
             listOf(
+                ReasoningEffort.DEFAULT,
                 ReasoningEffort.MINIMAL,
                 ReasoningEffort.LOW,
                 ReasoningEffort.MEDIUM,
@@ -289,6 +385,7 @@ class RemoteModelFetcherTest {
         assertEquals(
             listOf(
                 ReasoningEffort.OFF,
+                ReasoningEffort.DEFAULT,
                 ReasoningEffort.LOW,
                 ReasoningEffort.MEDIUM,
                 ReasoningEffort.HIGH,
@@ -336,6 +433,7 @@ class RemoteModelFetcherTest {
         assertEquals(
             listOf(
                 ReasoningEffort.OFF,
+                ReasoningEffort.DEFAULT,
                 ReasoningEffort.LOW,
                 ReasoningEffort.MEDIUM,
                 ReasoningEffort.HIGH,
@@ -425,59 +523,8 @@ class RemoteModelFetcherTest {
     fun modelWithoutTextOutputIsNotChatCapable() {
         val imageOnly = modelWithId("custom-model").copy(outputModalities = listOf("image"))
         assertFalse(RemoteModelFetcher.isChatCapableModel(imageOnly))
-        assertTrue(RemoteModelFetcher.isCatalogModel(imageOnly))
-    }
-
-    @Test
-    fun keepsImageGenerationModelsInRemoteCatalog() {
-        assertTrue(RemoteModelFetcher.isCatalogModel(modelWithId("qwen-image-2.0-pro-2026-06-22")))
-        assertTrue(RemoteModelFetcher.isCatalogModel(modelWithId("dall-e-3")))
-        assertTrue(RemoteModelFetcher.isCatalogModel(modelWithId("gpt-image-1")))
-        assertTrue(RemoteModelFetcher.isCatalogModel(modelWithId("wanx2.1-t2v-turbo")))
-        assertTrue(RemoteModelFetcher.isCatalogModel(modelWithId("qwen-tts-2026-05-20")))
-        assertTrue(RemoteModelFetcher.isCatalogModel(modelWithId("qwen3.7-plus")))
-    }
-
-    @Test
-    fun keepsVideoGenerationModelsInRemoteCatalog() {
-        listOf(
-            "wanx2.1-t2v-turbo",
-            "veo-3.0-generate",
-            "sora-2",
-            "kling-v1",
-            "grok-imagine-video-2.0",
-        ).forEach { id ->
-            assertTrue(id, RemoteModelFetcher.isCatalogModel(modelWithId(id)))
-            assertFalse(id, RemoteModelFetcher.isChatCapableModel(modelWithId(id)))
-        }
     }
 
     private fun modelWithId(modelId: String): Model =
         Model(id = modelId, modelId = modelId, displayName = modelId)
-
-    @Test
-    fun parsesModelsDevReasoningOptionsEffortValues() {
-        val model = RemoteModelFetcher.parseOpenAiModels(
-            """
-            {
-              "data":[
-                {
-                  "id":"zhipuai/glm-5.2",
-                  "reasoning": true,
-                  "reasoning_options":[
-                    {"type":"effort","values":["high","max"]}
-                  ]
-                }
-              ]
-            }
-            """.trimIndent()
-        ).single()
-
-        assertTrue(model.supportsReasoning)
-        assertEquals(
-            listOf(ReasoningEffort.HIGH, ReasoningEffort.MAX),
-            model.reasoningCapabilities?.supportedEfforts,
-        )
-    }
-
 }

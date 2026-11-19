@@ -2,42 +2,10 @@ package io.github.mangi.eta.ui.components
 
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AgentChatScrollPolicyTest {
-    @Test
-    fun settledCoveredStreamingAndRevealDrainDoNotFollowBottom() {
-        listOf(true, false).forEach { streaming ->
-            assertFalse(resolveBottomFollowEnabled(
-                isStreaming = streaming,
-                keepBottomAnchored = true,
-                isUserDragging = false,
-                isBottomSettling = true,
-                settledCover = isChatSettledCovered(routeCovered = true, transitionActive = false),
-            ))
-        }
-    }
-
-    @Test
-    fun movingCoveredRouteAndReturnKeepNormalFollowPolicy() {
-        listOf(true to true, false to false).forEach { (covered, moving) ->
-            assertTrue(resolveBottomFollowEnabled(
-                isStreaming = true,
-                keepBottomAnchored = true,
-                isUserDragging = false,
-                settledCover = isChatSettledCovered(covered, moving),
-            ))
-            assertFalse(resolveBottomFollowEnabled(
-                isStreaming = true,
-                keepBottomAnchored = false,
-                isUserDragging = false,
-                settledCover = isChatSettledCovered(covered, moving),
-            ))
-        }
-    }
-
     @Test
     fun networkCompletionKeepsFollowingUntilRenderedTailSettles() {
         assertTrue(
@@ -86,116 +54,6 @@ class AgentChatScrollPolicyTest {
     }
 
     @Test
-    fun anchoredTailRemainsClippedAfterFastCompletion() {
-        assertTrue(
-            shouldClipChatTail(
-                isStreaming = false,
-                isBottomSettling = true,
-                keepBottomAnchored = true,
-                isUserScrolling = false,
-                isUserDragging = false,
-                navigationActive = false,
-            )
-        )
-    }
-
-    @Test
-    fun idleAnchoredConversationDoesNotHideContentBehindTransparentComposer() {
-        assertFalse(shouldClipChatTail(
-            isStreaming = false,
-            isBottomSettling = false,
-            keepBottomAnchored = true,
-            isUserScrolling = false,
-            isUserDragging = false,
-            navigationActive = false,
-        ))
-    }
-
-    @Test
-    fun streamingStillClipsButHistoryNeverDoes() {
-        assertTrue(shouldClipChatTail(
-            isStreaming = true,
-            isBottomSettling = false,
-            keepBottomAnchored = true,
-            isUserScrolling = false,
-            isUserDragging = false,
-            navigationActive = false,
-        ))
-        assertFalse(shouldClipChatTail(
-            isStreaming = true,
-            isBottomSettling = true,
-            keepBottomAnchored = false,
-            isUserScrolling = false,
-            isUserDragging = false,
-            navigationActive = false,
-        ))
-    }
-
-    @Test
-    fun manualScrollingReleasesComposerClip() {
-        assertFalse(
-            shouldClipChatTail(
-                isStreaming = true,
-                isBottomSettling = false,
-                keepBottomAnchored = true,
-                isUserScrolling = true,
-                isUserDragging = false,
-                navigationActive = false,
-            )
-        )
-        assertFalse(
-            shouldClipChatTail(
-                isStreaming = true,
-                isBottomSettling = false,
-                keepBottomAnchored = true,
-                isUserScrolling = false,
-                isUserDragging = true,
-                navigationActive = false,
-            )
-        )
-    }
-
-    @Test
-    fun messageNavigationReleasesComposerClip() {
-        assertFalse(
-            shouldClipChatTail(
-                isStreaming = true,
-                isBottomSettling = false,
-                keepBottomAnchored = true,
-                isUserScrolling = false,
-                isUserDragging = false,
-                navigationActive = true,
-            )
-        )
-    }
-
-    @Test
-    fun coveredRouteReleasesComposerClipWhileStreaming() {
-        assertFalse(
-            shouldClipChatTail(
-                isStreaming = true,
-                isBottomSettling = false,
-                keepBottomAnchored = true,
-                isUserScrolling = false,
-                isUserDragging = false,
-                navigationActive = false,
-                routeCovered = true,
-            )
-        )
-        assertTrue(
-            shouldClipChatTail(
-                isStreaming = true,
-                isBottomSettling = false,
-                keepBottomAnchored = true,
-                isUserScrolling = false,
-                isUserDragging = false,
-                navigationActive = false,
-                routeCovered = false,
-            )
-        )
-    }
-
-    @Test
     fun streamingTailGrowthFollowsBottom() {
         assertTrue(
             resolveBottomFollowEnabled(
@@ -207,76 +65,13 @@ class AgentChatScrollPolicyTest {
     }
 
     @Test
-    fun completedConversationDoesNotUseStreamingInitialJump() {
+    fun completedConversationDoesNotJumpToInitialBottom() {
         assertFalse(
             shouldRequestInitialBottom(
                 isStreaming = false,
                 keepBottomAnchored = true,
                 isUserDragging = false,
             )
-        )
-    }
-
-    @Test
-    fun completedConversationSnapsToBottomOnOpen() {
-        assertTrue(
-            shouldSnapConversationToBottom(
-                isStreaming = false,
-                keepBottomAnchored = true,
-                isUserDragging = false,
-                hasItems = true,
-            )
-        )
-    }
-
-    @Test
-    fun emptyConversationDoesNotSnapToBottom() {
-        assertFalse(
-            shouldSnapConversationToBottom(
-                isStreaming = false,
-                keepBottomAnchored = true,
-                isUserDragging = false,
-                hasItems = false,
-            )
-        )
-    }
-
-    @Test
-    fun scrollToMessageSkipsConversationBottomSnap() {
-        assertFalse(
-            shouldSnapConversationToBottom(
-                isStreaming = false,
-                keepBottomAnchored = true,
-                isUserDragging = false,
-                hasItems = true,
-                scrollToMessageId = "msg-1",
-            )
-        )
-    }
-
-    @Test
-    fun conversationBottomSnapAlignsLastItemWithoutAnimation() {
-        assertEquals(
-            BottomFollowDecision(scrollByPx = -120),
-            resolveConversationBottomSnap(
-                bottomItemIndex = 8,
-                lastVisibleIndex = 8,
-                lastVisibleBottom = 880,
-                viewportEnd = 1000,
-            ),
-        )
-    }
-
-    @Test
-    fun conversationBottomSnapRequestsLastItemWhenNotVisible() {
-        assertEquals(
-            BottomFollowDecision(requestIndex = 8),
-            resolveConversationBottomSnap(
-                bottomItemIndex = 8,
-                lastVisibleIndex = 2,
-                lastVisibleBottom = 400,
-                viewportEnd = 1000,
-            ),
         )
     }
 
@@ -314,57 +109,34 @@ class AgentChatScrollPolicyTest {
     }
 
     @Test
-    fun draggingWhileAtBottomDisablesFollowing() {
-        assertFalse(
-            resolveKeepBottomAnchored(
-                current = true,
-                isUserDragging = true,
-                isAtBottom = true,
-            )
-        )
-    }
-
-    @Test
-    fun tinyDragAtBottomDoesNotResumeFollowing() {
-        assertFalse(
-            resolveKeepBottomAnchored(
-                current = false,
-                isUserDragging = false,
-                isAtBottom = true,
-                hasLeftBottom = false,
-            )
-        )
-    }
-
-    @Test
-    fun landingOnBottomAfterUserScrollEnablesFollowing() {
-        assertTrue(
-            resolveKeepBottomAnchored(
-                current = false,
-                isUserDragging = false,
-                isAtBottom = true,
-                hasLeftBottom = true,
-            )
-        )
-    }
-
-    @Test
     fun reachingBottomEnablesFollowingAgain() {
         assertTrue(
             resolveKeepBottomAnchored(
                 current = false,
                 isUserDragging = false,
                 isAtBottom = true,
-                hasLeftBottom = true,
             )
         )
     }
 
     @Test
-    fun streamingScrollableListDoesNotPinFromBottom() {
-        assertFalse(shouldPinConversationToBottom(isStreaming = true, isScrollable = true))
-        assertTrue(shouldPinConversationToBottom(isStreaming = true, isScrollable = false))
-        assertTrue(shouldPinConversationToBottom(isStreaming = false, isScrollable = true))
+    fun expandingContentSuppressesImmediateBottomReanchorUntilAnimationSettles() {
+        assertFalse(
+            resolveKeepBottomAnchored(
+                current = false,
+                isUserDragging = false,
+                isAtBottom = true,
+                suppressAutoReanchor = true,
+            )
+        )
+        assertTrue(
+            resolveKeepBottomAnchored(
+                current = false,
+                isUserDragging = true,
+                isAtBottom = true,
+                suppressAutoReanchor = true,
+            )
+        )
     }
 
     @Test
@@ -382,9 +154,9 @@ class AgentChatScrollPolicyTest {
     }
 
     @Test
-    fun missingBottomSentinelUsesBoundedSmoothFollow() {
+    fun largeAppendRequestsBottomOnlyWhenSentinelLeftTheViewport() {
         assertEquals(
-            BottomFollowDecision(scrollByPx = 1000),
+            BottomFollowDecision(requestIndex = 8),
             resolveBottomFollowDecision(
                 enabled = true,
                 bottomItemIndex = 8,
@@ -407,135 +179,5 @@ class AgentChatScrollPolicyTest {
                 lastVisibleIndex = 8,
             ),
         )
-    }
-
-    @Test fun hiddenSentinelUsesViewportBoundAndNeverRequestsAnIndex() {
-        val decision = resolveBottomFollowDecision(true, 20, null, 600, 4, viewportSizePx = 800)
-        assertEquals(BottomFollowDecision(scrollByPx = 800), decision)
-        assertEquals(null, decision.requestIndex)
-    }
-
-    @Test fun reachedPhysicalEndStopsEvenWithStaleOverflow() {
-        assertEquals(BottomFollowDecision(), resolveBottomFollowDecision(true, 20, 900, 600, 20, canScrollForward = false))
-    }
-
-    @Test fun emptyListDoesNotStartFollowing() {
-        assertEquals(BottomFollowDecision(), resolveBottomFollowDecision(true, 0, null, 600, null))
-    }
-
-    @Test fun initialPositionWaitsForContentButAbandonsOnUserNavigation() {
-        assertFalse(InitialBottomPosition(0, true, true, false).ready)
-        assertFalse(InitialBottomPosition(8, false, true, false).ready)
-        assertTrue(InitialBottomPosition(8, true, true, false).shouldPosition)
-        assertTrue(InitialBottomPosition(0, false, true, true).ready)
-        assertFalse(InitialBottomPosition(8, true, true, true).shouldPosition)
-        assertFalse(InitialBottomPosition(8, true, false, false).shouldPosition)
-    }
-
-    @Test fun tallSingleItemKeepsPublishingDistanceAfterEachViewport() {
-        // Emulate snapshotFlow's equality gate while a 4-screen item stays at
-        // the same index. No new network text arrives during the entire drain.
-        val motion = BottomFollowMotion()
-        var position = 0f
-        val end = 3200f
-        var pending = 0f
-        var previous: BottomFollowLayout? = null
-        var requests = 0
-        for (frame in 0..1800) {
-            val remaining = end - position
-            val layout = BottomFollowLayout(
-                enabled = true, bottomItemIndex = 8,
-                sentinelBottom = if (remaining <= 800f) (800f + remaining).toInt() else null,
-                viewportEnd = 800, lastVisibleIndex = if (remaining <= 800f) 8 else 7,
-                viewportSizePx = 800, canScrollForward = remaining > 0f,
-                lastVisibleOffset = -position.toInt(),
-            )
-            if (layout != previous) {
-                previous = layout
-                val decision = resolveBottomFollowDecision(layout.enabled, layout.bottomItemIndex,
-                    layout.sentinelBottom, layout.viewportEnd, layout.lastVisibleIndex,
-                    layout.viewportSizePx, layout.canScrollForward)
-                assertEquals(null, decision.requestIndex)
-                pending = decision.scrollByPx.toFloat()
-                requests++
-            }
-            val moved = motion.step(pending, frame * 16_666_667L, 1f)
-            position += moved
-            pending = (pending - moved).coerceAtLeast(0f)
-        }
-        assertTrue("fallback must remain live beyond the first viewport", position >= end - 1.1f)
-        assertTrue(requests > 10)
-    }
-
-    @Test
-    fun followLagLiftsTailBackToRestLine() {
-        assertEquals(FollowTailLag(37f), resolveFollowTailLag(following = true, tailOverflowPx = 37))
-    }
-
-    @Test
-    fun followLagIgnoresTailAtOrAboveRestLine() {
-        assertEquals(FollowTailLag.None, resolveFollowTailLag(following = true, tailOverflowPx = 0))
-        assertEquals(FollowTailLag.None, resolveFollowTailLag(following = true, tailOverflowPx = -12))
-    }
-
-    @Test
-    fun manualScrollNeitherLiftsNorClips() {
-        assertEquals(FollowTailLag.None, resolveFollowTailLag(following = false, tailOverflowPx = 80))
-        assertEquals(FollowTailLag.None, resolveFollowTailLag(following = false, tailOverflowPx = null))
-    }
-
-    @Test
-    fun invisibleTailFallsBackToRestLineClip() {
-        val lag = resolveFollowTailLag(following = true, tailOverflowPx = null)
-        assertTrue(lag.unknown)
-        assertEquals(0f, lag.liftPx, 0f)
-    }
-
-    @Test
-    fun tailBottomFallsBackToTheLastContentItemWhenTheSentinelIsPushedOut() {
-        // 哨兵可见时直接用哨兵。
-        assertEquals(900, resolveTailBottomPx(900, 11, 900, totalItems = 12))
-        // 展开把哨兵挤出可视区，最后一段内容（倒数第二项）还可见：用它的下沿。
-        assertEquals(1400, resolveTailBottomPx(null, 10, 1400, totalItems = 12))
-        // 看到的只是更靠上的内容：尾部位置未知。
-        assertNull(resolveTailBottomPx(null, 9, 1400, totalItems = 12))
-        assertNull(resolveTailBottomPx(null, null, null, totalItems = 12))
-        assertNull(resolveTailBottomPx(null, 0, 100, totalItems = 1))
-    }
-
-    @Test
-    fun userInputScrollWithoutAFingerDownDoesNotCountAsUserScrolling() {
-        assertTrue(isUserScrollGesture(pointerDown = true))
-        assertFalse(isUserScrollGesture(pointerDown = false))
-    }
-
-    @Test
-    fun compactStackKeepsOnlyClassAndMethodNames() {
-        val frames = arrayOf(
-            StackTraceElement("self.Frame", "skipped", null, 1),
-            StackTraceElement("kotlin.coroutines.Continuation", "resume", null, 1),
-            StackTraceElement("a.b.C\$1", "onPreScroll", null, 1),
-            StackTraceElement("x.Y", "run secret", null, 1),
-        )
-        assertEquals("a.b.C\$1.onPreScroll<x.Y.run", compactStack(frames))
-    }
-
-    @Test
-    fun drawnTailOverflowIsMeasuredAfterTheLift() {
-        assertEquals(0, resolveTailDrawnOverflow(1200, 1000, 200))
-        assertEquals(150, resolveTailDrawnOverflow(1150, 1000, 0))
-        assertEquals(-20, resolveTailDrawnOverflow(980, 1000, 0))
-        assertNull(resolveTailDrawnOverflow(null, 1000, 0))
-    }
-
-    @Test
-    fun expansionGrowsFromTheBottomOnlyWhenTheBottomStaysPut() {
-        // 跟底上提：尾部停在静止线。
-        assertTrue(resolveExpansionHoldsBottom(following = true, arrangedToBottom = false, listScrollable = true))
-        // 不满一屏贴底排列：列表往上长。
-        assertTrue(resolveExpansionHoldsBottom(following = false, arrangedToBottom = true, listScrollable = false))
-        // 满屏但没在跟底：首个可见项不动，内容往下长。
-        assertFalse(resolveExpansionHoldsBottom(following = false, arrangedToBottom = true, listScrollable = true))
-        assertFalse(resolveExpansionHoldsBottom(following = false, arrangedToBottom = false, listScrollable = false))
     }
 }

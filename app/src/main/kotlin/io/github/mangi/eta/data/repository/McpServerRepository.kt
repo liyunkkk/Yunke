@@ -1,16 +1,13 @@
 package io.github.mangi.eta.data.repository
 
 import android.content.Context
+import androidx.room.withTransaction
 import io.github.mangi.eta.data.db.EtaDatabase
 import io.github.mangi.eta.data.db.toDomain
 import io.github.mangi.eta.data.db.toEntity
 import io.github.mangi.eta.data.model.McpAuthorizationType
 import io.github.mangi.eta.data.model.McpServerSetting
-import io.github.mangi.eta.data.model.withToolSelection
-import io.github.mangi.eta.data.model.withDiscoveredTools
 import java.util.UUID
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
@@ -24,8 +21,12 @@ internal object McpServerRepository {
         }
     }
 
-    fun serversFlow(): Flow<List<McpServerSetting>> = dao().serversFlow().map { entities ->
-        entities.map { it.toDomain() }
+    fun serversFlow(): Flow<List<McpServerSetting>> = dao().serversFlowRows().map { rows ->
+        val db = EtaDatabase.get(context())
+        db.withTransaction {
+            val serverDao = db.mcpServerDao()
+            rows.map { serverDao.restoreServer(it).toDomain() }
+        }
     }
 
     suspend fun servers(): List<McpServerSetting> = dao().servers().map { it.toDomain() }
@@ -52,45 +53,49 @@ internal object McpServerRepository {
 
     suspend fun update(server: McpServerSetting, bearerToken: String? = null) {
         val previous = requireNotNull(serverById(server.id)) { "MCP 服务器不存在" }
-        val secretStore = secrets()
-        val previousToken = secretStore.bearerToken(server.id)
-        val changesSecret = bearerToken != null || server.authorizationType == McpAuthorizationType.NONE
+        val changesSecret = bearerToken != null ||
+            (previous.authorizationType != McpAuthorizationType.NONE &&
+                server.authorizationType == McpAuthorizationType.NONE)
+        val secretStore = if (changesSecret) secrets() else null
+        val previousToken = secretStore?.bearerToken(server.id)
         val updated = if (bearerToken != null) {
             server.copy(lastProtocolVersion = null, toolsExpireAt = null)
         } else {
             server
         }
-        if (changesSecret) updateSecret(secretStore, updated, bearerToken.orEmpty())
+        if (changesSecret && secretStore != null) {
+            updateSecret(secretStore, updated, bearerToken.orEmpty())
+        }
         try {
             require(dao().update(updated.toEntity()) == 1) { "MCP 服务器不存在" }
         } catch (failure: Throwable) {
-            if (changesSecret) runCatching {
+            if (changesSecret && secretStore != null) runCatching {
                 updateSecret(secretStore, previous, previousToken.orEmpty())
             }
             throw failure
         }
     }
 
-    private val switchMutex = Mutex()
-
-    suspend fun setServerEnabled(serverId: String, enabled: Boolean) = switchMutex.withLock {
+    suspend fun setToolEnabled(serverId: String, toolName: String, enabled: Boolean) {
         val server = requireNotNull(serverById(serverId)) { "MCP 服务器不存在" }
-        update(server.copy(enabled = enabled))
+        val names = server.enabledToolNames.toMutableSet()
+        if (enabled) names += toolName else names -= toolName
+        update(server.copy(enabledToolNames = names))
     }
 
-    suspend fun setToolEnabled(serverId: String, toolName: String, enabled: Boolean) =
-        setToolsEnabled(serverId, listOf(toolName), enabled)
-
-    suspend fun setToolsEnabled(serverId: String, toolNames: Collection<String>, enabled: Boolean) = switchMutex.withLock {
+    suspend fun setAllToolsEnabled(serverId: String, enabled: Boolean) {
         val server = requireNotNull(serverById(serverId)) { "MCP 服务器不存在" }
-        update(server.withToolSelection(toolNames, enabled))
+        val names = if (enabled) server.tools.mapTo(linkedSetOf()) { it.name } else emptySet()
+        update(server.copy(enabledToolNames = names))
     }
 
-    suspend fun updateDiscoveredTools(discovered: McpServerSetting): McpServerSetting = switchMutex.withLock {
-        val current = requireNotNull(serverById(discovered.id)) { "MCP 服务器不存在" }
-        val merged = current.withDiscoveredTools(discovered)
-        update(merged)
-        merged
+    suspend fun setAllServersToolsEnabled(enabled: Boolean) {
+        servers().forEach { server ->
+            val names = if (enabled) server.tools.mapTo(linkedSetOf()) { it.name } else emptySet()
+            if (names != server.enabledToolNames) {
+                update(server.copy(enabledToolNames = names))
+            }
+        }
     }
 
     suspend fun delete(serverId: String) {

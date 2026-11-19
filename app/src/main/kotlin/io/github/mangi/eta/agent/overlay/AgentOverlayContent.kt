@@ -1,34 +1,23 @@
 package io.github.mangi.eta.agent.overlay
 
-import androidx.compose.ui.graphics.nativeCanvas
-import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.LinearEasing
-import io.github.mangi.eta.agent.virtualdisplay.VirtualDisplaySnapshot
-import top.yukonga.miuix.kmp.squircle.addSquircleRect
-import androidx.compose.ui.graphics.asAndroidPath
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
-import android.view.MotionEvent
-import androidx.compose.foundation.focusable
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -43,7 +32,6 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -52,64 +40,69 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.Edit
-import androidx.compose.material.icons.rounded.Pause
-import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.asAndroidPath
+import androidx.compose.ui.graphics.Path
+import top.yukonga.miuix.kmp.squircle.addSquircleRect
+import top.yukonga.miuix.kmp.basic.IconButton
+import androidx.compose.material.icons.rounded.ContentCopy
+import kotlinx.coroutines.launch
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.TransformOrigin
-import androidx.compose.ui.platform.LocalFocusManager
-import androidx.compose.ui.platform.LocalViewConfiguration
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onKeyEvent
-import androidx.compose.ui.input.key.type
-import androidx.compose.ui.input.pointer.pointerInteropFilter
-import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.onClick as semanticsClick
-import androidx.compose.ui.semantics.role
-import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.mikepenz.markdown.m3.Markdown
-import com.mikepenz.markdown.m3.markdownTypography
-import com.mikepenz.markdown.model.rememberMarkdownState
+import com.itos.coui.effect.couiButtonFeedback
+import com.itos.coui.motion.couiPressMotion
+import com.itos.coui.motion.rememberCouiPressMotion
+import com.itos.coui.shape.CouiShape
+import com.itos.coui.theme.CouiTheme
+import io.github.mangi.eta.ui.markdown.MarkdownTone
+import io.github.mangi.eta.ui.markdown.StaticMarkdown
 import io.github.mangi.eta.R
+import io.github.mangi.eta.agent.virtualdisplay.VirtualDisplaySnapshot
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.ui.components.coui.CouiButton
+import io.github.mangi.eta.ui.components.coui.CouiButtonRole
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
-import top.yukonga.miuix.kmp.basic.Card
-import top.yukonga.miuix.kmp.basic.CardDefaults
 import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -117,35 +110,16 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 // Miuix 未提供语义 success 色，沿用项目既有值；失败色走主题 error
 private val SuccessColor = Color(0xFF34C759)
 
-private const val SupplementExitDelayMs = 380L
 
 @Composable
-internal fun phaseAccent(phase: AgentOverlayPhase): Color = when (phase) {
+internal fun overlayPhaseAccent(phase: AgentOverlayPhase): Color = when (phase) {
     AgentOverlayPhase.RUNNING -> MiuixTheme.colorScheme.primary
     AgentOverlayPhase.PAUSED -> Color(0xFFFF9F0A)
     AgentOverlayPhase.FINISHED -> SuccessColor
     AgentOverlayPhase.FAILED -> MiuixTheme.colorScheme.error
 }
 
-/** Eta 胶囊沿用的命名；语义与 [phaseAccent] 完全相同。 */
-@Composable
-internal fun overlayPhaseAccent(phase: AgentOverlayPhase): Color = phaseAccent(phase)
-
-/** 屏幕四角圆角，供胶囊与装裱视窗贴合系统圆角。 */
-internal data class ScreenCornerRadii(
-    val topLeft: Float,
-    val topRight: Float,
-    val bottomRight: Float,
-    val bottomLeft: Float,
-) {
-    /** 四角在主流机型上一致；取最大值作为连续曲线的转角尺寸，不让任何一角露出直边。 */
-    val radius: Float get() = maxOf(topLeft, topRight, bottomRight, bottomLeft)
-
-    companion object {
-        val Zero = ScreenCornerRadii(0f, 0f, 0f, 0f)
-    }
-}
-
+// 边缘流光取主题强调色与相邻冷暖色，避免高饱和彩虹在浅色页面上喧宾夺主。
 private val EdgeLightColors = listOf(
     Color(0xFF7AB8FF),
     Color(0xFFB59CFF),
@@ -154,28 +128,35 @@ private val EdgeLightColors = listOf(
     Color(0xFF7AB8FF),
 )
 
+/**
+ * 屏幕边缘光窗口：全屏触摸穿透（FLAG_NOT_TOUCHABLE），不压暗页面，不挡操作。
+ * 窗口类型 TYPE_ACCESSIBILITY_OVERLAY，截图时被 takeScreenshotOfWindow 过滤，对 Agent 透明。
+ * - RUNNING：沿屏幕圆角边缘流动的细光带，外侧一层柔光；告诉用户手机正被接管。
+ * - PAUSED：静止的淡色描边，提示任务仍在、控制权暂回用户。
+ * - FINISHED / FAILED：不绘制。
+ */
+/**
+ * 屏幕圆角半径（像素）。Display 只按圆弧上报一个半径，实际面板是连续曲率的圆角；
+ * 光带用同一半径画连续曲线，转角处比圆弧更饱满，贴住屏幕边缘而不是在角上内缩一截。
+ */
+@Immutable
+internal data class ScreenCornerRadii(val topLeft: Float, val topRight: Float, val bottomRight: Float, val bottomLeft: Float) {
+    /** 四角在主流机型上一致；取最大值作为连续曲线的转角尺寸，不让任何一角露出直边。 */
+    val radius: Float get() = maxOf(topLeft, topRight, bottomRight, bottomLeft)
+}
 
 @Composable
 internal fun AgentOverlayGlow(
     state: AgentOverlayState,
     corners: ScreenCornerRadii,
-    /**
-     * 只传布尔量，不传整个 VirtualDisplaySnapshot。
-     *
-     * 快照每帧都是新实例（含新 ImageBitmap），若把它作为参数，glow 窗口会跟着
-     * 每一帧重组——即使函数体第一行就 return。浮层期间这等于两个窗口一起空转，
-     * 是「胶囊卡顿」的重要来源。
-     */
-    virtualDisplayActive: Boolean = false,
-    /** 仅在破壁全屏动画期间非空；其余时间保持 null，参数稳定，不触发重组。 */
-    materializeSnapshot: VirtualDisplaySnapshot? = null,
+    virtualDisplay: VirtualDisplaySnapshot = VirtualDisplaySnapshot.Inactive,
 ) {
-    if (materializeSnapshot != null) {
-        VirtualDisplayMaterializeOverlay(snapshot = materializeSnapshot, corners = corners)
+    if (virtualDisplay.materializingToMain) {
+        VirtualDisplayMaterializeOverlay(snapshot = virtualDisplay, corners = corners)
         return
     }
     // 后台虚拟屏激活时，物理屏幕属于用户，不绘制四边流光。
-    if (virtualDisplayActive) return
+    if (virtualDisplay.active) return
     val phase = state.phase
     if (phase != AgentOverlayPhase.RUNNING && phase != AgentOverlayPhase.PAUSED) return
     val running = phase == AgentOverlayPhase.RUNNING
@@ -243,371 +224,8 @@ internal fun AgentOverlayGlow(
     )
 }
 
-/** Eta 胶囊沿用的命名；转发到既有 [SupplementInput]。 */
 @Composable
 internal fun OverlaySupplementInput(
-    value: String,
-    onValueChange: (String) -> Unit,
-    onCancel: () -> Unit,
-    onSend: () -> Unit,
-) = SupplementInput(
-    value = value,
-    onValueChange = onValueChange,
-    onCancel = onCancel,
-    onSend = onSend,
-)
-
-/**
- * 助手光球窗口：默认显示在屏幕右侧中下，可拖动；点击展开/收起小气泡。
- * 独立小窗口（WRAP_CONTENT），不遮挡页面操作。
- */
-@Composable
-internal fun AgentOverlayOrb(
-    phase: AgentOverlayPhase,
-    collapsed: Boolean,
-    onToggleCollapse: () -> Unit,
-    onDragStart: () -> Unit,
-    onDrag: (Float, Float) -> Unit,
-) {
-    var visible by remember { mutableStateOf(false) }
-    val clickLabel = stringResource(if (collapsed) R.string.overlay_expand else R.string.overlay_collapse)
-    val orbLabel = stringResource(R.string.app_name)
-
-    LaunchedEffect(Unit) {
-        visible = true
-    }
-
-    AnimatedVisibility(
-        visible = visible,
-        enter = scaleIn(
-            initialScale = 0.5f,
-            animationSpec = spring(
-                dampingRatio = Spring.DampingRatioLowBouncy,
-                stiffness = Spring.StiffnessMediumLow
-            )
-        ) + fadeIn(animationSpec = tween(durationMillis = 200)),
-        exit = scaleOut(
-            targetScale = 0.5f,
-            animationSpec = tween(durationMillis = 150)
-        ) + fadeOut(animationSpec = tween(durationMillis = 150)),
-    ) {
-        // 点击直接交给 Service 侧 toggle，不在 Compose 协程作用域里做延迟动作，
-        // 避免 scope 取消导致浮层残留。
-        AssistantOrb(
-            phase = phase,
-            clickLabel = clickLabel,
-            orbLabel = orbLabel,
-            onClick = onToggleCollapse,
-            onDragStart = onDragStart,
-            onDrag = onDrag,
-        )
-    }
-}
-
-/**
- * 助手光球：外层径向光晕 + 实心球体 + 高光点。
- * 运行中光晕呼吸，暂停/完成/失败静止，颜色随阶段变化。
- */
-@OptIn(ExperimentalComposeUiApi::class)
-@Composable
-private fun AssistantOrb(
-    phase: AgentOverlayPhase,
-    modifier: Modifier = Modifier,
-    clickLabel: String,
-    orbLabel: String,
-    onClick: () -> Unit,
-    onDragStart: () -> Unit,
-    onDrag: (Float, Float) -> Unit,
-) {
-    val accent = phaseAccent(phase)
-    // Read pulse only during drawing; 20 Hz is enough for a 2.8-second breathing cycle.
-    val pulse = rememberAgentOrbPulse(phase)
-    val touchSlop = LocalViewConfiguration.current.touchSlop
-    val gesture = remember(touchSlop) { AgentOrbDragGesture(touchSlop) }
-    val activationKey = remember { AgentOrbActivationKey() }
-    // Screen coordinates stay stable while WindowManager moves this small window.
-    // One recognizer owns the physical stream: dragging never toggles the controls.
-    val tapModifier = Modifier
-        .semantics {
-            role = Role.Button
-            contentDescription = orbLabel
-            semanticsClick(label = clickLabel) { onClick(); true }
-        }
-        .onKeyEvent { event ->
-            if (event.key == Key.Enter || event.key == Key.NumPadEnter ||
-                event.key == Key.DirectionCenter || event.key == Key.Spacebar
-            ) {
-                when (event.type) {
-                    KeyEventType.KeyDown -> activationKey.down(event.key.hashCode())
-                    KeyEventType.KeyUp -> if (activationKey.up(event.key.hashCode())) onClick()
-                    else -> Unit
-                }
-                true
-            } else false
-        }
-        .onFocusChanged { if (!it.isFocused) activationKey.cancel() }
-        .focusable()
-        .pointerInteropFilter { event ->
-            when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    gesture.begin(event.getPointerId(0), event.rawX, event.rawY)
-                    onDragStart()
-                }
-                MotionEvent.ACTION_MOVE, MotionEvent.ACTION_UP -> {
-                    if (event.pointerCount != 1) gesture.cancel()
-                    else {
-                        gesture.move(event.getPointerId(0), event.rawX, event.rawY)?.let {
-                            onDrag(it.x, it.y)
-                        }
-                        if (event.actionMasked == MotionEvent.ACTION_UP &&
-                            gesture.finish(event.getPointerId(0))
-                        ) onClick()
-                    }
-                }
-                MotionEvent.ACTION_CANCEL, MotionEvent.ACTION_POINTER_DOWN,
-                MotionEvent.ACTION_POINTER_UP -> gesture.cancel()
-            }
-            true
-        }
-    Box(
-        modifier = modifier
-            .then(tapModifier)
-            .size(56.dp)
-            .drawWithCache {
-                val outer = size.minDimension
-                val center = Offset(outer / 2f, outer / 2f)
-                val ballRadius = outer * 0.3f
-                // Brushes depend only on size/theme, not on each breathing frame.
-                val halo = Brush.radialGradient(
-                    colors = listOf(accent.copy(alpha = 0.5f), Color.Transparent),
-                    center = center,
-                    radius = outer / 2f,
-                )
-                val ball = Brush.radialGradient(
-                    colors = listOf(accent, accent.copy(alpha = 0.8f)),
-                    center = Offset(center.x - ballRadius * 0.3f, center.y - ballRadius * 0.3f),
-                    radius = ballRadius,
-                )
-                onDrawBehind {
-                    drawCircle(brush = halo, alpha = pulse.value)
-                    drawCircle(brush = ball, radius = ballRadius, center = center)
-                    drawCircle(
-                        color = Color.White.copy(alpha = 0.55f),
-                        radius = ballRadius * 0.3f,
-                        center = Offset(center.x - ballRadius * 0.32f, center.y - ballRadius * 0.38f),
-                    )
-                }
-            }
-    )
-}
-
-/**
- * 运行时小气泡窗口：WRAP_CONTENT，跟随光球，窗口外触摸穿透。
- * 一句话状态 + 动作按钮 + 可展开补充输入。结束时由 Service 撤掉、改显结果卡片。
- */
-@Composable
-internal fun AgentOverlayBubble(
-    state: AgentOverlayState,
-    onCollapse: () -> Unit,
-    onPause: () -> Unit,
-    onResume: () -> Unit,
-    onStop: () -> Unit,
-    onSupplementModeChange: (Boolean) -> Unit,
-    onSupplement: (String) -> Unit,
-) {
-    var visible by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
-
-    LaunchedEffect(Unit) {
-        visible = true
-    }
-
-    var supplementMode by remember { mutableStateOf(false) }
-    var supplementText by remember { mutableStateOf("") }
-    val keyboard = LocalSoftwareKeyboardController.current
-    val focusManager = LocalFocusManager.current
-
-    fun enterSupplementMode() {
-        onSupplementModeChange(true)
-        supplementMode = true
-    }
-
-    fun exitSupplementMode() {
-        onSupplementModeChange(false)
-        supplementMode = false
-        supplementText = ""
-    }
-
-    fun closeSupplementMode() {
-        focusManager.clearFocus(force = true)
-        keyboard?.hide()
-        scope.launch {
-            delay(80)
-            exitSupplementMode()
-        }
-    }
-
-    fun submitSupplement() {
-        val text = supplementText.trim()
-        if (text.isBlank()) return
-        focusManager.clearFocus(force = true)
-        keyboard?.hide()
-        scope.launch {
-            delay(80)
-            exitSupplementMode()
-            onSupplement(text)
-        }
-    }
-
-    val accent = phaseAccent(state.phase)
-    val statusText = state.status.localizedText()
-    val statusColor = if (state.phase == AgentOverlayPhase.RUNNING) accent
-    else Color(0xFFFF9F0A)
-
-    AnimatedVisibility(
-        visible = visible,
-        enter = scaleIn(
-            initialScale = 0.5f,
-            transformOrigin = TransformOrigin(1f, 0.5f),
-            animationSpec = spring(
-                dampingRatio = Spring.DampingRatioLowBouncy,
-                stiffness = Spring.StiffnessMediumLow
-            )
-        ) + fadeIn(animationSpec = tween(durationMillis = 180)),
-        exit = scaleOut(
-            targetScale = 0.5f,
-            transformOrigin = TransformOrigin(1f, 0.5f),
-            animationSpec = tween(durationMillis = 150)
-        ) + fadeOut(animationSpec = tween(durationMillis = 150)),
-    ) {
-        Card(
-            modifier = Modifier
-                .widthIn(max = 136.dp),
-            cornerRadius = 16.dp,
-            insideMargin = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
-            colors = CardDefaults.defaultColors(
-                color = MiuixTheme.colorScheme.surfaceContainer.copy(alpha = 0.8f)
-            ),
-        ) {
-            // 一句话状态
-            Text(
-                text = statusText,
-                color = statusColor,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Bold,
-                maxLines = 2,
-                lineHeight = 16.sp,
-                overflow = TextOverflow.Ellipsis,
-            )
-
-            Spacer(modifier = Modifier.height(6.dp))
-
-            AnimatedVisibility(
-                visible = supplementMode,
-                enter = expandVertically(
-                    animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioNoBouncy,
-                        stiffness = Spring.StiffnessMedium,
-                    )
-                ) + fadeIn(animationSpec = tween(durationMillis = 140)),
-                exit = shrinkVertically(
-                    animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioNoBouncy,
-                        stiffness = Spring.StiffnessMedium,
-                    )
-                ) + fadeOut(animationSpec = tween(durationMillis = 100)),
-            ) {
-                SupplementInput(
-                    value = supplementText,
-                    onValueChange = { supplementText = it },
-                    onCancel = ::closeSupplementMode,
-                    onSend = ::submitSupplement,
-                )
-            }
-
-            AnimatedVisibility(
-                visible = !supplementMode,
-                enter = expandVertically(
-                    animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioNoBouncy,
-                        stiffness = Spring.StiffnessMedium,
-                    )
-                ) + fadeIn(animationSpec = tween(durationMillis = 140)),
-                exit = shrinkVertically(
-                    animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioNoBouncy,
-                        stiffness = Spring.StiffnessMedium,
-                    )
-                ) + fadeOut(animationSpec = tween(durationMillis = 100)),
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)
-                ) {
-                    IconButton(
-                        onClick = ::enterSupplementMode,
-                        minWidth = 28.dp,
-                        minHeight = 28.dp,
-                        cornerRadius = 14.dp
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Edit,
-                            contentDescription = stringResource(R.string.overlay_supplement),
-                            modifier = Modifier.size(14.dp),
-                            tint = MiuixTheme.colorScheme.onSurface,
-                        )
-                    }
-                    if (state.phase == AgentOverlayPhase.RUNNING) {
-                        IconButton(
-                            onClick = onPause,
-                            minWidth = 28.dp,
-                            minHeight = 28.dp,
-                            cornerRadius = 14.dp
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Pause,
-                                contentDescription = stringResource(R.string.overlay_pause),
-                                modifier = Modifier.size(14.dp),
-                                tint = MiuixTheme.colorScheme.onSurface,
-                            )
-                        }
-                    } else if (state.phase == AgentOverlayPhase.PAUSED) {
-                        IconButton(
-                            onClick = onResume,
-                            minWidth = 28.dp,
-                            minHeight = 28.dp,
-                            cornerRadius = 14.dp,
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.PlayArrow,
-                                contentDescription = stringResource(R.string.overlay_resume),
-                                modifier = Modifier.size(14.dp),
-                                tint = MiuixTheme.colorScheme.primary,
-                            )
-                        }
-                    }
-                    IconButton(
-                        onClick = onStop,
-                        minWidth = 28.dp,
-                        minHeight = 28.dp,
-                        cornerRadius = 14.dp,
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Stop,
-                            contentDescription = stringResource(R.string.action_stop),
-                            modifier = Modifier.size(14.dp),
-                            tint = MiuixTheme.colorScheme.error,
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SupplementInput(
     value: String,
     onValueChange: (String) -> Unit,
     onCancel: () -> Unit,
@@ -667,152 +285,341 @@ private fun SupplementInput(
             horizontalArrangement = Arrangement.End,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            TextButton(
-                text = stringResource(R.string.action_cancel),
-                onClick = onCancel,
+            if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
+                CouiButton(
+                    text = stringResource(R.string.action_cancel),
+                    onClick = onCancel,
+                    minHeight = 32.dp,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                CouiButton(
+                    text = stringResource(R.string.overlay_send),
+                    onClick = onSend,
+                    enabled = value.isNotBlank(),
+                    role = CouiButtonRole.Primary,
+                    minHeight = 32.dp,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                )
+            } else {
+                TextButton(
+                    text = stringResource(R.string.action_cancel),
+                    onClick = onCancel,
+                    minWidth = 44.dp,
+                    minHeight = 32.dp,
+                    insideMargin = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                TextButton(
+                    text = stringResource(R.string.overlay_send),
+                    onClick = onSend,
+                    enabled = value.isNotBlank(),
+                    minWidth = 44.dp,
+                    minHeight = 32.dp,
+                    insideMargin = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                    colors = ButtonDefaults.textButtonColorsPrimary(),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 任务结束后的结果卡片：底部浮起的圆角面板，顶部抓手提示可下滑关闭。
+ * 关闭途径：无交互自动收起、下滑、系统返回（由 Service 注册）、底部"完成"按钮；
+ * 次要操作"复制"放在同一行，正文可滚动，过长时底部渐隐提示还有内容。
+ */
+@Composable
+internal fun AgentResultCard(
+    state: AgentOverlayState,
+    onClose: () -> Unit,
+    onOpenEta: () -> Unit,
+    hasVirtualDisplayApp: Boolean = false,
+    onOpenVirtualApp: (() -> Unit)? = null,
+) {
+    var visible by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { visible = true }
+    val scope = rememberCoroutineScope()
+    fun close() {
+        if (!visible) return
+        visible = false
+        // 等退场动画结束再移除窗口，避免卡片被瞬间抽走。
+        scope.launch {
+            delay(ResultCardExitMs.toLong())
+            onClose()
+        }
+    }
+
+    val isFailed = state.phase == AgentOverlayPhase.FAILED
+    val accent = overlayPhaseAccent(state.phase)
+    val statusLabel = stringResource(
+        if (isFailed) R.string.overlay_substatus_failed else R.string.overlay_substatus_finished,
+    )
+    val content = state.detailText.ifBlank { state.status.localizedText() }
+    val density = LocalDensity.current
+    val scroll = rememberScrollState()
+    var dragOffset by remember { mutableFloatStateOf(0f) }
+    var touching by remember { mutableStateOf(false) }
+    var interactionTick by remember { mutableIntStateOf(0) }
+    val interacting = touching || scroll.isScrollInProgress || dragOffset > 0f
+    LaunchedEffect(visible, interacting, interactionTick) {
+        if (!visible || interacting) return@LaunchedEffect
+        delay(ResultCardAutoDismissMs)
+        close()
+    }
+    val settledOffset by animateFloatAsState(
+        targetValue = dragOffset,
+        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+        label = "result_drag",
+    )
+    val dismissThreshold = with(density) { 96.dp.toPx() }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .navigationBarsPadding()
+            .padding(start = 10.dp, end = 10.dp, bottom = 10.dp),
+    ) {
+        AnimatedVisibility(
+            visible = visible,
+            enter = slideInVertically(tween(durationMillis = 260, easing = CubicBezierEasing(0.2f, 0f, 0f, 1f))) { it } +
+                fadeIn(tween(200)),
+            exit = slideOutVertically(tween(ResultCardExitMs)) { it } + fadeOut(tween(ResultCardExitMs)),
+            modifier = Modifier.align(Alignment.BottomCenter),
+        ) {
+            val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
+            val couiDark = CouiTheme.isDark
+            val cardShape = if (isCoui) CouiShape(32.dp, 2.6f) else RoundedCornerShape(ResultCardCorner)
+            val cardBg = if (isCoui) {
+                if (couiDark) Color(0xFF1D1F25) else Color(0xFFFCFCFE)
+            } else {
+                MiuixTheme.colorScheme.surface
+            }
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 420.dp)
+                    .graphicsLayer { translationY = settledOffset }
+                    .shadow(
+                        elevation = 16.dp,
+                        shape = cardShape,
+                        ambientColor = Color.Black.copy(alpha = if (isCoui && couiDark) 0.42f else 0.18f),
+                    )
+                    .clip(cardShape)
+                    .background(cardBg, cardShape)
+                    .then(
+                        if (isCoui) {
+                            Modifier.border(
+                                width = 0.6.dp,
+                                color = if (couiDark) Color(0x22FFFFFF) else Color(0x12000000),
+                                shape = cardShape,
+                            )
+                        } else {
+                            Modifier
+                        },
+                    )
+                    .pointerInput(Unit) {
+                        awaitEachGesture {
+                            awaitPointerEvent(PointerEventPass.Initial)
+                            touching = true
+                            do {
+                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                            } while (event.changes.any { it.pressed })
+                            touching = false
+                            interactionTick++
+                        }
+                    }
+                    .pointerInput(Unit) {
+                        detectVerticalDragGestures(
+                            onDragEnd = { if (dragOffset > dismissThreshold) close() else dragOffset = 0f },
+                            onDragCancel = { dragOffset = 0f },
+                        ) { change, amount ->
+                            change.consume()
+                            // 只允许向下拖；向上带阻尼，避免卡片被拖离底边。
+                            dragOffset = (dragOffset + amount).coerceAtLeast(0f)
+                        }
+                    },
+            ) {
+                Box(
+                    modifier = Modifier
+                        .padding(top = 8.dp)
+                        .align(Alignment.CenterHorizontally)
+                        .size(width = 36.dp, height = 4.dp)
+                        .clip(CircleShape)
+                        .background(MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.3f)),
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(20.dp)
+                            .clip(CircleShape)
+                            .background(accent.copy(alpha = 0.14f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = if (isFailed) Icons.Rounded.Close else Icons.Rounded.Check,
+                            contentDescription = null,
+                            modifier = Modifier.size(13.dp),
+                            tint = accent,
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = statusLabel,
+                        color = MiuixTheme.colorScheme.onSurface,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+
+                Box(modifier = Modifier.weight(1f, fill = false)) {
+                    StaticMarkdown(
+                        content = content,
+                        tone = MarkdownTone.Answer,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .verticalScroll(scroll)
+                            .padding(start = 20.dp, end = 20.dp, top = 10.dp, bottom = 12.dp),
+                    )
+                    if (scroll.canScrollForward) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .fillMaxWidth()
+                                .height(28.dp)
+                                .background(
+                                    Brush.verticalGradient(
+                                        listOf(Color.Transparent, cardBg),
+                                    ),
+                                ),
+                        )
+                    }
+                }
+
+                ResultCardActions(
+                    content = content,
+                    onOpenEta = onOpenEta,
+                    onDone = ::close,
+                    hasVirtualDisplayApp = hasVirtualDisplayApp,
+                    onOpenVirtualApp = onOpenVirtualApp,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ResultCardActions(
+    content: String,
+    onOpenEta: () -> Unit,
+    onDone: () -> Unit,
+    hasVirtualDisplayApp: Boolean = false,
+    onOpenVirtualApp: (() -> Unit)? = null,
+) {
+    @Suppress("DEPRECATION")
+    val clipboard = LocalClipboardManager.current
+    var copied by remember { mutableStateOf(false) }
+    LaunchedEffect(copied) {
+        if (copied) {
+            delay(1_400)
+            copied = false
+        }
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 14.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
+        // 复制是图标按钮，主次两个文字按钮分别是"完成"（留在当前应用）与"回到 Eta"或"打开画面"。
+        if (isCoui) {
+            val dark = CouiTheme.isDark
+            val source = remember { MutableInteractionSource() }
+            val press = rememberCouiPressMotion()
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .graphicsLayer {
+                        scaleX = press.scale.value
+                        scaleY = press.scale.value
+                    }
+                    .couiPressMotion(press)
+                    .clip(CircleShape)
+                    .background(if (dark) Color(0xFF353535) else Color(0xFFEBEBEB), CircleShape)
+                    .couiButtonFeedback(dark, source, enabled = true)
+                    .clickable(source, indication = null, role = Role.Button) {
+                        clipboard.setText(AnnotatedString(content))
+                        copied = true
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = if (copied) Icons.Rounded.Check else Icons.Rounded.ContentCopy,
+                    contentDescription = stringResource(if (copied) R.string.copy_copied else R.string.ui_copy_4edd1d),
+                    modifier = Modifier.size(18.dp),
+                    tint = if (copied) CouiTheme.colorSchemeFor(dark).accent else CouiTheme.colorSchemeFor(dark).onSurface,
+                )
+            }
+        } else {
+            IconButton(
+                onClick = {
+                    clipboard.setText(AnnotatedString(content))
+                    copied = true
+                },
+                backgroundColor = MiuixTheme.colorScheme.secondaryContainer,
                 minWidth = 44.dp,
-                minHeight = 32.dp,
-                insideMargin = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                minHeight = 44.dp,
+                cornerRadius = 22.dp,
+            ) {
+                Icon(
+                    imageVector = if (copied) Icons.Rounded.Check else Icons.Rounded.ContentCopy,
+                    contentDescription = stringResource(if (copied) R.string.copy_copied else R.string.ui_copy_4edd1d),
+                    modifier = Modifier.size(18.dp),
+                    tint = MiuixTheme.colorScheme.onSurfaceVariantActions,
+                )
+            }
+        }
+        val doneText = stringResource(R.string.overlay_result_done)
+        val primaryText = if (hasVirtualDisplayApp && onOpenVirtualApp != null) {
+            stringResource(R.string.overlay_result_open_virtual_app)
+        } else {
+            stringResource(R.string.overlay_result_open_eta)
+        }
+        val onPrimary = if (hasVirtualDisplayApp && onOpenVirtualApp != null) onOpenVirtualApp else onOpenEta
+        if (isCoui) {
+            CouiButton(
+                text = doneText,
+                onClick = onDone,
+                modifier = Modifier.weight(1f),
+                minHeight = 44.dp,
             )
-            Spacer(modifier = Modifier.width(8.dp))
+            CouiButton(
+                text = primaryText,
+                onClick = onPrimary,
+                role = CouiButtonRole.Primary,
+                modifier = Modifier.weight(1f),
+                minHeight = 44.dp,
+            )
+        } else {
             TextButton(
-                text = stringResource(R.string.overlay_send),
-                onClick = onSend,
-                enabled = value.isNotBlank(),
-                minWidth = 44.dp,
-                minHeight = 32.dp,
-                insideMargin = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                text = doneText,
+                onClick = onDone,
+                modifier = Modifier.weight(1f),
+                minHeight = 44.dp,
+            )
+            TextButton(
+                text = primaryText,
+                onClick = onPrimary,
+                modifier = Modifier.weight(1f),
+                minHeight = 44.dp,
                 colors = ButtonDefaults.textButtonColorsPrimary(),
             )
         }
     }
 }
 
-/**
- * 结束时半屏结果卡片窗口：Markdown 渲染完整结果，可滚动，底部对齐。
- * 窗口本身已由 Service 定为半屏尺寸，此处填满窗口。
- */
-@Composable
-internal fun AgentResultCard(
-    state: AgentOverlayState,
-    onClose: () -> Unit,
-) {
-    var visible by remember { mutableStateOf(false) }
-
-    LaunchedEffect(Unit) {
-        visible = true
-    }
-
-    val isFailed = state.phase == AgentOverlayPhase.FAILED
-    val dotColor = phaseAccent(state.phase)
-    val statusText = state.status.localizedText()
-    val statusLabel = stringResource(
-        if (isFailed) R.string.overlay_substatus_failed else R.string.overlay_substatus_finished,
-    )
-    val content = state.detailText.ifBlank { statusText }
-    val textColor = MiuixTheme.colorScheme.onSurface
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .navigationBarsPadding()
-            .padding(start = 12.dp, end = 12.dp, bottom = 20.dp),
-    ) {
-        AnimatedVisibility(
-            visible = visible,
-            enter = slideInVertically(
-                initialOffsetY = { it },
-                animationSpec = spring(
-                    dampingRatio = Spring.DampingRatioLowBouncy,
-                    stiffness = Spring.StiffnessMediumLow,
-                )
-            ) + fadeIn(animationSpec = tween(durationMillis = 200)),
-            exit = slideOutVertically(
-                targetOffsetY = { it },
-                animationSpec = tween(durationMillis = 180),
-            ) + fadeOut(animationSpec = tween(durationMillis = 180)),
-            modifier = Modifier.align(Alignment.BottomCenter),
-        ) {
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 360.dp)
-                    .shadow(8.dp, RoundedCornerShape(CardDefaults.CornerRadius)),
-                insideMargin = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
-            ) {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    // 状态行降级为圆点 + 灰色小字，关闭用幽灵图标，视觉重心留给内容
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(8.dp)
-                                .clip(CircleShape)
-                                .background(dotColor),
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = statusLabel,
-                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                            fontSize = 13.sp,
-                        )
-                        Spacer(modifier = Modifier.weight(1f))
-                        // 关闭直接交给 Service，不经 Compose 协程延迟
-                        IconButton(
-                            onClick = onClose,
-                            backgroundColor = Color.Transparent,
-                            minWidth = 32.dp,
-                            minHeight = 32.dp,
-                            cornerRadius = 16.dp,
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Close,
-                                contentDescription = stringResource(R.string.action_close),
-                                modifier = Modifier.size(16.dp),
-                                tint = MiuixTheme.colorScheme.onSurfaceVariantActions,
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    // Markdown 结果，可滚动
-                    val markdownState = rememberMarkdownState(content = content, retainState = true)
-                    val typography = markdownTypography(
-                        h1 = TextStyle(fontSize = 20.sp, fontWeight = FontWeight.Bold, color = textColor),
-                        h2 = TextStyle(fontSize = 18.sp, fontWeight = FontWeight.Bold, color = textColor),
-                        h3 = TextStyle(fontSize = 16.sp, fontWeight = FontWeight.Bold, color = textColor),
-                        text = TextStyle(fontSize = 16.sp, lineHeight = 22.sp, color = textColor),
-                        paragraph = TextStyle(fontSize = 16.sp, lineHeight = 22.sp, color = textColor),
-                        ordered = TextStyle(fontSize = 16.sp, lineHeight = 22.sp, color = textColor),
-                        bullet = TextStyle(fontSize = 16.sp, lineHeight = 22.sp, color = textColor),
-                        list = TextStyle(fontSize = 16.sp, lineHeight = 22.sp, color = textColor),
-                        code = TextStyle(
-                            fontSize = 13.sp,
-                            fontFamily = FontFamily.Monospace,
-                            color = textColor,
-                        ),
-                    )
-                    Markdown(
-                        markdownState = markdownState,
-                        typography = typography,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 280.dp)
-                            .verticalScroll(rememberScrollState()),
-                        loading = {
-                            Text(text = content, color = textColor, fontSize = 16.sp, modifier = it)
-                        },
-                        error = {
-                            Text(text = content, color = textColor, fontSize = 16.sp, modifier = it)
-                        },
-                    )
-                }
-            }
-        }
-    }
-}
+private val ResultCardCorner = 28.dp
+private const val ResultCardExitMs = 200
+private const val ResultCardAutoDismissMs = 8_000L

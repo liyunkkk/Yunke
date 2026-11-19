@@ -41,7 +41,7 @@ internal class McpRunSnapshot(
                         JSONObject()
                             .put("name", tool.modelName)
                             .put("description", description)
-                            .put("parameters", normalizeToolParameters(tool.definition.inputSchemaJson)),
+                            .put("parameters", JSONObject(tool.definition.inputSchemaJson)),
                     ),
             )
         }
@@ -49,38 +49,6 @@ internal class McpRunSnapshot(
 
     companion object {
         val EMPTY = McpRunSnapshot(emptyList())
-
-        fun appendCachedModelTools(
-            destination: JSONArray,
-            servers: List<McpServerSetting>,
-        ) {
-            var count = 0
-            servers.forEach { server ->
-                server.activeTools.forEach { tool ->
-                    if (count >= MAX_RUN_TOOLS) return
-                    val description = buildString {
-                        append("MCP 服务器「").append(server.name).append("」提供的工具")
-                        tool.description.trim().takeIf { it.isNotBlank() }?.let {
-                            append("。 ").append(it)
-                        }
-                    }
-                    runCatching {
-                        destination.put(
-                            JSONObject()
-                                .put("type", "function")
-                                .put(
-                                    "function",
-                                    JSONObject()
-                                        .put("name", modelToolName(server.id, tool.name))
-                                        .put("description", description)
-                                        .put("parameters", normalizeToolParameters(tool.inputSchemaJson)),
-                                ),
-                        )
-                        count++
-                    }
-                }
-            }
-        }
 
         suspend fun load(): McpRunSnapshot {
             val projected = mutableListOf<McpRunTool>()
@@ -323,58 +291,4 @@ internal class RoutingToolExecutor(
         runCatching { mcp.close() }
         (local as? AutoCloseable)?.let { runCatching { it.close() } }
     }
-}
-
-/**
- * 把 MCP 提供的参数 schema 规整成标准 JSON Schema。
- *
- * 部分 MCP（例如清风）内部写法不一致：有的工具给
- * `{"type":"object","properties":{...}}`，有的却把字段直接平铺成
- * `{"action":{...},"apk_path":{...}}`。Gemini/CCA 侧遇到后者会报
- * `Unknown name "action" at ...parameters` 并**拒掉整个请求**，
- * 表现为对话一直报 400。这里统一补上包装。
- */
-private fun normalizeToolParameters(raw: String): JSONObject {
-    val parsed = runCatching { JSONObject(raw) }.getOrNull()
-        ?: return JSONObject().put("type", "object")
-    val schema = if (parsed.has("type") || parsed.has("properties") ||
-        parsed.has("anyOf") || parsed.has("oneOf") || parsed.has("allOf")
-    ) {
-        parsed
-    } else if (parsed.length() == 0) {
-        JSONObject().put("type", "object")
-    } else {
-        // 平铺形态：每个键都是字段定义，包进 properties
-        val properties = JSONObject()
-        parsed.keys().forEach { key -> properties.put(key, parsed.get(key)) }
-        JSONObject().put("type", "object").put("properties", properties)
-    }
-    return fillMissingArrayItems(schema)
-}
-
-/**
- * Gemini 侧要求每个 array 都必须带 items，否则整条请求 400：
- *   ...function_declarations[N].parameters.properties[args].items: missing field.
- * 部分 MCP（例如清风的 emulate_call / unidbg_batch）只写 type=array 而不写 items。
- * 这里递归补上；类型未知时按 string 处理，描述里本来就是"integer/string 混合数组"。
- */
-private fun fillMissingArrayItems(node: JSONObject): JSONObject {
-    if (node.optString("type") == "array") {
-        val items = node.optJSONObject("items")
-        if (items == null || items.length() == 0 || items.optString("type").isBlank()) {
-            node.put("items", JSONObject().put("type", "string"))
-        }
-    }
-    node.optJSONObject("items")?.let { fillMissingArrayItems(it) }
-    node.optJSONObject("properties")?.let { props ->
-        props.keys().forEach { key -> props.optJSONObject(key)?.let { fillMissingArrayItems(it) } }
-    }
-    for (comb in listOf("anyOf", "oneOf", "allOf")) {
-        node.optJSONArray(comb)?.let { arr ->
-            for (index in 0 until arr.length()) {
-                arr.optJSONObject(index)?.let { fillMissingArrayItems(it) }
-            }
-        }
-    }
-    return node
 }

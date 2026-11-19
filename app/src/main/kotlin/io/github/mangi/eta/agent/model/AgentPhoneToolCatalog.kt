@@ -104,7 +104,7 @@ internal object AgentPhoneToolCatalog {
                 "可用日历",
                 "列出当前用户可写的日历 ID 和名称；创建时必须选择真实日历，不能猜 calendar_id。",
                 false,
-                RootRequirement.NONE,
+                RootRequirement.PARTIAL,
                 personal = true,
             ),
             Entry(
@@ -112,7 +112,7 @@ internal object AgentPhoneToolCatalog {
                 "日程详情",
                 "按原始 event_id 读取实时事件与提醒；不得使用 DMP 文档 ID。",
                 false,
-                RootRequirement.NONE,
+                RootRequirement.PARTIAL,
                 personal = true,
             ),
             Entry(
@@ -120,28 +120,28 @@ internal object AgentPhoneToolCatalog {
                 "创建日程",
                 "直接创建日程和提醒，事务完成后读回确认。一次性日程使用起止时间；全天事件使用 UTC 零点和排他的结束零点。超时后先查询，不要重复创建。",
                 true,
-                RootRequirement.NONE,
+                RootRequirement.PARTIAL,
             ),
             Entry(
                 "create_calendar_events",
                 "批量创建日程",
                 "一次创建同一日历中的多条日程和提醒；先校验全部参数，再在同一事务中写入并逐条核对。最多 30 条，结果未确认时先查询，不要重复创建。",
                 true,
-                RootRequirement.NONE,
+                RootRequirement.PARTIAL,
             ),
             Entry(
                 "update_calendar_event",
                 "修改日程",
                 "按原始 event_id 修改日程字段和提醒，并读回确认；修改时间须同时给出起止时间。当前不修改重复事件。",
                 true,
-                RootRequirement.NONE,
+                RootRequirement.PARTIAL,
             ),
             Entry(
                 "delete_calendar_event",
                 "删除日程",
                 "删除精确原始 event_id；重复事件必须明确 scope=series，不能把索引 ID 当作事件 ID。",
                 true,
-                RootRequirement.NONE,
+                RootRequirement.PARTIAL,
             ),
             Entry(
                 "update_alarm_time",
@@ -281,9 +281,12 @@ internal object AgentPhoneToolCatalog {
             "read_note",
             "delete_note" -> id("note_id")
         }
-        return AgentToolSchema.function(entry.name, entry.description, JSONObject()
-            .put("type", "object").put("properties", p)
-            .put("required", JSONArray(required)).put("additionalProperties", false))
+        return AgentPersonalSearchToolCatalog.function(
+            entry.name,
+            entry.description,
+            p,
+            *required.toTypedArray(),
+        )
     }
 
     private fun text(description: String, max: Int) =

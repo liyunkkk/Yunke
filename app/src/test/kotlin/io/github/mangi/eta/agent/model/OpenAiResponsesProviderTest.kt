@@ -6,8 +6,12 @@ import io.github.mangi.eta.data.model.CustomBody
 import io.github.mangi.eta.data.model.ModelReasoningCapabilities
 import io.github.mangi.eta.data.model.OpenAiEndpointMode
 import io.github.mangi.eta.data.model.ReasoningEffort
+import java.io.OutputStream
 import java.net.InetSocketAddress
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.serialization.json.JsonPrimitive
 import org.json.JSONArray
@@ -20,135 +24,156 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class OpenAiResponsesProviderTest {
-    @Test fun localImageConfigurationNeverLeaksIntoResponses() {
-        val configured = config("https://example.invalid/v1").copy(extraBodyJson = """{"eta_image_config":{"endpoint":"novelai_native"},"temperature":0.5}""")
-        val request = OpenAiResponsesProvider.buildRequestJson(configured, JSONArray(), JSONArray())
-        assertFalse(request.has("eta_image_config"))
-        assertEquals(0.5, request.getDouble("temperature"), 0.0)
+    @Test
+    fun hostedSearchDeclarationExcludesSameNamedFunctionAndPreservesOtherTools() {
+        val functions = JSONArray().also { AgentWebToolCatalog.appendTo(it) }
+        for (enabled in listOf(false, true)) {
+            val request = OpenAiResponsesProvider.buildRequestJson(
+                config("https://example.com/v1").copy(hostedWebSearchEnabled = enabled),
+                JSONArray(), functions,
+            )
+            val tools = request.getJSONArray("tools")
+            val all = (0 until tools.length()).map { tools.getJSONObject(it) }
+            assertEquals(if (enabled) 1 else 0, all.count { it.optString("type") == "web_search" })
+            assertEquals(if (enabled) 0 else 1, all.count { it.optString("type") == "function" && it.optString("name") == "web_search" })
+            assertEquals(1, all.count { it.optString("name") == "fetch_url" })
+        }
+        assertEquals("原始目录不得被 Provider 投影修改", 2, functions.length())
     }
 
     @Test
-    fun terminalMessageIdentityRewriteDoesNotRepeatStreamedAnswer() {
-        assertSingleReconciledText(
-            JSONObject().put("item_id", "stream-id").put("output_index", 1).put("content_index", 0),
-            "收到，测试正常。", "收到，测试正常。",
+    fun nativeReasoningDeltasArriveBeforeDoneAndTypedFinalContentIsNotDuplicated() {
+        val firstDeltaDelivered = CountDownLatch(1)
+        val completed = CountDownLatch(1)
+        val serverObservedCompletion = CountDownLatch(1)
+        val completedBeforeClose = AtomicBoolean(false)
+        val reasoningText = "先分析输入，再整理答案。"
+        val nativeItem = JSONObject()
+            .put("id", "rs_native")
+            .put("type", "reasoning")
+            .put("summary", JSONArray())
+            .put(
+                "content",
+                JSONArray().put(JSONObject().put("type", "reasoning_text").put("text", reasoningText)),
+            )
+        fun reasoningEvent(type: String, key: String, text: String) = event(
+            type,
+            JSONObject().put("item_id", "rs_native")
+                .put("output_index", 0).put("content_index", 0).put(key, text),
         )
-    }
+        val firstChunk = reasoningEvent("response.reasoning_text.delta", "delta", "先分析输入，")
+        val remainingChunks = buildString {
+            append(reasoningEvent("response.reasoning_text.delta", "delta", "再整理答案。"))
+            append(reasoningEvent("response.reasoning_text.done", "text", reasoningText))
+            append(event("response.output_item.done", JSONObject().put("output_index", 0).put("item", nativeItem)))
+            append(responseTextEvent("response.output_text.delta", "msg_1", 1, "delta", "答案"))
+            append(
+                event(
+                    "response.completed",
+                    JSONObject().put(
+                        "response",
+                        JSONObject().put("status", "completed")
+                            .put("output", JSONArray().put(nativeItem).put(messageItem("msg_1", "答案"))),
+                    ),
+                ),
+            )
+        }
 
-    @Test
-    fun terminalOutputIndexShiftWithoutItemIdDoesNotRepeatAnswer() {
-        assertSingleReconciledText(
-            JSONObject().put("output_index", 3).put("content_index", 0),
-            "收到，测试正常。", "收到，测试正常。",
-        )
-    }
-
-    @Test
-    fun terminalRewrittenIdentityCompletesAnEndedPartialBlockInPlace() {
-        assertSingleReconciledText(
-            JSONObject().put("item_id", "stream-id").put("output_index", 0).put("content_index", 0),
-            "收到", "收到，测试正常。",
-        )
-    }
-
-    private fun assertSingleReconciledText(identity: JSONObject, streamed: String, final: String) {
-        val body = event("response.output_text.delta", JSONObject(identity.toString()).put("delta", streamed)) +
-            event("response.output_text.done", JSONObject(identity.toString()).put("text", streamed)) +
-            event("response.completed", JSONObject().put("response", JSONObject()
-                .put("status", "completed").put("output", JSONArray().put(messageItem("terminal-id", final)))))
-        withSseServer(body) { baseUrl ->
+        withSseServer(
+            body = "",
+            writeBody = { output ->
+                output.write(firstChunk.toByteArray(Charsets.UTF_8))
+                output.flush()
+                // 服务端只有确认首个增量已经交付，才发送 done 和终态，排除读到 EOF 才输出。
+                check(firstDeltaDelivered.await(5, TimeUnit.SECONDS))
+                output.write(remainingChunks.toByteArray(Charsets.UTF_8))
+                output.flush()
+                completedBeforeClose.set(completed.await(5, TimeUnit.SECONDS))
+                serverObservedCompletion.countDown()
+            },
+        ) { baseUrl ->
             val events = mutableListOf<ProviderEvent>()
             val result = OpenAiResponsesProvider.complete(
-                ProviderRequest(config(baseUrl), JSONArray(), JSONArray()), AgentRunController(), events::add,
-            )
-            assertEquals(final, result.assistantMessage.getString("content"))
-            val starts = events.filterIsInstance<ProviderEvent.BlockStart>().filter { it.kind == AssistantBlockKind.TEXT }
-            assertEquals(1, starts.size)
-            val ends = events.filterIsInstance<ProviderEvent.BlockEnd>().filter { it.kind == AssistantBlockKind.TEXT }
-            assertEquals(final, ends.last().content)
-            assertEquals(starts.single().index, ends.last().index)
-        }
-    }
-
-    @Test
-    fun terminalOnlyReasoningDoesNotOpenANewBlockAfterStreamedAnswer() {
-        val body = responseTextEvent("response.output_text.delta", "msg_1", 1, "delta", "最终正文") +
-            responseTextEvent("response.output_text.done", "msg_1", 1, "text", "最终正文") +
-            event("response.completed", JSONObject().put("response", JSONObject()
-                .put("status", "completed").put("output", JSONArray()
-                    .put(reasoningItem("rs_1", "此前的摘要"))
-                    .put(messageItem("msg_1", "最终正文")))))
-        withSseServer(body) { baseUrl ->
-            val events = mutableListOf<ProviderEvent>()
-            val result = OpenAiResponsesProvider.complete(
-                ProviderRequest(config(baseUrl), JSONArray(), JSONArray()), AgentRunController(), events::add,
-            )
-            assertEquals("最终正文", result.assistantMessage.getString("content"))
-            assertEquals("此前的摘要", result.assistantMessage.getString("reasoning_content"))
-            assertFalse(events.filterIsInstance<ProviderEvent.BlockStart>().any {
-                it.kind == AssistantBlockKind.THINKING
-            })
-            assertFalse(events.filterIsInstance<ProviderEvent.BlockDelta>().any {
-                it.kind == AssistantBlockKind.THINKING
-            })
-            assertNotNull(result.assistantMessage.optJSONObject(ResponsesReasoningState.KEY))
-        }
-    }
-
-    @Test
-    fun terminalOnlyResponseStillDeliversReasoningBeforeItsAnswer() {
-        val body = event("response.completed", JSONObject().put("response", JSONObject()
-            .put("status", "completed").put("output", JSONArray()
-                .put(reasoningItem("rs_1", "先判断"))
-                .put(messageItem("msg_1", "最终正文")))))
-        withSseServer(body) { baseUrl ->
-            val events = mutableListOf<ProviderEvent>()
-            val result = OpenAiResponsesProvider.complete(
-                ProviderRequest(config(baseUrl), JSONArray(), JSONArray()), AgentRunController(), events::add,
-            )
-            assertEquals("最终正文", result.assistantMessage.getString("content"))
-            assertEquals(listOf(AssistantBlockKind.THINKING, AssistantBlockKind.TEXT),
-                events.filterIsInstance<ProviderEvent.BlockStart>().map { it.kind })
-        }
-    }
-
-    @Test
-    fun identicalTextInDistinctTerminalPartsMustRemainDistinct() {
-        val body = responseTextEvent("response.output_text.delta", "msg_1", 0, "delta", "相同内容") +
-            responseTextEvent("response.output_text.done", "msg_1", 0, "text", "相同内容") +
-            event("response.completed", JSONObject().put("response", JSONObject()
-                .put("status", "completed").put("output", JSONArray()
-                    .put(messageItem("msg_1", "相同内容")).put(messageItem("msg_2", "相同内容")))))
-        withSseServer(body) { baseUrl ->
-            val events = mutableListOf<ProviderEvent>()
-            val result = OpenAiResponsesProvider.complete(
-                ProviderRequest(config(baseUrl), JSONArray(), JSONArray()), AgentRunController(), events::add,
-            )
-            assertEquals("相同内容相同内容", result.assistantMessage.getString("content"))
-            assertEquals(2, events.filterIsInstance<ProviderEvent.BlockStart>().count { it.kind == AssistantBlockKind.TEXT })
-        }
-    }
-
-    @Test
-    fun steeringDoesNotPromotePartialFunctionCallToCompletedResponse() {
-        val controller = AgentRunController()
-        val body = event("response.output_text.delta", JSONObject().put("delta", "before")) +
-            event("response.output_item.added", JSONObject().put("output_index", 0).put("item",
-                JSONObject().put("id", "fc_1").put("type", "function_call")
-                    .put("call_id", "draft").put("name", "terminal"))) +
-            event("response.function_call_arguments.delta", JSONObject().put("item_id", "fc_1").put("delta", "{}"))
-        withSseServer(body) { baseUrl ->
-            val result = OpenAiResponsesProvider.complete(
-                ProviderRequest(config(baseUrl), JSONArray(), JSONArray()), controller,
+                ProviderRequest(
+                    config(baseUrl),
+                    JSONArray().put(JSONObject().put("role", "user").put("content", "测试推理")),
+                    JSONArray(),
+                ),
+                AgentRunController(),
             ) { event ->
-                if (event is ProviderEvent.BlockDelta && event.kind == AssistantBlockKind.TOOL_CALL) {
-                    controller.steer("new instruction")
+                events += event
+                if (event is ProviderEvent.BlockDelta && event.kind == AssistantBlockKind.THINKING) {
+                    firstDeltaDelivered.countDown()
                 }
+                if (event is ProviderEvent.Completed) completed.countDown()
             }
-            assertEquals(AssistantStopReason.INTERRUPTED, result.stopReason)
-            assertEquals("before", result.assistantMessage.getString("content"))
-            assertFalse(result.assistantMessage.has("tool_calls"))
-            assertNull(ResponsesEphemeralState.outputItems(result.assistantMessage))
+
+            assertTrue(serverObservedCompletion.await(5, TimeUnit.SECONDS))
+            assertTrue(completedBeforeClose.get())
+            assertEquals(
+                listOf("先分析输入，", "再整理答案。"),
+                events.filterIsInstance<ProviderEvent.BlockDelta>()
+                    .filter { it.kind == AssistantBlockKind.THINKING }.map { it.delta },
+            )
+            val end = events.filterIsInstance<ProviderEvent.BlockEnd>()
+                .filter { it.kind == AssistantBlockKind.THINKING }.single()
+            assertEquals(reasoningText, end.content)
+            assertFalse(end.replaceContent)
+            assertEquals(reasoningText, result.assistantMessage.getString("reasoning_content"))
+            assertEquals("答案", result.assistantMessage.getString("content"))
+            assertEquals(
+                nativeItem.toString(),
+                ResponsesEphemeralState.outputItems(result.assistantMessage)?.getJSONObject(0)?.toString(),
+            )
+        }
+    }
+
+    @Test
+    fun typedReasoningPartsKeepTheirIdentityAndOverrideLegacyAlias() {
+        val item = JSONObject().put("id", "rs_parts").put("type", "reasoning")
+            .put("reasoning_text", "旧字段不应重复追加")
+            .put(
+                "content",
+                JSONArray()
+                    .put(JSONObject().put("type", "reasoning_text").put("text", "第一段"))
+                    .put(JSONObject().put("type", "reasoning_text").put("text", "第二段补全")),
+            )
+        val body = buildString {
+            append(
+                event(
+                    "response.reasoning_text.delta",
+                    JSONObject().put("item_id", "rs_parts").put("output_index", 0)
+                        .put("content_index", 1).put("delta", "第二段"),
+                ),
+            )
+            append(
+                event(
+                    "response.completed",
+                    JSONObject().put(
+                        "response",
+                        JSONObject().put("status", "completed").put("output", JSONArray().put(item)),
+                    ),
+                ),
+            )
+        }
+
+        withSseServer(body) { baseUrl ->
+            val events = mutableListOf<ProviderEvent>()
+            val result = OpenAiResponsesProvider.complete(
+                ProviderRequest(
+                    config(baseUrl),
+                    JSONArray().put(JSONObject().put("role", "user").put("content", "测试推理")),
+                    JSONArray(),
+                ),
+                AgentRunController(),
+                events::add,
+            )
+
+            assertEquals("第一段\n第二段补全", result.assistantMessage.getString("reasoning_content"))
+            val corrections = events.filterIsInstance<ProviderEvent.BlockEnd>().filter { it.replaceContent }
+            assertEquals(1, corrections.size)
+            assertEquals(0, corrections.single().index)
+            assertEquals("第二段补全", corrections.single().content)
         }
     }
 
@@ -226,66 +251,6 @@ class OpenAiResponsesProviderTest {
     }
 
     @Test
-    fun codexRequestIncludesEncryptedReasoningAndDropsMaxTokens() {
-        val request = OpenAiResponsesProvider.buildRequestJson(
-            config = config("https://chatgpt.com/backend-api/codex").copy(
-                summaryOutputLimit = 128000,
-                reasoningCapabilities = ModelReasoningCapabilities(
-                    supportedEfforts = listOf(ReasoningEffort.MEDIUM),
-                    canDisable = false,
-                ),
-                reasoningEffort = ReasoningEffort.MEDIUM,
-            ),
-            messages = JSONArray().put(JSONObject().put("role", "user").put("content", "你好")),
-            tools = JSONArray(),
-            sessionId = "session-1",
-        )
-        assertEquals("reasoning.encrypted_content", request.getJSONArray("include").getString(0))
-        assertFalse(request.has("max_output_tokens"))
-        assertEquals("session-1", request.getString("prompt_cache_key"))
-        assertFalse(request.has("parallel_tool_calls"))
-        assertFalse(request.getBoolean("store"))
-        assertEquals("medium", request.getJSONObject("reasoning").getString("effort"))
-        assertEquals("auto", request.getJSONObject("reasoning").getString("summary"))
-    }
-
-    @Test
-    fun responsesRequestKeepsPromptCacheKeyForTheSameConversation() {
-        val messages = JSONArray().put(JSONObject().put("role", "user").put("content", "你好"))
-        val first = OpenAiResponsesProvider.buildRequestJson(
-            config = config("https://gateway.example/v1").copy(model = "gpt-5.4"),
-            messages = messages,
-            tools = JSONArray(),
-            sessionId = "conv-1",
-        )
-        val again = OpenAiResponsesProvider.buildRequestJson(
-            config = config("https://gateway.example/v1").copy(model = "gpt-5.4"),
-            messages = messages,
-            tools = JSONArray(),
-            sessionId = "conv-1",
-        )
-        assertEquals("conv-1", first.getString("prompt_cache_key"))
-        assertEquals(first.getString("prompt_cache_key"), again.getString("prompt_cache_key"))
-    }
-
-    @Test
-    fun codexRequestDoesNotSendNoneEffort() {
-        val request = OpenAiResponsesProvider.buildRequestJson(
-            config = config("https://chatgpt.com/backend-api/codex").copy(
-                reasoningCapabilities = ModelReasoningCapabilities(
-                    supportedEfforts = listOf(ReasoningEffort.MEDIUM),
-                    canDisable = true,
-                ),
-                reasoningEffort = ReasoningEffort.OFF,
-            ),
-            messages = JSONArray().put(JSONObject().put("role", "user").put("content", "你好")),
-            tools = JSONArray(),
-        )
-        assertEquals("medium", request.getJSONObject("reasoning").getString("effort"))
-        assertEquals("auto", request.getJSONObject("reasoning").getString("summary"))
-    }
-
-    @Test
     fun requestUsesMergedInstructionsAndTypedDurableHistoryMessages() {
         val messages = JSONArray()
             .put(JSONObject().put("role", "system").put("content", "基础约束"))
@@ -359,7 +324,10 @@ class OpenAiResponsesProviderTest {
                     .put("input_tokens", 10)
                     .put("output_tokens", 8)
                     .put("total_tokens", 18)
-                    .put("input_tokens_details", JSONObject().put("cached_tokens", 3).put("cache_creation_tokens", 2))
+                    .put(
+                        "input_tokens_details",
+                        JSONObject().put("cached_tokens", 3).put("cache_write_tokens", 4),
+                    )
                     .put("output_tokens_details", JSONObject().put("reasoning_tokens", 5)),
             )
         val body = buildString {
@@ -406,7 +374,7 @@ class OpenAiResponsesProviderTest {
             val usage = events.filterIsInstance<ProviderEvent.Usage>().single().usage
             assertEquals(18, usage.contextTokens)
             assertEquals(3, usage.cachedTokens)
-            assertEquals(2, usage.cacheCreationTokens)
+            assertEquals(4, usage.cacheWriteTokens)
             assertEquals(5, usage.reasoningTokens)
         }
     }
@@ -587,21 +555,23 @@ class OpenAiResponsesProviderTest {
     @Test
     fun completeRejectsEofWithoutTerminalEvent() {
         withSseServer(event("response.output_text.delta", JSONObject().put("delta", "partial"))) { baseUrl ->
-            val result = OpenAiResponsesProvider.complete(
-                ProviderRequest(
-                    config(baseUrl),
-                    JSONArray().put(JSONObject().put("role", "user").put("content", "hi")),
-                    JSONArray(),
-                ),
-                AgentRunController(),
-            )
-            assertEquals("partial", result.assistantMessage.optString("content"))
+            val thrown = runCatching {
+                OpenAiResponsesProvider.complete(
+                    ProviderRequest(
+                        config(baseUrl),
+                        JSONArray().put(JSONObject().put("role", "user").put("content", "hi")),
+                        JSONArray(),
+                    ),
+                    AgentRunController(),
+                )
+            }.exceptionOrNull()
+            assertTrue(thrown?.message.orEmpty().contains("缺少合法终止事件"))
         }
     }
 
     @Test
     fun citationsDeduplicateAndFallBackForInvalidOffsets() {
-        val formatted = ResponsesCitationFormatter.apply(
+        val formatted = CitationFormatter.apply(
             "中文回答",
             listOf(
                 CitationAnnotation(0, 2, "https://example.com/a", "A"),
@@ -613,91 +583,6 @@ class OpenAiResponsesProviderTest {
         assertTrue(formatted.contains("[[1]]"))
         assertTrue(formatted.contains("来源："))
         assertTrue(formatted.contains("https://example.com/b"))
-    }
-
-    @Test
-    fun deepSeekTerminalContentKeepsFullReasoningThroughCheckpoint() {
-        val thought = JSONObject().put("type", "reasoning").put("id", "rs_deepseek")
-            .put("content", JSONArray().put(JSONObject().put("type", "reasoning_text").put("text", "完整推理")))
-        val body = event("response.reasoning_text.delta", JSONObject().put("delta", "完整推理")) +
-            event("response.completed", JSONObject().put("response", JSONObject().put("status", "completed")
-                .put("output", JSONArray().put(thought))))
-        withSseServer(body) { baseUrl ->
-            val cfg = config(baseUrl).copy(model = "deepseek-v4.1-flash")
-            val result = OpenAiResponsesProvider.complete(ProviderRequest(cfg, JSONArray(), JSONArray()), AgentRunController())
-            assertEquals("完整推理", result.assistantMessage.getString("reasoning_content"))
-            val dto = AgentConversationCodec.durableMessage(result.assistantMessage)
-            val restored = AgentConversationCodec.toJsonObject(AgentConversationCodec.decodeTranscript(
-                AgentConversationCodec.encodeConversationCheckpoint(listOf(dto)),
-            ).single())
-            assertEquals(thought.toString(), ResponsesReasoningState.items(restored, cfg)!!.getJSONObject(0).toString())
-        }
-    }
-
-    @Test
-    fun fullReasoningStreamFallbackDoesNotConfuseSummaryWithReasoning() {
-        for (full in listOf(true, false)) {
-            val type = if (full) "response.reasoning_text.delta" else "response.reasoning_summary_text.delta"
-            val body = event(type, JSONObject().put("delta", "文本")) +
-                event("response.completed", JSONObject().put("response", JSONObject().put("status", "completed")))
-            withSseServer(body) { baseUrl ->
-                val cfg = config(baseUrl)
-                val result = OpenAiResponsesProvider.complete(ProviderRequest(cfg, JSONArray(), JSONArray()), AgentRunController())
-                val items = ResponsesReasoningState.items(result.assistantMessage, cfg)
-                if (full) assertEquals("文本", items!!.getJSONObject(0).getJSONArray("content").getJSONObject(0).getString("text"))
-                else assertNull(items)
-            }
-        }
-    }
-
-    @Test fun terminalToolArgumentsAreAuthoritativeWithoutRevivingStreamedFields() {
-        for (terminal in listOf(
-            """{"task":"inspect"}""",
-            """{"task":"inspect","role":null,"project":null}""",
-            "{invalid-json",
-            "{}",
-        )) {
-            assertEquals(terminal, toolArgumentsFromStream(terminal, terminalOutput = true))
-        }
-        for (missingArguments in listOf<Any?>(null, JSONObject.NULL)) {
-            val failure = runCatching { toolArgumentsFromStream(missingArguments, terminalOutput = true) }
-                .exceptionOrNull()
-            assertTrue(failure is AgentModelFailure)
-            assertEquals("RESPONSES_TOOL_ARGUMENTS_INCOMPLETE", (failure as AgentModelFailure).code)
-            assertFalse(failure.retryable)
-        }
-    }
-
-    @Test fun emptyTerminalOutputUsesDoneArgumentsWithoutFieldLevelMerging() {
-        val done = """{"task":"inspect"}"""
-        assertEquals(done, toolArgumentsFromStream(done, terminalOutput = false))
-        assertEquals("null", toolArgumentsFromStream(JSONObject.NULL, terminalOutput = false))
-        val completeStream = """{"task":"edit","role":"implementation","agent_id":"exec-agent","project":"/workspace/Eta"}"""
-        assertEquals(completeStream, toolArgumentsFromStream(null, terminalOutput = false))
-    }
-
-    private fun toolArgumentsFromStream(arguments: Any?, terminalOutput: Boolean): String {
-        val streamed = """{"task":"edit","role":"implementation","agent_id":"exec-agent","project":"/workspace/Eta"}"""
-        fun item(): JSONObject = JSONObject().put("id", "fc_role").put("type", "function_call")
-            .put("call_id", "call_role").put("name", "delegate_task")
-        val doneItem = item().also { if (arguments != null) it.put("arguments", arguments) }
-        val body = buildString {
-            append(event("response.output_item.added", JSONObject().put("output_index", 0).put("item", item())))
-            append(event("response.function_call_arguments.delta", JSONObject().put("item_id", "fc_role").put("delta", streamed)))
-            if (arguments != null) append(event("response.function_call_arguments.done", JSONObject()
-                .put("item_id", "fc_role").put("arguments", arguments)))
-            append(event("response.output_item.done", JSONObject().put("output_index", 0).put("item", doneItem)))
-            append(event("response.completed", JSONObject().put("response", JSONObject().put("status", "completed")
-                .put("output", if (terminalOutput) JSONArray().put(doneItem) else JSONArray()))))
-        }
-        var actual = ""
-        withSseServer(body) { baseUrl ->
-            val result = OpenAiResponsesProvider.complete(ProviderRequest(config(baseUrl),
-                JSONArray().put(JSONObject().put("role", "user").put("content", "inspect")), JSONArray()), AgentRunController())
-            actual = result.assistantMessage.getJSONArray("tool_calls").getJSONObject(0)
-                .getJSONObject("function").getString("arguments")
-        }
-        return actual
     }
 
     private fun config(baseUrl: String) = AgentModelClient.ModelConfig(
@@ -749,35 +634,10 @@ class OpenAiResponsesProviderTest {
         else -> null
     }
 
-    @Test
-    fun completeAcceptsSseWithoutContentType() {
-        val body = buildString {
-            append(event("response.output_text.delta", JSONObject().put("delta", "你好")))
-            append(
-                event(
-                    "response.completed",
-                    JSONObject().put("response", JSONObject().put("status", "completed")),
-                ),
-            )
-        }
-        withSseServer(body, includeContentType = false) { baseUrl ->
-            val result = OpenAiResponsesProvider.complete(
-                request = ProviderRequest(
-                    config = config(baseUrl),
-                    messages = JSONArray().put(JSONObject().put("role", "user").put("content", "你好")),
-                    tools = JSONArray(),
-                ),
-                runController = AgentRunController(),
-                onEvent = {},
-            )
-            assertEquals("你好", result.assistantMessage.getString("content"))
-        }
-    }
-
     private fun withSseServer(
         body: String,
         onRequest: (String) -> Unit = {},
-        includeContentType: Boolean = true,
+        writeBody: ((OutputStream) -> Unit)? = null,
         block: (String) -> Unit,
     ) {
         val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
@@ -786,11 +646,11 @@ class OpenAiResponsesProviderTest {
         server.createContext("/responses") { exchange ->
             onRequest(exchange.requestBody.use { it.readBytes().toString(Charsets.UTF_8) })
             val bytes = body.toByteArray(Charsets.UTF_8)
-            if (includeContentType) {
-                exchange.responseHeaders.add("Content-Type", "text/event-stream")
+            exchange.responseHeaders.add("Content-Type", "text/event-stream")
+            exchange.sendResponseHeaders(200, if (writeBody == null) bytes.size.toLong() else 0)
+            exchange.responseBody.use { output ->
+                if (writeBody == null) output.write(bytes) else writeBody(output)
             }
-            exchange.sendResponseHeaders(200, bytes.size.toLong())
-            exchange.responseBody.use { it.write(bytes) }
         }
         server.start()
         try {
