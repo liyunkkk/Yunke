@@ -166,6 +166,9 @@ internal data class DoubaoImageConfig(
 }
 
 @Serializable
+internal enum class SpeechRegion { BEIJING, SINGAPORE }
+
+@Serializable
 internal data class QwenImageConfig(
     val linkedProviderId: String = "",
     val region: SpeechRegion = SpeechRegion.BEIJING,

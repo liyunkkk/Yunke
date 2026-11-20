@@ -98,7 +98,7 @@ internal fun calculateInputBarPopupLayout(
     safeMarginPx: Float,
     marginPx: Float,
     density: Float,
-    defaultMaxHeightDp: Dp = ListPopupDefaults.MaxPopupHeight,
+    defaultMaxHeightDp: Dp = 480.dp,
 ): InputBarPopupLayout {
     val maxHeightDp = if (inputContainerTopPx > statusBarTopPx) {
         ((inputContainerTopPx - statusBarTopPx - marginPx - safeMarginPx) / density).dp

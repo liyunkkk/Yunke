@@ -357,8 +357,7 @@ internal class AgentRuntimeRunExecutor(
             )
             val imageGenEnabled = runBlocking {
                 runCatching { ImageGenSettingsRepository.settings().enabled }.getOrDefault(false)
-            } && Prefs.isToolEnabled(ImageGenToolCatalog.TOOL_NAME) &&
-                request.operation == AgentRuntimeWire.OP_CHAT
+            } && Prefs.isToolEnabled(ImageGenToolCatalog.TOOL_NAME)
             val isVoiceOverlay = request.handoff?.source == AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE
             val imageGenToolExecutor = ImageGenToolExecutor(
                 context = appContext,
@@ -370,7 +369,7 @@ internal class AgentRuntimeRunExecutor(
                 },
                 runController = runController,
             )
-            if (scheduledRunContext == null && request.operation == AgentRuntimeWire.OP_CHAT) {
+            if (scheduledRunContext == null) {
                 ScheduledTaskToolCatalog.appendManageTool(mcpTools)
             }
             if (scheduledRunContext != null) {
@@ -513,7 +512,7 @@ internal class AgentRuntimeRunExecutor(
                 compactPolicy = compactPolicy,
                 onHistorySnapshot = session::publishHistorySnapshot,
                 interactiveModeEnabled = interactiveModeEnabled,
-                scheduledTaskTools = scheduledRunContext == null && request.operation == AgentRuntimeWire.OP_CHAT,
+                scheduledTaskTools = scheduledRunContext == null,
                 extraSystemContext = scheduledRunContext?.buildSystemGuidance().orEmpty(),
                 toolFilter = scheduledToolFilter,
                 onEvent = { event ->

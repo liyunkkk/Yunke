@@ -788,7 +788,6 @@ internal fun AgentAppRoot(
                         when (action) {
                             AgentToolsAction.NavigateBack -> popRoute()
                             AgentToolsAction.OpenBrowser -> pushRoute(AppRoute.Browser)
-                            AgentToolsAction.OpenWebToolsSettings -> pushRoute(AppRoute.WebToolsSettings)
                             AgentToolsAction.OpenImageGenSettings -> pushRoute(AppRoute.ImageGenSettings)
                             AgentToolsAction.OpenEnhancements -> pushRoute(AppRoute.SystemEnhance)
                             AgentToolsAction.OpenPermissions -> pushRoute(AppRoute.Permissions)

@@ -39,6 +39,9 @@ internal object ProviderUrls {
     fun openAiImagesEditsUrl(baseUrl: String): String =
         appendPath(baseUrl, "images/edits")
 
+    fun qwenMultimodalGenerationUrl(baseUrl: String): String =
+        appendPath(baseUrl, "api/v1/services/aigc/multimodal-generation/generation")
+
     fun openAiVideosUrl(baseUrl: String): String =
         appendPath(baseUrl, "videos")
 

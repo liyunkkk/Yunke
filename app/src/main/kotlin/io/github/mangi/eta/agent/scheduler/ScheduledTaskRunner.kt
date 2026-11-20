@@ -640,7 +640,7 @@ internal object ScheduledTaskRunner {
         val isLocked = keyguard?.isKeyguardLocked == true
         if (!isLocked) return false
         val virtualDisplayPossible = Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
-            Prefs.isEnabled(Prefs.Keys.AGENT_VIRTUAL_DISPLAY_ENABLED) &&
+            (io.github.mangi.eta.agent.device.AgentTaskSurface.stored() == io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.BACKGROUND) &&
             (RootAccess.isGranted || EtaApp.serviceInstance != null)
         return !virtualDisplayPossible
     }
