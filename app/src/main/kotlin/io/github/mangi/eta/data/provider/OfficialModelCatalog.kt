@@ -1,5 +1,7 @@
 package io.github.mangi.eta.data.provider
 
+import io.github.mangi.eta.agent.model.ProviderUrls
+import io.github.mangi.eta.data.model.GeminiProviderSetting
 import io.github.mangi.eta.data.model.Model
 import io.github.mangi.eta.data.model.ModelSource
 import io.github.mangi.eta.data.model.CustomProviderSetting
@@ -54,6 +56,73 @@ internal object OfficialModelCatalog {
                 reasoning = true,
             )
         ),
+        ProviderSourceTypes.GEMINI to listOf(
+            officialModel(
+                id = "builtin-gemini-4-neon",
+                modelId = "gemini-4-neon",
+                displayName = "Gemini 4 Neon",
+                ownedBy = "google",
+                inputModalities = listOf(Model.TEXT_MODALITY, Model.IMAGE_MODALITY),
+                toolCall = true,
+                reasoning = true,
+                structuredOutput = true,
+                contextWindow = 1_048_576,
+            ),
+            officialModel(
+                id = "builtin-gemini-4-hydrogen",
+                modelId = "gemini-4-hydrogen",
+                displayName = "Gemini 4 Hydrogen",
+                ownedBy = "google",
+                inputModalities = listOf(Model.TEXT_MODALITY, Model.IMAGE_MODALITY),
+                toolCall = true,
+                reasoning = true,
+                structuredOutput = true,
+                contextWindow = 1_048_576,
+            ),
+            officialModel(
+                id = "builtin-gemini-4-carbon",
+                modelId = "gemini-4-carbon",
+                displayName = "Gemini 4 Carbon",
+                ownedBy = "google",
+                inputModalities = listOf(Model.TEXT_MODALITY, Model.IMAGE_MODALITY),
+                toolCall = true,
+                reasoning = true,
+                contextWindow = 1_048_576,
+            ),
+            officialModel(
+                id = "builtin-gemini-3-8-flash",
+                modelId = "gemini-3.8-flash",
+                displayName = "Gemini 3.8 Flash",
+                ownedBy = "google",
+                inputModalities = listOf(Model.TEXT_MODALITY, Model.IMAGE_MODALITY),
+                toolCall = true,
+                reasoning = true,
+                structuredOutput = true,
+                contextWindow = 1_048_576,
+            ),
+            officialModel(
+                id = "builtin-gemini-4-argon",
+                modelId = "gemini-4-argon",
+                displayName = "Gemini 4 Argon",
+                ownedBy = "google",
+                inputModalities = listOf(Model.TEXT_MODALITY, Model.IMAGE_MODALITY),
+                toolCall = true,
+                reasoning = true,
+                structuredOutput = true,
+                contextWindow = 1_048_576,
+            ),
+            officialModel(
+                id = "builtin-gemini-3-5-flash-lite",
+                modelId = "gemini-3.5-flash-lite",
+                displayName = "Gemini 3.5 Flash-Lite",
+                ownedBy = "google",
+                inputModalities = listOf(Model.TEXT_MODALITY, Model.IMAGE_MODALITY),
+                toolCall = true,
+                reasoning = true,
+                structuredOutput = true,
+                contextWindow = 1_048_576,
+            ),
+        ).map { it.copy(contextWindowOverride = it.contextWindow) },
         ProviderSourceTypes.ANTHROPIC to listOf(
             officialModel(
                 id = "builtin-anthropic-claude-fable-5",
@@ -247,6 +316,19 @@ internal object OfficialModelCatalog {
 
     fun modelsForProvider(provider: ProviderSetting): List<Model> =
         modelsForCatalogId(catalogIdFor(provider))
+            .let { models ->
+                if (provider is GeminiProviderSetting && provider.isVertexAi) {
+                    val location = ProviderUrls.vertexConfiguredLocation(provider.baseUrl, provider.vertexLocation)
+                    val official = ProviderUrls.isOfficialVertexBaseUrl(provider.baseUrl)
+                    models.filter { model ->
+                        GeminiModelCapabilities.isGemini4(model.modelId) && when {
+                            !official || location in setOf("global", "us", "eu") -> true
+                            location in setOf("europe-west2", "asia-southeast1") -> model.modelId == "gemini-4-argon"
+                            else -> false
+                        }
+                    }
+                } else models
+            }
             .map { it.withCatalogReasoningCapabilities(catalogIdFor(provider)) }
             .withStableSortOrder()
 
@@ -303,13 +385,15 @@ internal object OfficialModelCatalog {
     private fun Model.withCatalogReasoningCapabilities(catalogId: String?): Model =
         copy(
             reasoningCapabilities = reasoningCapabilities
-                ?: catalogId?.let { ReasoningCapabilityResolver.catalogCapabilities(it, modelId) }
+                ?: if (catalogId == ProviderSourceTypes.GEMINI) GeminiModelCapabilities.reasoningCapabilities(modelId)
+                else catalogId?.let { ReasoningCapabilityResolver.catalogCapabilities(it, modelId) }
         )
 
     private fun List<Model>.withStableSortOrder(): List<Model> =
         mapIndexed { index, model -> model.copy(sortOrder = index) }
 
     private fun catalogIdFor(provider: ProviderSetting): String? {
+        if (provider is GeminiProviderSetting) return ProviderSourceTypes.GEMINI
         val resolved = ProviderSourceRegistry.resolve(provider)
         if (resolved != ProviderSourceTypes.CUSTOM) return resolved
         val endpointMode = when (provider) {

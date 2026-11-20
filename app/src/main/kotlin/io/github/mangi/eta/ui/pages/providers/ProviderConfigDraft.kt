@@ -4,6 +4,9 @@ import androidx.compose.runtime.saveable.mapSaver
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.model.CustomHeaderFilter
 import io.github.mangi.eta.data.model.AnthropicProviderSetting
+import io.github.mangi.eta.agent.model.ProviderUrls
+import io.github.mangi.eta.data.model.GeminiProviderSetting
+import io.github.mangi.eta.data.model.GeminiEndpointMode
 import io.github.mangi.eta.data.model.BalanceOption
 import io.github.mangi.eta.data.model.CustomHeader
 import io.github.mangi.eta.data.model.CustomBody
@@ -29,6 +32,8 @@ internal data class ProviderConfigDraft(
     val responsesStripReasoningStatus: Boolean = false,
     val hostedWebSearchEnabled: Boolean,
     val anthropicVersion: String,
+    val vertexProject: String = "",
+    val vertexLocation: String = GeminiProviderSetting.DEFAULT_VERTEX_LOCATION,
     val headers: List<ProviderHeaderDraft> = emptyList(),
     val bodies: List<ProviderBodyDraft> = emptyList(),
     val balanceOption: BalanceOption = BalanceOption(),
@@ -51,11 +56,14 @@ internal data class ProviderConfigDraft(
                 is OpenAiCompatibleProviderSetting -> provider.endpointMode
                 is CustomProviderSetting -> provider.endpointMode
                 is AnthropicProviderSetting -> ""
+                is GeminiProviderSetting -> GeminiEndpointMode.normalize(provider.endpointMode)
             },
             responsesStripReasoningStatus = provider.responsesStripReasoningStatus,
             hostedWebSearchEnabled = provider.hostedWebSearchEnabled,
             anthropicVersion = (provider as? AnthropicProviderSetting)?.anthropicVersion
                 ?: AnthropicProviderSetting.DEFAULT_ANTHROPIC_VERSION,
+            vertexProject = (provider as? GeminiProviderSetting)?.vertexProject.orEmpty(),
+            vertexLocation = (provider as? GeminiProviderSetting)?.vertexLocation ?: GeminiProviderSetting.DEFAULT_VERTEX_LOCATION,
             balanceOption = provider.balanceOption,
             sessionModelPattern = SessionGatewayRule.decode(provider.sessionGatewayJson).modelPattern,
             sessionPathPattern = SessionGatewayRule.decode(provider.sessionGatewayJson).pathPattern,
@@ -80,6 +88,8 @@ internal val ProviderConfigDraftSaver = mapSaver(
             "responsesStripReasoningStatus" to draft.responsesStripReasoningStatus,
             "hostedWebSearchEnabled" to draft.hostedWebSearchEnabled,
             "anthropicVersion" to draft.anthropicVersion,
+            "vertexProject" to draft.vertexProject,
+            "vertexLocation" to draft.vertexLocation,
             "balanceOptionEnabled" to draft.balanceOption.enabled,
             "balanceOptionPreset" to draft.balanceOption.preset,
             "balanceOptionApiPath" to draft.balanceOption.apiPath,
@@ -112,6 +122,8 @@ internal val ProviderConfigDraftSaver = mapSaver(
             responsesStripReasoningStatus = state["responsesStripReasoningStatus"] as? Boolean ?: false,
             hostedWebSearchEnabled = state.getValue("hostedWebSearchEnabled") as Boolean,
             anthropicVersion = state.getValue("anthropicVersion") as String,
+            vertexProject = state["vertexProject"] as? String ?: "",
+            vertexLocation = state["vertexLocation"] as? String ?: GeminiProviderSetting.DEFAULT_VERTEX_LOCATION,
             balanceOption = BalanceOption(
                 enabled = state["balanceOptionEnabled"] as? Boolean ?: false,
                 preset = state["balanceOptionPreset"] as? String ?: BalanceOption.PRESET_CUSTOM,
@@ -140,6 +152,8 @@ internal fun buildUpdatedProvider(
     responsesStripReasoningStatus: Boolean = source.responsesStripReasoningStatus,
     hostedWebSearchEnabled: Boolean,
     anthropicVersion: String,
+    vertexProject: String = (source as? GeminiProviderSetting)?.vertexProject.orEmpty(),
+    vertexLocation: String = (source as? GeminiProviderSetting)?.vertexLocation ?: GeminiProviderSetting.DEFAULT_VERTEX_LOCATION,
     customHeaders: List<CustomHeader>,
     customBody: List<CustomBody> = source.customBody,
     balanceOption: BalanceOption,
@@ -186,6 +200,21 @@ internal fun buildUpdatedProvider(
             anthropicVersion = anthropicVersion.trim().ifBlank { AnthropicProviderSetting.DEFAULT_ANTHROPIC_VERSION },
             sessionGatewayJson = sessionGatewayJson,
         )
+        is GeminiProviderSetting -> source.copy(
+            customHeaders = customHeaders.map { it.copy(name = it.name.trim()) },
+            customBody = customBody,
+            balanceOption = balanceOption,
+            name = name.trim(),
+            baseUrl = baseUrl.trim(),
+            apiKey = apiKey.trim(),
+            authMode = ProviderAuthMode.parse(authMode),
+            isEnabled = isEnabled,
+            endpointMode = GeminiEndpointMode.normalize(endpointMode),
+            vertexProject = vertexProject.trim(),
+            vertexLocation = vertexLocation.trim().lowercase().ifBlank { GeminiProviderSetting.DEFAULT_VERTEX_LOCATION },
+            hostedWebSearchEnabled = hostedWebSearchEnabled && GeminiEndpointMode.normalize(endpointMode) != GeminiEndpointMode.VERTEX_AI,
+            sessionGatewayJson = sessionGatewayJson,
+        )
     }
 }
 
@@ -205,6 +234,21 @@ internal fun validateProviderDraft(context: android.content.Context, draft: Prov
     if (uri == null || uri.scheme !in setOf("http", "https") || uri.host.isNullOrBlank()) {
         return context.getString(R.string.page_base_url_must_be_a_valid_http_s_address_0e7d58)
     }
+    if (GeminiEndpointMode.normalize(draft.endpointMode) == GeminiEndpointMode.VERTEX_AI) {
+        runCatching { ProviderUrls.validateVertexChatEndpoint(draft.baseUrl, draft.vertexProject, draft.vertexLocation) }
+            .exceptionOrNull()?.let { return it.message ?: "Vertex AI 接口配置无效" }
+    }
     CustomHeaderFilter.validationError(draft.headers.map { it.header })?.let { return it }
     return parseProviderBodies(draft.bodies).exceptionOrNull()?.message
+}
+
+internal fun ProviderConfigDraft.withGeminiEndpointMode(mode: String): ProviderConfigDraft {
+    val normalized = GeminiEndpointMode.normalize(mode)
+    val oldDefault = if (GeminiEndpointMode.normalize(endpointMode) == GeminiEndpointMode.VERTEX_AI)
+        GeminiProviderSetting.DEFAULT_VERTEX_BASE_URL else GeminiProviderSetting.DEFAULT_BASE_URL
+    val nextDefault = if (normalized == GeminiEndpointMode.VERTEX_AI)
+        GeminiProviderSetting.DEFAULT_VERTEX_BASE_URL else GeminiProviderSetting.DEFAULT_BASE_URL
+    return copy(endpointMode = normalized,
+        baseUrl = if (baseUrl.isBlank() || baseUrl.trim().trimEnd('/') == oldDefault) nextDefault else baseUrl,
+        hostedWebSearchEnabled = hostedWebSearchEnabled && normalized != GeminiEndpointMode.VERTEX_AI)
 }

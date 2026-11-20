@@ -7,14 +7,17 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Dashboard
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.GppMaybe
+import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Inventory2
 import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.Layers
 import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.Smartphone
 import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -24,11 +27,14 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.config.Prefs
+import io.github.mangi.eta.data.model.ImageGenSettings
+import io.github.mangi.eta.data.repository.ImageGenSettingsRepository
 import io.github.mangi.eta.ui.components.ArrowPreference
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import io.github.mangi.eta.ui.components.PreferenceIcon
 import io.github.mangi.eta.ui.components.WindowSpinnerPreference
 import io.github.mangi.eta.ui.navigation.AppRoute
+import io.github.mangi.eta.ui.screens.imagegen.shortName
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.DropdownItem
 import top.yukonga.miuix.kmp.basic.SmallTitle
@@ -63,6 +69,15 @@ internal fun SettingsToolsScreen(
                     title = stringResource(R.string.settings_tools_list),
                     startAction = { PreferenceIcon(Icons.Rounded.Dashboard) },
                     onClick = { onNavigate(AppRoute.Tools) },
+                )
+
+                val imageGenSettings by remember { ImageGenSettingsRepository.settingsFlow() }
+                    .collectAsState(initial = ImageGenSettings())
+                ArrowPreference(
+                    title = stringResource(R.string.image_gen_settings_title),
+                    summary = if (imageGenSettings.enabled) imageGenSettings.backend.shortName() else "未开启",
+                    startAction = { PreferenceIcon(Icons.Rounded.Image) },
+                    onClick = { onNavigate(AppRoute.ImageGenSettings) },
                 )
 
                 if (taskBackendInstalled == true) {

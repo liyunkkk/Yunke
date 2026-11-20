@@ -21,6 +21,7 @@ import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.Dns
 import androidx.compose.material.icons.rounded.Feedback
 import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Extension
 import androidx.compose.material.icons.rounded.Label
@@ -29,6 +30,7 @@ import androidx.compose.material.icons.rounded.Psychology
 import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.RecordVoiceOver
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.SmartToy
@@ -55,7 +57,10 @@ import io.github.mangi.eta.agent.model.ModelRetrySettings
 import io.github.mangi.eta.core.AppFileLogger
 import io.github.mangi.eta.data.datastore.SettingsDataStore
 import io.github.mangi.eta.data.model.AppUpdateOffer
+import io.github.mangi.eta.data.model.ImageGenSettings
 import io.github.mangi.eta.data.repository.AppUpdateRepository
+import io.github.mangi.eta.data.repository.ImageGenSettingsRepository
+import io.github.mangi.eta.ui.screens.imagegen.shortName
 import io.github.mangi.eta.ui.components.AppUpdateDialog
 import io.github.mangi.eta.ui.components.ArrowPreference
 import io.github.mangi.eta.ui.components.MiuixDialogActions
@@ -269,6 +274,11 @@ internal fun SettingsScreen(
                         startAction = { PreferenceIcon(icon = Icons.Rounded.Dns) },
                         onClick = { onNavigate(AppRoute.McpServers) },
                     )
+                    ArrowPreference(
+                        title = stringResource(R.string.route_scheduled_tasks),
+                        startAction = { PreferenceIcon(icon = Icons.Rounded.Schedule) },
+                        onClick = { onNavigate(AppRoute.ScheduledTasks) },
+                    )
                 }
             }
 
@@ -285,6 +295,14 @@ internal fun SettingsScreen(
                         title = "网页搜索与抓取",
                         startAction = { PreferenceIcon(icon = Icons.Rounded.Public) },
                         onClick = { onNavigate(AppRoute.WebToolsSettings) },
+                    )
+                    val imageGenSettings by remember { ImageGenSettingsRepository.settingsFlow() }
+                        .collectAsState(initial = ImageGenSettings())
+                    ArrowPreference(
+                        title = stringResource(R.string.image_gen_settings_title),
+                        summary = if (imageGenSettings.enabled) imageGenSettings.backend.shortName() else "未开启",
+                        startAction = { PreferenceIcon(icon = Icons.Rounded.Image) },
+                        onClick = { onNavigate(AppRoute.ImageGenSettings) },
                     )
                     ArrowPreference(
                         title = stringResource(R.string.ui_linux_tool_environment_314d22),

@@ -137,6 +137,11 @@ internal object AgentModelPickerProjector {
             supportsVideoGeneration = model.supportsVideoGeneration,
             requestEndpoint = when (this) {
                 is io.github.mangi.eta.data.model.AnthropicProviderSetting -> io.github.mangi.eta.agent.model.EndpointKind.ANTHROPIC_MESSAGES
+                is io.github.mangi.eta.data.model.GeminiProviderSetting -> if (isVertexAi) {
+                    io.github.mangi.eta.agent.model.EndpointKind.VERTEX_GENERATE_CONTENT
+                } else {
+                    io.github.mangi.eta.agent.model.EndpointKind.GEMINI_INTERACTIONS
+                }
                 else -> {
                     val mode = when (this) {
                         is io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting -> endpointMode

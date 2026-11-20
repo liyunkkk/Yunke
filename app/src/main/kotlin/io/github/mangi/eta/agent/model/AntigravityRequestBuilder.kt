@@ -105,8 +105,12 @@ internal object AntigravityRequestBuilder {
                 generation.put("thinkingConfig", JSONObject().put("thinkingLevel", "low"))
             ReasoningEffort.MEDIUM ->
                 generation.put("thinkingConfig", JSONObject().put("thinkingLevel", "medium"))
-            ReasoningEffort.HIGH, ReasoningEffort.XHIGH, ReasoningEffort.MAX ->
+            ReasoningEffort.HIGH, ReasoningEffort.MAX ->
                 generation.put("thinkingConfig", JSONObject().put("thinkingLevel", "high"))
+            ReasoningEffort.XHIGH -> {
+                val supportsXHigh = config.reasoningCapabilities?.supportedEfforts?.contains(ReasoningEffort.XHIGH) == true
+                generation.put("thinkingConfig", JSONObject().put("thinkingLevel", if (supportsXHigh) "xhigh" else "high"))
+            }
             ReasoningEffort.OFF, ReasoningEffort.DEFAULT -> Unit
         }
         if (generation.length() > 0) inner.put("generationConfig", generation)

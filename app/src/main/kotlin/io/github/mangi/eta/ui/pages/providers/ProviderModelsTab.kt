@@ -74,6 +74,9 @@ import androidx.navigationevent.compose.NavigationBackHandler
 import androidx.navigationevent.compose.rememberNavigationEventState
 import io.github.mangi.eta.EtaApp
 import io.github.mangi.eta.R
+import io.github.mangi.eta.data.model.GeminiProviderSetting
+import io.github.mangi.eta.data.provider.GeminiModelCapabilities
+import io.github.mangi.eta.data.provider.OfficialModelCatalog
 import io.github.mangi.eta.data.model.Model
 import io.github.mangi.eta.data.model.VisionChatModels
 import io.github.mangi.eta.data.model.ModelReasoningCapabilities
@@ -205,6 +208,7 @@ internal fun ProviderModelsTab(
     onSelectCurrent: ((String) -> Unit)? = null,
 ) {
     val context = LocalContext.current
+    val isVertex = provider is GeminiProviderSetting && provider.isVertexAi
     val storedModelId by RuntimeConfigRepository.selectedModelIdFlow().collectAsState(initial = null)
     val selectedTranslationProviderId by RuntimeConfigRepository
         .selectedTranslationProviderIdFlow().collectAsState(initial = null)
@@ -253,10 +257,32 @@ internal fun ProviderModelsTab(
         ) {
             item(key = "actions", contentType = "section") {
                 ProviderSection(title = stringResource(R.string.ui_model_management_183414)) {
+                    if (provider is GeminiProviderSetting) {
+                        ArrowPreference(
+                            title = "补入 Gemini 内置预设",
+                            summary = if (isVertex) "仅列出当前地域支持的 Gemini 4 模型；保留已有同 ID 配置" else "使用内置 Gemini 模型目录",
+                            enabled = !isFetching && !isMutatingModel,
+                            onClick = {
+                                scope.launch {
+                                    isMutatingModel = true
+                                    try {
+                                        val models = OfficialModelCatalog.modelsForProvider(provider)
+                                        val existing = provider.models.map { it.modelId.trim().lowercase() }.toSet()
+                                        val additions = models.filter { it.modelId.trim().lowercase() !in existing }
+                                        ModelRepository.addSelectedRemoteModels(provider.id, additions)
+                                        RuntimeConfigRepository.syncToRemotePreferences(EtaApp.serviceInstance)
+                                        message = "已补入 ${additions.size} 个内置模型"
+                                    } catch (cancelled: CancellationException) { throw cancelled }
+                                    catch (failure: Exception) { message = failure.message ?: "补入模型失败" }
+                                    finally { isMutatingModel = false }
+                                }
+                            },
+                        )
+                    }
                     ArrowPreference(
                         title = if (isFetching) context.getString(R.string.page_retrieving_a880c9) else context.getString(R.string.page_automatically_pull_from_remote_f883d0),
-                        summary = stringResource(R.string.provider_models_endpoint_summary, provider.baseUrl),
-                        enabled = !isFetching && !isMutatingModel && !SpeechSynthesisModels.isSpeechOnlyProvider(provider),
+                        summary = if (isVertex) "Vertex AI API Key 使用内置预设或手动添加模型" else stringResource(R.string.provider_models_endpoint_summary, provider.baseUrl),
+                        enabled = !isVertex && !isFetching && !isMutatingModel && !SpeechSynthesisModels.isSpeechOnlyProvider(provider),
                         startAction = {
                             PreferenceIcon(
                                 icon = Icons.Rounded.CloudDownload,
@@ -538,6 +564,7 @@ internal fun ProviderModelsTab(
 
     editingModel?.let { model ->
         ModelEditDialog(
+            provider = provider,
             model = model,
             isNew = isCreatingModel,
             isSaving = isMutatingModel,
@@ -909,6 +936,7 @@ private fun ModelListItem(
 
 @Composable
 private fun ModelEditDialog(
+    provider: ProviderSetting,
     model: Model,
     isNew: Boolean,
     isSaving: Boolean,
@@ -925,10 +953,12 @@ private fun ModelEditDialog(
         mutableStateOf(model.contextWindowOverride?.toString().orEmpty())
     }
     val automaticReasoning = remember(model.id, model.modelId, model.reasoning, model.reasoningCapabilities) {
-        ReasoningCapabilityResolver.automaticCapabilities(model)
+        if (provider is GeminiProviderSetting) GeminiModelCapabilities.reasoningCapabilities(model.modelId)
+        else ReasoningCapabilityResolver.automaticCapabilities(model)
     }
     val suggestedReasoning = remember(model.id, model.modelId, model.reasoning, model.reasoningCapabilities) {
-        ReasoningCapabilityResolver.suggestedCapabilities(model)
+        if (provider is GeminiProviderSetting) GeminiModelCapabilities.requestReasoningCapabilities(model.modelId)
+        else ReasoningCapabilityResolver.suggestedCapabilities(model)
     }
     var reasoningOverrideActive by remember(model.id, isNew) {
         mutableStateOf(
@@ -956,6 +986,8 @@ private fun ModelEditDialog(
     LaunchedEffect(automaticVision, visionOverrideActive) {
         if (!visionOverrideActive) visionEnabled = automaticVision
     }
+    val vertexModelError = if (provider is GeminiProviderSetting && provider.isVertexAi &&
+        modelId.isNotBlank() && !GeminiModelCapabilities.isGemini4(modelId)) "Vertex AI 对话仅支持 Gemini 4 系列模型" else null
     val contextError = contextWindowInputError(
         contextWindowOverrideText,
         context.getString(R.string.page_the_context_length_must_be_a_positive_integer_06ca7a),
@@ -978,15 +1010,18 @@ private fun ModelEditDialog(
         reasoningOverride = reasoningEnabled.takeIf { reasoningOverrideActive },
         reasoningCapabilitiesOverride = if (reasoningOverrideActive && reasoningEnabled) {
             (model.effectiveReasoningCapabilities ?: suggestedReasoning).copy(
-                supportedEfforts = allReasoningEffortTiers,
+                supportedEfforts = if (provider is GeminiProviderSetting) {
+                    if (provider.isVertexAi) GeminiModelCapabilities.requestReasoningCapabilities(modelId).supportedEfforts
+                    else GeminiModelCapabilities.configurableEfforts
+                } else allReasoningEffortTiers,
                 defaultEffort = model.effectiveReasoningCapabilities
                     ?.defaultEffort
                     ?.takeIf { it != ReasoningEffort.OFF }
                     ?: suggestedReasoning.defaultEffort
                     ?: ReasoningEffort.MEDIUM,
                 defaultEnabled = true,
-                mandatory = false,
-                canDisable = true,
+                mandatory = provider is GeminiProviderSetting,
+                canDisable = provider !is GeminiProviderSetting,
             )
         } else {
             null
@@ -1038,7 +1073,7 @@ private fun ModelEditDialog(
                     ),
                     modifier = Modifier.fillMaxWidth(),
                 )
-                contextError?.let { validationError ->
+                (vertexModelError ?: contextError)?.let { validationError ->
                     Text(
                         text = validationError,
                         style = MiuixTheme.textStyles.footnote2,
@@ -1139,7 +1174,7 @@ private fun ModelEditDialog(
             confirmEnabled = !isSaving &&
                 displayName.isNotBlank() &&
                 modelId.isNotBlank() &&
-                contextError == null,
+                contextError == null && vertexModelError == null,
             cancelEnabled = !isSaving,
             onCancel = onDismiss,
             onConfirm = { onSubmit(updated()) },

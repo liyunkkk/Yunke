@@ -1,5 +1,6 @@
 package io.github.mangi.eta.ui.components
 
+import io.github.mangi.eta.agent.imagegen.ImageGenToolCatalog
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
 import io.github.mangi.eta.ui.model.SystemNoticeCode
 import io.github.mangi.eta.ui.model.SystemNoticeMessageUi
@@ -76,4 +77,6 @@ internal fun List<AgentTimelineEntry>.userMessageIndices(): List<Int> = mapIndex
 }
 
 private fun AgentChatMessageUi.isWorkProcessMessage(): Boolean =
-    this is ThinkingMessageUi || this is ToolActivityMessageUi || this is ToolSummaryMessageUi
+    this is ThinkingMessageUi ||
+        this is ToolSummaryMessageUi ||
+        (this is ToolActivityMessageUi && toolName != ImageGenToolCatalog.TOOL_NAME)

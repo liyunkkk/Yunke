@@ -106,7 +106,13 @@ import io.github.mangi.eta.ui.screens.terminal.LinuxFilesScreen
 import io.github.mangi.eta.ui.screens.terminal.SharedFoldersScreen
 import io.github.mangi.eta.ui.screens.terminal.TerminalEntryScreen
 import io.github.mangi.eta.ui.screens.terminal.WorkspaceScreen
+import io.github.mangi.eta.ui.screens.imagegen.ImageGenGalleryScreen
+import io.github.mangi.eta.ui.screens.imagegen.ImageGenSettingsScreen
+import io.github.mangi.eta.ui.screens.scheduled.ScheduledTaskDetailScreen
+import io.github.mangi.eta.ui.screens.scheduled.ScheduledTaskEditorScreen
+import io.github.mangi.eta.ui.screens.scheduled.ScheduledTasksScreen
 import io.github.mangi.eta.ui.screens.tools.AgentToolsScreen
+import io.github.mangi.eta.ui.ArchivedConversationLaunchRequest
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -127,8 +133,12 @@ import top.yukonga.miuix.kmp.window.WindowDialog
  * Agent App 根组件：持有本地导航栈，并把 Screen actions 交给 [AgentAppState]。
  */
 @Composable
-fun AgentAppRoot(
+internal fun AgentAppRoot(
     assistantConversationKey: String? = null,
+    requestedScheduledTaskId: String? = null,
+    onScheduledTaskOpened: () -> Unit = {},
+    archivedConversationRequest: ArchivedConversationLaunchRequest? = null,
+    onArchivedConversationOpened: () -> Unit = {},
     inboundShareUris: List<String> = emptyList(),
     onAssistantConversationOpened: (Boolean) -> Unit = {},
     onInboundShareConsumed: () -> Unit = {},
@@ -362,6 +372,24 @@ fun AgentAppRoot(
             ?.let { updateOffer = it }
     }
 
+    LaunchedEffect(archivedConversationRequest) {
+        val request = archivedConversationRequest ?: return@LaunchedEffect
+        val opened = agentState.openArchivedConversation(request.source, request.conversationKey)
+        if (opened) {
+            focusManager.clearFocus(force = true)
+            conversationPaneOpen = false
+            navigator.popToHome()
+        }
+        onArchivedConversationOpened()
+    }
+
+    LaunchedEffect(requestedScheduledTaskId) {
+        val taskId = requestedScheduledTaskId ?: return@LaunchedEffect
+        conversationPaneOpen = false
+        navigator.push(AppRoute.ScheduledTaskDetail(taskId))
+        onScheduledTaskOpened()
+    }
+
     LaunchedEffect(assistantConversationKey) {
         val conversationKey = assistantConversationKey ?: return@LaunchedEffect
         val opened = agentState.openAssistantConversation(conversationKey)
@@ -529,6 +557,7 @@ fun AgentAppRoot(
             onOpenAssistants = { pushFromDrawer(AppRoute.Assistants()) },
             onOpenUsageStats = { pushFromDrawer(AppRoute.UsageStats) },
             onOpenSkills = { pushFromDrawer(AppRoute.Skills) },
+            onOpenScheduledTasks = { pushFromDrawer(AppRoute.ScheduledTasks) },
             onOpenPermissions = { pushFromDrawer(AppRoute.Permissions) },
             onOpenSettings = { pushFromDrawer(AppRoute.Settings) },
             onOpenModelProviders = { pushFromDrawer(AppRoute.ModelProviders) },
@@ -759,6 +788,8 @@ fun AgentAppRoot(
                         when (action) {
                             AgentToolsAction.NavigateBack -> popRoute()
                             AgentToolsAction.OpenBrowser -> pushRoute(AppRoute.Browser)
+                            AgentToolsAction.OpenWebToolsSettings -> pushRoute(AppRoute.WebToolsSettings)
+                            AgentToolsAction.OpenImageGenSettings -> pushRoute(AppRoute.ImageGenSettings)
                             AgentToolsAction.OpenEnhancements -> pushRoute(AppRoute.SystemEnhance)
                             AgentToolsAction.OpenPermissions -> pushRoute(AppRoute.Permissions)
                         }
@@ -1020,6 +1051,66 @@ fun AgentAppRoot(
             }
             entry<AppRoute.WebToolsSettings>(swipeDismiss = swipeDismiss) {
                 io.github.mangi.eta.ui.screens.tools.WebToolsSettingsScreen(onBack = ::popRoute)
+            }
+            entry<AppRoute.ImageGenSettings>(swipeDismiss = swipeDismiss) {
+                ImageGenSettingsScreen(
+                    onBack = ::popRoute,
+                    onOpenGallery = { pushRoute(AppRoute.ImageGenGallery) },
+                )
+            }
+            entry<AppRoute.ImageGenGallery>(swipeDismiss = swipeDismiss) {
+                ImageGenGalleryScreen(onBack = ::popRoute)
+            }
+            entry<AppRoute.ScheduledTasks>(swipeDismiss = swipeDismiss) {
+                ScheduledTasksScreen(
+                    onNavigate = { route -> pushRoute(route) },
+                    onBack = ::popRoute,
+                )
+            }
+            entry<AppRoute.ScheduledTaskDetail>(swipeDismiss = swipeDismiss) { route ->
+                ScheduledTaskDetailScreen(
+                    taskId = route.taskId,
+                    onNavigate = { target -> pushRoute(target) },
+                    onOpenRun = { run, task, isLive ->
+                        val archiveKey = run.archiveConversationKey?.takeIf { it.isNotBlank() }
+                            ?: return@ScheduledTaskDetailScreen
+                        uiScope.launch {
+                            val opened = agentState.openScheduledTaskRun(
+                                runId = run.id,
+                                archiveConversationKey = archiveKey,
+                                taskTitle = task.name,
+                                taskPrompt = task.prompt,
+                                isRunning = isLive,
+                            )
+                            if (opened) {
+                                focusManager.clearFocus()
+                                conversationPaneOpen = false
+                                navigator.popToHome()
+                            } else {
+                                Toast.makeText(
+                                    context,
+                                    "该次运行暂无可查看的对话记录",
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                            }
+                        }
+                    },
+                    onBack = ::popRoute,
+                )
+            }
+            entry<AppRoute.ScheduledTaskEditor>(swipeDismiss = swipeDismiss) { route ->
+                ScheduledTaskEditorScreen(
+                    taskId = route.taskId,
+                    presetId = route.presetId,
+                    onSaved = { savedId ->
+                        if (route.taskId.isNullOrBlank()) {
+                            navigator.replace(AppRoute.ScheduledTaskDetail(savedId))
+                        } else {
+                            popRoute()
+                        }
+                    },
+                    onBack = ::popRoute,
+                )
             }
             entry<AppRoute.ErrorReconnectSettings>(swipeDismiss = swipeDismiss) {
                 ErrorReconnectSettingsScreen(onBack = ::popRoute)

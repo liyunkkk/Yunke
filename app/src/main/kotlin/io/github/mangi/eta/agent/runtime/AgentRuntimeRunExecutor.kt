@@ -13,8 +13,13 @@ import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.model.AgentModelExecutionException
 import io.github.mangi.eta.agent.model.AgentModelFailure
 import io.github.mangi.eta.agent.model.AgentHttpClient
+import io.github.mangi.eta.agent.imagegen.ImageGenToolCatalog
+import io.github.mangi.eta.agent.imagegen.ImageGenToolExecutor
 import io.github.mangi.eta.agent.memory.AgentMemoryContext
 import io.github.mangi.eta.agent.memory.AgentMemoryContextBuilder
+import io.github.mangi.eta.agent.scheduler.ScheduledTaskRunContext
+import io.github.mangi.eta.agent.scheduler.ScheduledTaskToolCatalog
+import io.github.mangi.eta.agent.scheduler.ScheduledTaskToolExecutor
 import io.github.mangi.eta.agent.mcp.McpRunSnapshot
 import io.github.mangi.eta.agent.mcp.McpToolExecutor
 import io.github.mangi.eta.agent.mcp.RoutingToolExecutor
@@ -33,6 +38,7 @@ import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.core.safeLogType
 import io.github.mangi.eta.data.repository.AgentMemoryRepository
 import io.github.mangi.eta.data.repository.AssistantRepository
+import io.github.mangi.eta.data.repository.ImageGenSettingsRepository
 import io.github.mangi.eta.data.repository.LinuxEnvironmentSettingsRepository
 import io.github.mangi.eta.data.repository.SubAgentRunRepository
 import io.github.mangi.eta.agent.terminal.LinuxDistribution
@@ -125,10 +131,22 @@ internal class AgentRuntimeRunExecutor(
                 AgentMemoryContextBuilder.empty(request.config.contextWindow)
             } else AgentMemoryContext.DISABLED
             val pendingSkillConflict = PendingSkillConflictCapabilityParser.parse(request.history)
-            val mcpSnapshot = runBlocking {
-                runCatching { McpRunSnapshot.load() }.getOrElse { throwable ->
-                    AndroidAgentLogger.warnThrottled("agent_mcp_snapshot_failed") { "MCP tool snapshot unavailable: type=${throwable.safeLogType()}" }
-                    McpRunSnapshot.EMPTY
+            val uiPayload = request.handoff
+                ?.takeIf { it.source == AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE }
+                ?.let { AgentUiHandoffPayload.from(it.payload) }
+            val scheduledRunContext = request.handoff
+                ?.takeIf { it.source == AgentRuntimeWire.SCHEDULED_TASK_HANDOFF_SOURCE }
+                ?.let { AgentExternalArchivePayload.from(it.payload)?.adapterPayload }
+                ?.let(ScheduledTaskRunContext::fromAdapterPayload)
+            val conversationId = uiPayload?.conversationId?.takeIf { it.isNotBlank() }
+            val mcpSnapshot = if (scheduledRunContext?.capabilities?.mcpTools == false) {
+                McpRunSnapshot.EMPTY
+            } else {
+                runBlocking {
+                    runCatching { McpRunSnapshot.load() }.getOrElse { throwable ->
+                        AndroidAgentLogger.warnThrottled("agent_mcp_snapshot_failed") { "MCP tool snapshot unavailable: type=${throwable.safeLogType()}" }
+                        McpRunSnapshot.EMPTY
+                    }
                 }
             }
             val runSurface = session.taskSurfaceMode
@@ -314,28 +332,110 @@ internal class AgentRuntimeRunExecutor(
             }
             // New tasks use this run's current settings and coordinator. Existing task IDs still
             // route to their original groups; replacement keeps its separate authorization checks.
-            groupGeneration = createChildGroup(childDispatchPlan.ordinary)
-            replacementGeneration = if (childDispatchPlan.ordinary === childDispatchPlan.replacement) groupGeneration
-                else createChildGroup(childDispatchPlan.replacement)
-            val toolChildren = AgentChildWorkerAvailability.configuredChildren(
-                if (groupGeneration != null) childDispatchPlan.ordinary else childDispatchPlan.replacement)
-            if (groupGeneration != null || replacementGeneration != null) {
-                SubAgentTools.appendTo(mcpTools, toolChildren.mapIndexed { i, (slot, model) ->
-                    SubAgentPreferences.workerDescription(slot, i + 1, model,
-                        childConfig.parallelLimit(SubAgentParallelModel(model.providerId, model.model)))
-                }, workspaceEnabled = childWorkspace != null)
-            } else {
-                ExistingChildTaskTools.appendTo(mcpTools)
+            if (scheduledRunContext == null) {
+                groupGeneration = createChildGroup(childDispatchPlan.ordinary)
+                replacementGeneration = if (childDispatchPlan.ordinary === childDispatchPlan.replacement) groupGeneration
+                    else createChildGroup(childDispatchPlan.replacement)
+                val toolChildren = AgentChildWorkerAvailability.configuredChildren(
+                    if (groupGeneration != null) childDispatchPlan.ordinary else childDispatchPlan.replacement)
+                if (groupGeneration != null || replacementGeneration != null) {
+                    SubAgentTools.appendTo(mcpTools, toolChildren.mapIndexed { i, (slot, model) ->
+                        SubAgentPreferences.workerDescription(slot, i + 1, model,
+                            childConfig.parallelLimit(SubAgentParallelModel(model.providerId, model.model)))
+                    }, workspaceEnabled = childWorkspace != null)
+                } else {
+                    ExistingChildTaskTools.appendTo(mcpTools)
+                }
             }
             val questionCoordinator = AgentQuestionCoordinator(runController) { event ->
                 acceptEvent(session, event, archivedEvents, entrySurfaceGuard, checkpointRecorder)
             }
             session.questionCoordinator = questionCoordinator
+            val scheduledToolExecutor = ScheduledTaskToolExecutor(
+                context = appContext,
+                activeRunContext = scheduledRunContext,
+            )
+            val imageGenEnabled = runBlocking {
+                runCatching { ImageGenSettingsRepository.settings().enabled }.getOrDefault(false)
+            } && Prefs.isToolEnabled(ImageGenToolCatalog.TOOL_NAME) &&
+                request.operation == AgentRuntimeWire.OP_CHAT
+            val isVoiceOverlay = request.handoff?.source == AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE
+            val imageGenToolExecutor = ImageGenToolExecutor(
+                context = appContext,
+                conversationId = conversationId,
+                sessionKey = conversationId ?: request.effectiveModelSessionId,
+                currentTurnUserImages = {
+                    if (isVoiceOverlay) emptyList()
+                    else request.images
+                },
+                runController = runController,
+            )
+            if (scheduledRunContext == null && request.operation == AgentRuntimeWire.OP_CHAT) {
+                ScheduledTaskToolCatalog.appendManageTool(mcpTools)
+            }
+            if (scheduledRunContext != null) {
+                ScheduledTaskToolCatalog.appendSelfRunTools(mcpTools)
+            }
+            if (imageGenEnabled) {
+                ImageGenToolCatalog.appendTo(mcpTools)
+            }
+            val scheduledToolFilter: ((JSONArray) -> JSONArray)? = scheduledRunContext?.let { runContext ->
+                { sourceTools ->
+                    JSONArray().also { filtered ->
+                        for (index in 0 until sourceTools.length()) {
+                            val tool = sourceTools.optJSONObject(index) ?: continue
+                            val name = tool.optJSONObject("function")?.optString("name").orEmpty()
+                            val allowed = name.isNotBlank() && runContext.allowsTool(
+                                name = name,
+                                browserEnabled = allowBrowser && currentPermissions().browserTools,
+                                terminalEnabled = allowTerminal && currentPermissions().terminalTools,
+                                deviceDirectEnabled = allowDirect && currentPermissions().deviceDirectTools,
+                                deviceSensitiveReadEnabled = allowSensitiveRead && currentPermissions().deviceSensitiveReadTools,
+                                deviceSensitiveActionEnabled = allowSensitiveAction && currentPermissions().deviceSensitiveActionTools,
+                            )
+                            if (allowed) filtered.put(tool)
+                        }
+                    }
+                }
+            }
             val delegatedExecutor = AgentModelClient.ToolExecutor { call ->
                 runController.throwIfCancelled()
                 if (!Prefs.isToolEnabled(call.name)) {
                     AgentModelClient.ToolResult(org.json.JSONObject().put("ok", false)
                         .put("code", "TOOL_DISABLED").put("message", "此工具已关闭，本次未执行").toString())
+                } else if (call.name in ScheduledTaskToolCatalog.manageNames) {
+                    scheduledToolExecutor.executeManage(call)
+                } else if (call.name in ScheduledTaskToolCatalog.selfRunNames) {
+                    scheduledToolExecutor.executeSelfRun(call)
+                } else if (scheduledRunContext != null && call.name in SubAgentTools.names) {
+                    AgentModelClient.ToolResult(org.json.JSONObject().put("ok", false)
+                        .put("code", "SUBAGENTS_DISABLED_IN_SCHEDULED_TASK")
+                        .put("message", "后台定时任务不允许创建、接管或管理子代理任务").toString())
+                } else if (scheduledRunContext != null && !scheduledRunContext.allowsTool(
+                        name = call.name,
+                        browserEnabled = allowBrowser && currentPermissions().browserTools,
+                        terminalEnabled = allowTerminal && currentPermissions().terminalTools,
+                        deviceDirectEnabled = allowDirect && currentPermissions().deviceDirectTools,
+                        deviceSensitiveReadEnabled = allowSensitiveRead && currentPermissions().deviceSensitiveReadTools,
+                        deviceSensitiveActionEnabled = allowSensitiveAction && currentPermissions().deviceSensitiveActionTools,
+                    )
+                ) {
+                    AgentModelClient.ToolResult(org.json.JSONObject().put("ok", false)
+                        .put("code", "SCHEDULED_CAPABILITY_DISABLED")
+                        .put("message", "此工具未包含在当前定时任务启用的能力范围内").toString())
+                } else if (call.name in ImageGenToolCatalog.names) {
+                    imageGenToolExecutor.execute(call)
+                } else if (scheduledRunContext != null &&
+                    !scheduledRunContext.capabilities.guiTools &&
+                    AgentToolRequirements.requiresGuiControl(call.name)
+                ) {
+                    AgentModelClient.ToolResult(
+                        org.json.JSONObject()
+                            .put("ok", false)
+                            .put("code", "GUI_DISABLED_IN_SCHEDULED_TASK")
+                            .put("message", "当前定时任务未开启应用界面（GUI）操作权限，本次未执行")
+                            .toString(),
+                    )
                 } else if (call.name == "ask_user") {
                     val question = AgentQuestionCodec.parseArguments(call.argumentsJson,
                         conversationId = request.effectiveModelSessionId,
@@ -413,6 +513,9 @@ internal class AgentRuntimeRunExecutor(
                 compactPolicy = compactPolicy,
                 onHistorySnapshot = session::publishHistorySnapshot,
                 interactiveModeEnabled = interactiveModeEnabled,
+                scheduledTaskTools = scheduledRunContext == null && request.operation == AgentRuntimeWire.OP_CHAT,
+                extraSystemContext = scheduledRunContext?.buildSystemGuidance().orEmpty(),
+                toolFilter = scheduledToolFilter,
                 onEvent = { event ->
                     timing.accept(event)
                     foregroundReplay.accept(event)

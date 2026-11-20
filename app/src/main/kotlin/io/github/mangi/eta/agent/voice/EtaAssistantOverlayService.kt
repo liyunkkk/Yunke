@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
 import android.view.Gravity
 import android.view.View
@@ -151,6 +152,8 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     private var activeRunId: String? = null
     private var entryGeneration = 0L
     private var presentedEntryGeneration = -1L
+    @Volatile
+    private var entryShownUptimeMs = 0L
     private var screenContextAttachment: EtaScreenContextAttachment? = null
     private var hiddenForForegroundOperation = false
     private var isPausedForPicker = false
@@ -196,6 +199,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
 
     override fun onDestroy() {
         entryGeneration++
+        entryShownUptimeMs = 0L
         entryCaptureJob?.cancel()
         entryCaptureJob = null
         screenContextAttachment = null
@@ -215,6 +219,11 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                 "Eta assistant overlay permission is missing"
             }
             stopSelf()
+            return
+        }
+        // 长按电源键的按下/松开或双路派发可能跨越 1s 去重窗后再次到达，
+        // 浮窗仍处于刚唤起的初始空闲态时直接合并，避免重建窗口重播入场光效。
+        if (isFreshVisibleEntry()) {
             return
         }
         if (activeRunId != null) {
@@ -333,9 +342,11 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         presentedEntryGeneration = generation
         showWindow()
         if (windowView == null) {
+            entryShownUptimeMs = 0L
             stopSelf()
             return
         }
+        entryShownUptimeMs = SystemClock.uptimeMillis()
         // 照主仓库语义：有录音权限就直接进语音态（由面板内的 voiceMode 驱动开始录音），无权限才弹键盘。
         // 外部可用 EXTRA_ENTRY_MODE=voice/input 强制指定；voice 在无录音权限时仍退回提示 + 键盘。
         val requestedEntryMode = pendingEntryMode
@@ -370,6 +381,20 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             showKeyboard()
         }
     }
+
+    private fun isFreshVisibleEntry(nowUptimeMs: Long = SystemClock.uptimeMillis()): Boolean =
+        shouldCoalesceFreshEntry(
+            hasWindow = windowView != null,
+            isDetaching = detachingWindowView != null,
+            isDismissing = false,
+            hiddenForForegroundOperation = hiddenForForegroundOperation,
+            handoffInProgress = handoffInProgress,
+            handoffExitRequested = handoffExitRequested,
+            hasActiveRun = activeRunId != null,
+            hasMessages = uiState.messages.isNotEmpty(),
+            entryShownUptimeMs = entryShownUptimeMs,
+            nowUptimeMs = nowUptimeMs,
+        )
 
     private fun showWindow() {
         if (windowView != null) return
@@ -1836,6 +1861,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     }
 
     private fun removeWindow(onComplete: ((Boolean) -> Unit)? = null) {
+        entryShownUptimeMs = 0L
         unregisterSystemBackCallback()
         detachingWindowView?.let { detachingView ->
             onComplete?.let(windowDetachCallbacks::add)
@@ -2004,10 +2030,34 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         private const val SYNTHETIC_STOPPED = "eta_status:stopped"
         private const val SYNTHETIC_RUNTIME_FAILED = "eta_status:runtime_failed"
         private const val FOREGROUND_DISMISS_TIMEOUT_MS = 2_000L
+        internal const val FRESH_ENTRY_COALESCE_WINDOW_MS = 5_000L
         private val mainHandler = Handler(Looper.getMainLooper())
 
         @Volatile
         private var activeService: EtaAssistantOverlayService? = null
+
+        fun hasFreshVisibleEntry(nowUptimeMs: Long = SystemClock.uptimeMillis()): Boolean =
+            activeService?.isFreshVisibleEntry(nowUptimeMs) == true
+
+        internal fun shouldCoalesceFreshEntry(
+            hasWindow: Boolean,
+            isDetaching: Boolean,
+            isDismissing: Boolean,
+            hiddenForForegroundOperation: Boolean,
+            handoffInProgress: Boolean,
+            handoffExitRequested: Boolean,
+            hasActiveRun: Boolean,
+            hasMessages: Boolean,
+            entryShownUptimeMs: Long,
+            nowUptimeMs: Long,
+            coalesceWindowMs: Long = FRESH_ENTRY_COALESCE_WINDOW_MS,
+        ): Boolean {
+            if (!hasWindow || isDetaching || isDismissing) return false
+            if (hiddenForForegroundOperation || handoffInProgress || handoffExitRequested) return false
+            if (hasActiveRun || hasMessages) return false
+            if (entryShownUptimeMs <= 0L) return false
+            return nowUptimeMs - entryShownUptimeMs in 0L..coalesceWindowMs
+        }
 
         /**
          * Eta 自己拥有入口浮层，直接关闭并等待具体 View detach；不能按包名猜测，

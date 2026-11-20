@@ -32,7 +32,22 @@ import kotlinx.coroutines.flow.map
 
 internal object SettingsDataStore {
     private val CONVERSATION_TITLE_SETTINGS = stringPreferencesKey("conversation_title_settings")
+    private val IMAGE_GEN_SETTINGS = stringPreferencesKey("image_gen_settings")
     private val routingJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true; encodeDefaults = true }
+
+    fun imageGenSettingsFlow(): Flow<io.github.mangi.eta.data.model.ImageGenSettings> {
+        ensureInitialized()
+        return dataStore.data.map { prefs ->
+            prefs[IMAGE_GEN_SETTINGS]?.let { value ->
+                runCatching { routingJson.decodeFromString<io.github.mangi.eta.data.model.ImageGenSettings>(value) }.getOrNull()
+            } ?: io.github.mangi.eta.data.model.ImageGenSettings()
+        }.distinctUntilChanged()
+    }
+    suspend fun imageGenSettings() = imageGenSettingsFlow().first()
+    suspend fun setImageGenSettings(value: io.github.mangi.eta.data.model.ImageGenSettings) {
+        ensureInitialized()
+        dataStore.edit { it[IMAGE_GEN_SETTINGS] = routingJson.encodeToString(io.github.mangi.eta.data.model.ImageGenSettings.serializer(), value) }
+    }
 
     fun conversationTitleSettingsFlow(): Flow<io.github.mangi.eta.data.model.ConversationTitleSettings> {
         ensureInitialized()
@@ -297,6 +312,7 @@ internal object SettingsDataStore {
             errorReconnectPolicy = prefs[ERROR_RECONNECT_POLICY],
             errorReconnectPolicyVersion = prefs[ERROR_RECONNECT_POLICY_VERSION],
             conversationTitleSettingsJson = prefs[CONVERSATION_TITLE_SETTINGS],
+            imageGenSettingsJson = prefs[IMAGE_GEN_SETTINGS],
             linuxDistribution = prefs[LINUX_DISTRIBUTION],
             linuxBackends = stringMap(prefs, LINUX_BACKEND_PREFIX),
             selectedModelByProvider = stringMap(prefs, SELECTED_MODEL_BY_PROVIDER_PREFIX),
@@ -336,6 +352,7 @@ internal object SettingsDataStore {
                 ).persistedValue
             prefs[ERROR_RECONNECT_POLICY_VERSION] = ErrorReconnectPolicy.STORAGE_VERSION
             snapshot.conversationTitleSettingsJson?.let { prefs[CONVERSATION_TITLE_SETTINGS] = it }
+            snapshot.imageGenSettingsJson?.let { prefs[IMAGE_GEN_SETTINGS] = it }
             prefs.putOrRemove(LINUX_DISTRIBUTION, snapshot.linuxDistribution)
             prefs.putAppearance(snapshot.appearance.normalized())
             snapshot.linuxBackends.forEach { (distribution, backend) ->
@@ -693,6 +710,7 @@ internal data class EtaSettingsBackup(
     val errorReconnectPolicyVersion: Int? = null,
     // Absent in an older backup means preserve the independent model routing.
     val conversationTitleSettingsJson: String? = null,
+    val imageGenSettingsJson: String? = null,
 )
 
 internal data class RetiredUsage(

@@ -150,7 +150,25 @@ sealed interface AppRoute : NavKey {
 
     @Serializable
     data object ManageChats : AppRoute
+
+    @Serializable
+    data object ImageGenSettings : AppRoute
+
+    @Serializable
+    data object ImageGenGallery : AppRoute
+
+    @Serializable
+    data object ScheduledTasks : AppRoute
+
+    @Serializable
+    data class ScheduledTaskDetail(val taskId: String) : AppRoute
+
+    @Serializable
+    data class ScheduledTaskEditor(
+        val taskId: String? = null,
+        val presetId: String? = null,
+    ) : AppRoute
 }
 
 @Serializable
-enum class NewProviderType { OpenAiCompatible, Anthropic, Antigravity, DoubaoSpeech, CompatibleSpeech }
+enum class NewProviderType { OpenAiCompatible, Anthropic, Gemini, Antigravity, DoubaoSpeech, CompatibleSpeech }

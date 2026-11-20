@@ -12,6 +12,13 @@ package io.github.mangi.eta.agent.model
 internal object AntigravityModelRouting {
     private val runtimeModelIds = mapOf(
         "gemini-3.7-flash" to "gemini-3.7-flash-tiered",
+        "gemini-4-neon" to "gemini-4-neon-xhigh",
+        "gemini-4-hydrogen" to "gemini-4-hydrogen-xhigh",
+        "gemini-4-argon" to "gemini-4-argon-high",
+        "gemini-4-carbon" to "gemini-4-carbon-high",
+        "gemini-3.8-flash" to "gemini-3.8-flash-high",
+        "claude-opus-5-5" to "claude-opus-5-5-high",
+        "claude-sonnet-5-5" to "claude-sonnet-5-5-high",
         "gemini-3.6-flash" to "gemini-3.6-flash",
         "gemini-3.5-flash" to "gemini-3.5-flash",
         "gemini-3.1-pro" to "gemini-3.1-pro",

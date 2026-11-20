@@ -1,6 +1,7 @@
 package io.github.mangi.eta.agent.model
 
 import io.github.mangi.eta.agent.memory.AgentMemoryContext
+import io.github.mangi.eta.agent.scheduler.ScheduledTaskToolCatalog
 import io.github.mangi.eta.agent.skill.SkillContext
 import io.github.mangi.eta.agent.tool.AgentShellToolAvailability
 import io.github.mangi.eta.data.model.ProviderTypes
@@ -20,10 +21,14 @@ internal object AgentPromptBuilder {
         delegationAvailable: Boolean = false,
         shellTools: AgentShellToolAvailability.Snapshot? = null,
         interactiveModeEnabled: Boolean = false,
+        scheduledTaskTools: Boolean = false,
+        extraSystemContext: String = "",
     ): JSONArray {
         val messages = buildSystemMessages(
             config, skillContext, memoryContext, rootAvailable, delegationAvailable, shellTools,
             interactiveModeEnabled = interactiveModeEnabled,
+            scheduledTaskTools = scheduledTaskTools,
+            extraSystemContext = extraSystemContext,
         )
         history.forEach { item ->
             runCatching { AgentConversationCodec.toJsonObject(item) }.getOrNull()
@@ -41,6 +46,8 @@ internal object AgentPromptBuilder {
         delegationAvailable: Boolean = false,
         shellTools: AgentShellToolAvailability.Snapshot? = null,
         interactiveModeEnabled: Boolean = false,
+        scheduledTaskTools: Boolean = false,
+        extraSystemContext: String = "",
     ): JSONArray {
         // Only point at the detection section when this round actually carries one.
         val environmentRule = if (shellTools != null) {
@@ -120,8 +127,12 @@ internal object AgentPromptBuilder {
                     "若工具返回 FOREGROUND_BUSY，表示另一个会话尚未结束屏幕控制，本次操作被直接拒绝且未执行；" +
                     "立即向用户说明原因，不要自动等待、重试、抢占或改用 Shell 绕过，待另一会话结束后由用户重新发起；非屏幕任务仍可继续。" +
                     "屏幕观察与 GUI 操作前会确认 YUNKe 无障碍服务；只有系统保护后端可用时才会请求有限重绑。" +
-                    "若工具返回 ACCESSIBILITY_UNAVAILABLE、ACCESSIBILITY_PROTECTION_UNAVAILABLE 或 ACCESSIBILITY_REPAIR_TIMEOUT，说明动作未执行，" +
+                    "如果工具返回 ACCESSIBILITY_UNAVAILABLE、ACCESSIBILITY_PROTECTION_UNAVAILABLE 或 ACCESSIBILITY_REPAIR_TIMEOUT，说明动作未执行，" +
                     "不要改用坐标或 Shell 重放 GUI 动作。" +
+                    (if (scheduledTaskTools) {
+                        "需要让 YUNKe 按单次延时、固定间隔、每日/每周或 cron 自动运行 Agent 任务时，" +
+                            "调用 scheduled_task 工具；一次性闹钟或倒计时仍使用 set_alarm / set_timer。"
+                    } else "") +
                     interactiveModePromptClause(interactiveModeEnabled)
             )
         )
@@ -181,6 +192,12 @@ internal object AgentPromptBuilder {
                         "只有需要把 URI 交给外部应用时才使用 open_uri；open_uri 不用于读取网页。"
                 )
             )
+        }
+        if (scheduledTaskTools) {
+            messages.put(systemMessage(ScheduledTaskToolCatalog.systemInstruction()))
+        }
+        if (extraSystemContext.isNotBlank()) {
+            messages.put(systemMessage(extraSystemContext.trim()))
         }
         // Anthropic can retain the instruction prefix when memory/Skills change.
         // This local hint is consumed by its adapter, never copied to the HTTP body.

@@ -42,6 +42,8 @@ import io.github.mangi.eta.EtaApp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import io.github.mangi.eta.data.model.AnthropicProviderSetting
+import io.github.mangi.eta.data.model.GeminiProviderSetting
+import io.github.mangi.eta.data.provider.OfficialModelCatalog
 import io.github.mangi.eta.data.model.BalanceOption
 import io.github.mangi.eta.data.model.CustomProviderSetting
 import io.github.mangi.eta.agent.model.oauth.GoogleAntigravityOAuth
@@ -143,6 +145,10 @@ internal fun ModelProviderDetailScreen(
                 authMode = ProviderAuthMode.OAUTH_ANTIGRAVITY,
                 sourceType = ProviderSourceTypes.ANTIGRAVITY,
             )
+            NewProviderType.Gemini -> GeminiProviderSetting(
+                id = "", name = "Gemini", baseUrl = GeminiProviderSetting.DEFAULT_BASE_URL,
+                sourceType = ProviderSourceTypes.GEMINI,
+            )
             NewProviderType.Anthropic -> AnthropicProviderSetting(
                 id = "",
                 name = "",
@@ -227,6 +233,7 @@ internal fun ModelProviderDetailScreen(
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                 when (currentTab) {
                     0 -> ProviderConfigTab(
+                        preferredModelId = currentModelId,
                         provider = initial,
                         draft = configDraft,
                         onDraftChange = { configDraft = it },
@@ -255,6 +262,7 @@ internal fun ModelProviderDetailScreen(
 
 @Composable
 private fun ProviderConfigTab(
+    preferredModelId: String? = null,
     provider: ProviderSetting,
     draft: ProviderConfigDraft,
     onDraftChange: (ProviderConfigDraft) -> Unit,
@@ -265,6 +273,7 @@ private fun ProviderConfigTab(
     onCreated: (String) -> Unit,
     onDeleted: () -> Unit,
 ) {
+    val storedModelId by RuntimeConfigRepository.selectedModelIdFlow().collectAsState(initial = null)
     val context = LocalContext.current
     val view = LocalView.current
     var headersExpanded by rememberSaveable { mutableStateOf(false) }
@@ -312,7 +321,11 @@ private fun ProviderConfigTab(
                         modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(modifier = Modifier.height(12.dp))
-                    if (ProviderAuthMode.isOAuth(draft.authMode)) {
+                    if (provider is GeminiProviderSetting) {
+                        GeminiConnectionFields(draft, onDraftChange)
+                        Spacer(modifier = Modifier.height(12.dp))
+                    }
+                    if (ProviderAuthMode.isOAuth(draft.authMode) && provider !is GeminiProviderSetting) {
                         ProviderOAuthLoginRow(
                             providerId = provider.id,
                             signedIn = draft.apiKey.isNotBlank(),
@@ -358,7 +371,7 @@ private fun ProviderConfigTab(
                     }
                 }
                 val speechOnly = SpeechSynthesisModels.isSpeechOnlyProvider(provider)
-                if (provider !is AnthropicProviderSetting && !speechOnly) {
+                if (provider !is AnthropicProviderSetting && provider !is GeminiProviderSetting && !speechOnly) {
                     HorizontalDivider()
                     WindowSpinnerPreference(
                         items = listOf(
@@ -425,11 +438,14 @@ private fun ProviderConfigTab(
                                         responsesStripReasoningStatus = draft.responsesStripReasoningStatus,
                                         hostedWebSearchEnabled = draft.hostedWebSearchEnabled,
                                         anthropicVersion = draft.anthropicVersion,
+                                        vertexProject = draft.vertexProject,
+                                        vertexLocation = draft.vertexLocation,
                                         customHeaders = draft.headers.map { it.header },
                                         customBody = bodiesResult.getOrThrow(),
                                         balanceOption = draft.balanceOption,
                                         sessionGatewayJson = draft.encodedSessionGateway(),
-                                    )
+                                    ),
+                                    preferredModelId = preferredModelId ?: storedModelId,
                                 )
                             } finally {
                                 isWorking = false
@@ -511,6 +527,8 @@ private fun ProviderConfigTab(
                         responsesStripReasoningStatus = draft.responsesStripReasoningStatus,
                         hostedWebSearchEnabled = draft.hostedWebSearchEnabled,
                         anthropicVersion = draft.anthropicVersion,
+                        vertexProject = draft.vertexProject,
+                        vertexLocation = draft.vertexLocation,
                         customHeaders = draft.headers.map { it.header },
                         customBody = bodiesResult.getOrElse { provider.customBody },
                         balanceOption = draft.balanceOption,
@@ -564,6 +582,8 @@ private fun ProviderConfigTab(
                                 responsesStripReasoningStatus = draft.responsesStripReasoningStatus,
                                 hostedWebSearchEnabled = draft.hostedWebSearchEnabled,
                                 anthropicVersion = draft.anthropicVersion,
+                                vertexProject = draft.vertexProject,
+                                vertexLocation = draft.vertexLocation,
                                 customHeaders = draft.headers.map { it.header },
                                 customBody = bodiesResult.getOrThrow(),
                                 balanceOption = draft.balanceOption,
@@ -574,6 +594,8 @@ private fun ProviderConfigTab(
                                     val newId = provider.id.ifBlank { ProviderRepository.newId() }
                                     val toSave = built.withId(newId).let { saved ->
                                         when {
+                                            saved is GeminiProviderSetting && saved.models.isEmpty() ->
+                                                saved.withModels(OfficialModelCatalog.modelsForProvider(saved))
                                             saved.usesOAuth && saved.models.isEmpty() ->
                                                 saved.withModels(
                                                     if (GoogleAntigravityOAuth.usesBackend(saved)) {
@@ -747,6 +769,7 @@ private fun ProviderConfigTab(
 private suspend fun testConnection(
     context: android.content.Context,
     provider: ProviderSetting,
+    preferredModelId: String? = null,
 ): String {
     if (SpeechSynthesisModels.isSpeechOnlyProvider(provider) &&
         !SpeechSynthesisModels.isCompatibleSpeechProvider(provider)) {
@@ -779,6 +802,12 @@ private suspend fun testConnection(
                 else R.string.provider_oauth_signed_in,
             )
         }
+    }
+    if (provider is GeminiProviderSetting && provider.isVertexAi) {
+        return RemoteModelFetcher.testVertexConnection(provider, preferredModelId = preferredModelId).fold(
+            onSuccess = { "连接成功：$it（countTokens）" },
+            onFailure = { context.getString(R.string.provider_error, it.message ?: it.javaClass.simpleName) },
+        )
     }
     return RemoteModelFetcher.fetch(provider)
         .map { context.resources.getQuantityString(R.plurals.provider_models_fetched, it.size, it.size) }

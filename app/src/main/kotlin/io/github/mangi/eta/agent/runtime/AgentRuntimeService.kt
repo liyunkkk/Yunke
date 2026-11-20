@@ -51,6 +51,7 @@ import io.github.mangi.eta.agent.overlay.AgentOverlayStatus
 import io.github.mangi.eta.agent.overlay.AgentOverlayVisibilityPolicy
 import io.github.mangi.eta.agent.overlay.applyControlledEvent
 import io.github.mangi.eta.agent.overlay.applyEvent
+import io.github.mangi.eta.agent.scheduler.ScheduledTaskRunContext
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.core.ModuleConfig
@@ -623,24 +624,30 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             supplementsByRunId[request.runId] = extras
         }
 
-        val notificationTracker = AgentExecutionNotificationTracker(
-            context = this,
-            handler = mainHandler,
-            onStateChanged = { executionState ->
-                AgentExecutionService.updateExecutionState(executionState)
-            },
-        )
+        val notificationTracker = if (isSilentScheduledRun(request)) {
+            null
+        } else {
+            AgentExecutionNotificationTracker(
+                context = this,
+                handler = mainHandler,
+                onStateChanged = { executionState ->
+                    AgentExecutionService.updateExecutionState(executionState)
+                },
+            )
+        }
         executionNotificationTracker = notificationTracker
         try {
             thread(name = "agent-runtime") {
                 try {
                     executeRun(session, request)
                 } finally {
-                    notificationTracker.reset()
-                    if (executionNotificationTracker === notificationTracker) {
+                    notificationTracker?.reset()
+                    if (notificationTracker != null && executionNotificationTracker === notificationTracker) {
                         executionNotificationTracker = null
                     }
-                    AgentExecutionService.resetExecutionState()
+                    if (notificationTracker != null) {
+                        AgentExecutionService.resetExecutionState()
+                    }
                     AgentChildRunControl.finish(session)
                     AgentExecutionService.release(runLease.id)
                 }
@@ -982,7 +989,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         val handoff = request.handoff ?: return
         AgentExternalArchivePayload.from(handoff.payload) ?: return
         val userImagePreviews = if (
-            handoff.source == AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE
+            handoff.source == AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE ||
+            handoff.source == AgentRuntimeWire.SCHEDULED_TASK_HANDOFF_SOURCE
         ) {
             request.images
                 .asSequence()
@@ -1678,6 +1686,16 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     private fun isNightMode(): Boolean {
         val mode = resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
         return mode == Configuration.UI_MODE_NIGHT_YES
+    }
+
+    private fun isSilentScheduledRun(request: AgentRuntimeWire.RunRequest): Boolean {
+        val handoff = request.handoff ?: return false
+        if (handoff.source != AgentRuntimeWire.SCHEDULED_TASK_HANDOFF_SOURCE) return false
+        val scheduled = AgentExternalArchivePayload.from(handoff.payload)
+            ?.adapterPayload
+            ?.let(ScheduledTaskRunContext::fromAdapterPayload)
+            ?: return false
+        return !scheduled.showRunningNotification
     }
 
     private fun currentRuntimePermissions(): AgentRuntimePolicy.Permissions =

@@ -36,10 +36,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListLayoutInfo
 import androidx.compose.foundation.lazy.LazyListState
@@ -129,6 +131,7 @@ import io.github.mangi.eta.data.model.AnswerFoldLevel
 import io.github.mangi.eta.data.model.ReasoningEffort
 import io.github.mangi.eta.ui.app.AgentConversationRevisionReducer
 import io.github.mangi.eta.ui.app.LocalAppearanceSettings
+import io.github.mangi.eta.ui.layout.rememberFloatingBottomBarInsets
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
 import io.github.mangi.eta.ui.model.latestBilledContextTokens
 import io.github.mangi.eta.ui.model.canContinueDisconnectedRun
@@ -770,6 +773,7 @@ internal fun AgentChatScaffold(
                 onBranchMessage = onBranchMessage,
                 onQuestionDraftChanged = onQuestionDraftChanged,
                 onSubmitQuestionAnswer = onSubmitQuestionAnswer,
+                onEditGeneratedImage = onAttachImage,
                 messageActionsEnabled = !isStreaming && !isPaused &&
                     !isCompressingContext &&
                     messageEdit == null,
@@ -856,6 +860,7 @@ internal fun AgentConversationMessages(
     onBranchMessage: (String) -> Unit = {},
     onQuestionDraftChanged: (String, String, io.github.mangi.eta.agent.question.AgentQuestionAnswer) -> Unit = { _, _, _ -> },
     onSubmitQuestionAnswer: (String, String) -> Unit = { _, _ -> },
+    onEditGeneratedImage: ((String) -> Unit)? = null,
     messageActionsEnabled: Boolean = false,
     branchEnabled: Boolean = false,
     editTargetMessageId: String? = null,
@@ -1734,6 +1739,7 @@ internal fun AgentConversationMessages(
             messageActions.onBranchMessage = onBranchMessage
             messageActions.onQuestionDraftChanged = onQuestionDraftChanged
             messageActions.onSubmitQuestionAnswer = onSubmitQuestionAnswer
+            messageActions.onEditGeneratedImage = onEditGeneratedImage
             // Commit count only (ns=0): proves this content lambda was applied, not its cost.
             StreamPerformanceDiagnostics.record("chat.content.commit", value = 1)
         }
@@ -2335,6 +2341,10 @@ private fun AgentChatBottomBar(
     val drawerBlocksIme = LocalConversationDrawerBlocksIme.current
     // 语音态点「键盘」：停止语音态后把焦点还回输入框，普通输入能力立即可用。
     val composerFocus = remember { FocusRequester() }
+    val bottomBarInsets = rememberFloatingBottomBarInsets(
+        baseInsets = WindowInsets.navigationBars,
+        fixedBottomPadding = 12.dp,
+    )
     Box(
         modifier = Modifier.fillMaxWidth(),
     ) {
@@ -2347,7 +2357,7 @@ private fun AgentChatBottomBar(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .navigationBarsPadding()
+                    .windowInsetsPadding(bottomBarInsets)
                     .padding(start = 14.dp, end = 14.dp, bottom = 12.dp),
             ) {
                 AgentChatTodoDock(

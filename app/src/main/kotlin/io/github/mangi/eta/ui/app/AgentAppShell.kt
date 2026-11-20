@@ -113,6 +113,7 @@ internal fun AgentAppShell(
     onOpenAssistants: () -> Unit = {},
     onOpenUsageStats: () -> Unit,
     onOpenSkills: () -> Unit,
+    onOpenScheduledTasks: () -> Unit = {},
     onOpenPermissions: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenModelProviders: () -> Unit,
@@ -226,6 +227,7 @@ internal fun AgentAppShell(
                 onOpenModelProviders = onOpenModelProviders,
                 onOpenUsageStats = onOpenUsageStats,
                 onOpenSkills = onOpenSkills,
+                onOpenScheduledTasks = onOpenScheduledTasks,
                 onOpenPermissions = onOpenPermissions,
             ) {
                 pageContent()
@@ -387,6 +389,13 @@ private fun titleForRoute(route: AppRoute?, currentConversationTitle: String? = 
     is AppRoute.ManageChats -> stringResource(R.string.history_page_title)
     is AppRoute.Assistants -> stringResource(R.string.assistant_list_title)
     is AppRoute.AssistantEdit -> stringResource(R.string.assistant_edit_title)
+    is AppRoute.ImageGenSettings -> stringResource(R.string.image_gen_settings_title)
+    is AppRoute.ImageGenGallery -> stringResource(R.string.image_gen_gallery_title)
+    is AppRoute.ScheduledTasks -> stringResource(R.string.route_scheduled_tasks)
+    is AppRoute.ScheduledTaskDetail -> stringResource(R.string.route_scheduled_task_detail)
+    is AppRoute.ScheduledTaskEditor -> stringResource(
+        if (route.taskId.isNullOrBlank()) R.string.route_scheduled_task_new else R.string.route_scheduled_task_edit,
+    )
     null -> stringResource(R.string.app_name)
 }
 

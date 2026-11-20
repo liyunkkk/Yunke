@@ -68,10 +68,12 @@ import io.github.mangi.eta.agent.runtime.AgentNotificationTrampolineActivity
 import io.github.mangi.eta.agent.runtime.AgentRunArchiveStore
 import io.github.mangi.eta.agent.runtime.AgentRunCheckpointStore
 import io.github.mangi.eta.agent.runtime.AgentRuntimeClient
-import io.github.mangi.eta.agent.runtime.AgentRuntimePolicy
 import io.github.mangi.eta.agent.runtime.AgentRuntimeWire
-import io.github.mangi.eta.agent.runtime.AgentTokenUsage
 import io.github.mangi.eta.agent.runtime.AgentUiHandoffPayload
+import io.github.mangi.eta.agent.scheduler.ScheduledTaskRunContext
+import io.github.mangi.eta.data.model.ScheduledTaskSessionMode
+import io.github.mangi.eta.agent.runtime.AgentRuntimePolicy
+import io.github.mangi.eta.agent.runtime.AgentTokenUsage
 import io.github.mangi.eta.agent.skill.SkillCompatibilityChecker
 import io.github.mangi.eta.agent.skill.SkillContext
 import io.github.mangi.eta.agent.skill.SkillRuntime
@@ -615,6 +617,8 @@ internal class AgentAppState(
             is io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting -> provider.endpointMode
             is io.github.mangi.eta.data.model.CustomProviderSetting -> provider.endpointMode
             is io.github.mangi.eta.data.model.AnthropicProviderSetting -> provider.anthropicVersion
+            is io.github.mangi.eta.data.model.GeminiProviderSetting ->
+                "${provider.endpointMode}:${provider.vertexProject}:${provider.vertexLocation}"
         }
         val fields = org.json.JSONArray().put(provider.id).put(provider.baseUrl).put(provider.sourceType)
             .put(endpoint).put(provider.systemPrompt).put(provider.authMode).put(provider.apiKey)
@@ -1641,6 +1645,13 @@ internal class AgentAppState(
         val conversationId = AgentUiHandoffPayload
             .from(checkpoint.handoff.payload)
             .conversationId
+        startReattachedRun(runId = runId, conversationId = conversationId)
+    }
+
+    private fun startReattachedRun(
+        runId: String,
+        conversationId: String,
+    ) {
         val existing = conversationState(conversationId) ?: return
         if (runId in runJobs || AgentRuntimeHistoryReducer.wasApplied(existing, runId)) return
 
@@ -1655,12 +1666,15 @@ internal class AgentAppState(
                 onEvent = { event -> enqueueRunEvent(runId, event) },
             )
             when (outcome) {
-                is AgentRuntimeClient.AttachOutcome.Completed -> withContext(Dispatchers.Main) {
-                    applyRunResult(
-                        runId = runId,
-                        result = outcome.result,
-                        acknowledgeRuntimeResult = true,
-                    )
+                is AgentRuntimeClient.AttachOutcome.Completed -> {
+                    withContext(Dispatchers.Main) {
+                        applyRunResult(
+                            runId = runId,
+                            result = outcome.result,
+                            acknowledgeRuntimeResult = true,
+                        )
+                    }
+                    AgentRunArchiveStore.remove(appContext, runId)
                 }
                 AgentRuntimeClient.AttachOutcome.NotActive -> {
                     withContext(Dispatchers.Main) {
@@ -1679,10 +1693,18 @@ internal class AgentAppState(
         }
     }
 
-    private suspend fun importArchivedExternalRuns() {
+    private suspend fun importArchivedExternalRuns(
+        includeIsolatedScheduledKey: String? = null,
+    ) {
         val archivedRuns = withContext(Dispatchers.IO) {
             AgentRunArchiveStore.list(appContext)
-                .filter { AgentExternalArchivePayload.from(it.handoff.payload) != null }
+                .filter { run ->
+                    val payload = AgentExternalArchivePayload.from(run.handoff.payload) ?: return@filter false
+                    if (run.handoff.source != AgentRuntimeWire.SCHEDULED_TASK_HANDOFF_SOURCE) return@filter true
+                    val scheduled = ScheduledTaskRunContext.fromAdapterPayload(payload.adapterPayload)
+                    scheduled?.sessionMode == ScheduledTaskSessionMode.DEDICATED ||
+                        (includeIsolatedScheduledKey != null && payload.conversationKey == includeIsolatedScheduledKey)
+                }
         }
         if (archivedRuns.isEmpty()) return
 
@@ -1698,6 +1720,115 @@ internal class AgentAppState(
                 }
             }
         }
+    }
+
+    /** 打开外部入口按 [source] 与 [conversationKey] 归档的会话；先导入尚未入库的归档结果。 */
+    suspend fun openArchivedConversation(source: String, conversationKey: String): Boolean {
+        if (withContext(Dispatchers.Main.immediate) { rejectConversationArchiveMutation() }) return false
+        if (source.isBlank() || conversationKey.isBlank()) return false
+        importArchivedExternalRuns(
+            includeIsolatedScheduledKey = conversationKey
+                .takeIf { source == AgentRuntimeWire.SCHEDULED_TASK_HANDOFF_SOURCE },
+        )
+        val conversationId = archiveConversationId(
+            source = source,
+            conversationKey = conversationKey,
+        )
+        val exists = withContext(Dispatchers.Main.immediate) { conversationState(conversationId) != null }
+        if (!exists) return false
+        withContext(Dispatchers.Main.immediate) {
+            selectConversation(conversationId)
+        }
+        return true
+    }
+
+    /**
+     * 打开定时任务的某次运行：
+     * - 若该次 run 正在后台运行，立即在主聊天中挂载实时事件流（回放已有轨迹 + 实时流式更新）；
+     * - 若该次 run 已完成，按需导入归档并切到对应会话以供阅读和继续追问。
+     */
+    suspend fun openScheduledTaskRun(
+        runId: String,
+        archiveConversationKey: String,
+        taskTitle: String,
+        taskPrompt: String,
+        isRunning: Boolean,
+    ): Boolean {
+        if (withContext(Dispatchers.Main.immediate) { rejectConversationArchiveMutation() }) return false
+        if (archiveConversationKey.isBlank()) return false
+        importArchivedExternalRuns(includeIsolatedScheduledKey = archiveConversationKey)
+        val conversationId = archiveConversationId(
+            source = AgentRuntimeWire.SCHEDULED_TASK_HANDOFF_SOURCE,
+            conversationKey = archiveConversationKey,
+        )
+        val shouldAttachLive = isRunning && runId.isNotBlank() && run {
+            val active = withContext(Dispatchers.IO) {
+                AgentRuntimeClient(appContext, AndroidAgentLogger).queryActiveRun()
+            }
+            active is AgentRuntimeClient.ActiveRunQuery.Known && runId in active.runIds
+        }
+
+        if (shouldAttachLive) {
+            withContext(Dispatchers.Main.immediate) {
+                val now = System.currentTimeMillis()
+                val effort = ReasoningEffort.fromLegacy(defaultThinkingEnabled)
+                val existing = conversationState(conversationId) ?: emptyChatState(
+                    effort.enablesReasoning,
+                ).copy(reasoningEffort = effort)
+                if (conversationTitles[conversationId].isNullOrBlank()) {
+                    conversationTitles = conversationTitles + (conversationId to taskTitle.ifBlank { "定时任务" })
+                }
+                val alreadyHasRun = AgentRuntimeHistoryReducer.wasApplied(existing, runId) ||
+                    runId in runJobs ||
+                    existing.messages.any { it.id == "assistant-$runId" || it.id.startsWith("assistant-$runId-") }
+                if (!alreadyHasRun) {
+                    updateConversation(
+                        conversationId,
+                        existing.copy(
+                            input = "",
+                            isStreaming = true,
+                            messages = existing.messages +
+                                UserMessageUi(
+                                    id = "user-$runId",
+                                    content = taskPrompt,
+                                ) +
+                                AgentMessageUi(
+                                    id = "assistant-$runId",
+                                    content = "",
+                                    isStreaming = true,
+                                    renderMarkdown = false,
+                                ),
+                        ),
+                    )
+                    conversationUpdatedAt = conversationUpdatedAt + (conversationId to now)
+                    startReattachedRun(
+                        runId = runId,
+                        conversationId = conversationId,
+                    )
+                } else {
+                    if (conversationState(conversationId) == null) {
+                        updateConversation(conversationId, existing)
+                    }
+                    if (runId !in runJobs && !AgentRuntimeHistoryReducer.wasApplied(existing, runId)) {
+                        startReattachedRun(
+                            runId = runId,
+                            conversationId = conversationId,
+                        )
+                    }
+                }
+                refreshConversationSummaries()
+                selectConversation(conversationId)
+            }
+            return true
+        }
+
+        importArchivedExternalRuns(includeIsolatedScheduledKey = archiveConversationKey)
+        val exists = withContext(Dispatchers.Main.immediate) { conversationState(conversationId) != null }
+        if (!exists) return false
+        withContext(Dispatchers.Main.immediate) {
+            selectConversation(conversationId)
+        }
+        return true
     }
 
     suspend fun openAssistantConversation(conversationKey: String): Boolean {
@@ -7399,6 +7530,7 @@ internal fun buildToolsState(context: Context): AgentToolsUiState =
                 title = context.getString(R.string.state_document_vision_6a65a7),
                 tools = listOf(
                     ToolItemUi("read_image", context.getString(R.string.tool_ui_read_pictures_ae993b), context.getString(R.string.tool_ui_read_pictures_of_known_paths_and_hand_them_over__7f9569)),
+                    ToolItemUi("generate_image", context.getString(R.string.tool_generate_image), context.getString(R.string.tool_generate_image_description)),
                 ),
             ),
             ToolGroupUi(

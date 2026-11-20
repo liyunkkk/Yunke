@@ -50,4 +50,9 @@ internal fun AppRoute.frameDiagnosticPage(): FrameDiagnosticPage = when (this) {
     is AppRoute.AssistantEdit -> FrameDiagnosticPage.AssistantEdit
     AppRoute.UsageStats -> FrameDiagnosticPage.UsageStats
     AppRoute.ManageChats -> FrameDiagnosticPage.ManageChats
+    AppRoute.ImageGenSettings -> FrameDiagnosticPage.Settings
+    AppRoute.ImageGenGallery -> FrameDiagnosticPage.Settings
+    AppRoute.ScheduledTasks -> FrameDiagnosticPage.Settings
+    is AppRoute.ScheduledTaskDetail -> FrameDiagnosticPage.Settings
+    is AppRoute.ScheduledTaskEditor -> FrameDiagnosticPage.Settings
 }

@@ -1595,4 +1595,24 @@
   <string name="settings_model_retry_summary">網路或中轉站不穩時可調高；0 表示不自動重試。</string>
   <string name="settings_about_version">版本</string>
   <string name="settings_about_feedback">問題反饋</string>
+  <string name="image_gen_settings_title">AI 生圖</string>
+  <string name="image_gen_gallery_title">已生成圖片</string>
+  <string name="image_gen_configure_action">設定生圖</string>
+  <string name="tool_generate_image">AI 生圖</string>
+  <string name="tool_generate_image_description">使用已設定的生圖模型根據文字描述創作圖片，或依據參考圖進行圖像編輯與風格遷移。</string>
+  <string name="route_scheduled_tasks">排程任務</string>
+  <string name="route_scheduled_task_detail">任務詳情</string>
+  <string name="route_scheduled_task_new">新增排程任務</string>
+  <string name="route_scheduled_task_edit">編輯排程任務</string>
+  <string name="scheduled_notification_channel_results">排程任務結果</string>
+  <string name="scheduled_notification_channel_results_desc">排程任務完成後的簡報與變動提醒</string>
+  <string name="scheduled_notification_channel_alerts">排程任務告警</string>
+  <string name="scheduled_notification_channel_alerts_desc">任務執行失敗、連續失敗自動暫停及待解鎖提醒</string>
+  <string name="scheduled_notification_completed_fallback">排程任務已完成，點按檢視完整對話。</string>
+  <string name="scheduled_notification_failed_title">排程任務失敗：%1$s</string>
+  <string name="scheduled_notification_auto_disabled_title">排程任務已暫停：%1$s</string>
+  <string name="scheduled_notification_failed_fallback">任務執行失敗，點按檢視詳情。</string>
+  <string name="scheduled_notification_gui_ready_title">排程任務就緒：%1$s</string>
+  <string name="scheduled_action_run_now">立即試跑</string>
+  <string name="scheduled_action_stop">停止執行</string>
 </resources>

@@ -1601,4 +1601,24 @@
   <string name="settings_model_retry_summary">网络或中转站不稳时可调高；0 表示不自动重试。</string>
   <string name="settings_about_version">版本</string>
   <string name="settings_about_feedback">问题反馈</string>
+  <string name="image_gen_settings_title">AI 生图</string>
+  <string name="image_gen_gallery_title">已生成图片</string>
+  <string name="image_gen_configure_action">配置生图</string>
+  <string name="tool_generate_image">AI 生图</string>
+  <string name="tool_generate_image_description">使用已配置的生图模型根据文字描述创作图片，或基于参考图进行图像编辑与风格迁移。</string>
+  <string name="route_scheduled_tasks">定时任务</string>
+  <string name="route_scheduled_task_detail">任务详情</string>
+  <string name="route_scheduled_task_new">新建定时任务</string>
+  <string name="route_scheduled_task_edit">编辑定时任务</string>
+  <string name="scheduled_notification_channel_results">定时任务结果</string>
+  <string name="scheduled_notification_channel_results_desc">定时任务完成后的简报与变动提醒</string>
+  <string name="scheduled_notification_channel_alerts">定时任务告警</string>
+  <string name="scheduled_notification_channel_alerts_desc">任务执行失败、连续失败自动暂停及待解锁提醒</string>
+  <string name="scheduled_notification_completed_fallback">定时任务已完成，点按查看完整对话。</string>
+  <string name="scheduled_notification_failed_title">定时任务失败：%1$s</string>
+  <string name="scheduled_notification_auto_disabled_title">定时任务已暂停：%1$s</string>
+  <string name="scheduled_notification_failed_fallback">任务执行失败，点按查看详情。</string>
+  <string name="scheduled_notification_gui_ready_title">定时任务就绪：%1$s</string>
+  <string name="scheduled_action_run_now">立即试跑</string>
+  <string name="scheduled_action_stop">停止运行</string>
 </resources>

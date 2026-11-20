@@ -39,6 +39,7 @@ internal object AgentToolRequirements {
             "skills_list", "skills_read", "skills_read_resource", "skills_list_curated",
             "skills_inspect_github", "skills_install_from_github",
             "get_assistant_config", "update_assistant_config", "web_search", "fetch_url",
+            "generate_image",
             "skills_install_local", "eta_manage_models", "eta_manage_subagents", "eta_configure_mcp",
         )
         // 系统与一方应用操作：按目录自带的 Root/ColorOS 标注登记，避免手工漏项。
@@ -97,6 +98,14 @@ internal object AgentToolRequirements {
         requireNotNull(find(name)) { "Missing tool requirements: $name" }.rootRequirement
 
     fun requiresAccessibility(name: String): Boolean = find(name)?.accessibility == true
+
+    private val additionalGuiTools = setOf(
+        "launch_app", "open_uri", "wait", "set_clipboard", "get_clipboard",
+        "start_virtual_session", "finish_virtual_session", "keep_virtual_result",
+    )
+
+    fun requiresGuiControl(name: String): Boolean =
+        requiresAccessibility(name) || name in additionalGuiTools
 
     fun rootDenied(name: String, arguments: JSONObject, rootAvailable: Boolean): Boolean {
         if (rootAvailable) return false

@@ -9,12 +9,12 @@ class GoogleAntigravityOAuthTest {
     @Test
     fun cloudcodeHostIsAntigravityEndpoint() {
         assertTrue(GoogleAntigravityOAuth.isAntigravityEndpoint("https://cloudcode-pa.googleapis.com"))
-        assertEquals("2.9.1", GoogleAntigravityOAuth.CLIENT_VERSION)
+        assertEquals("2.33.0", GoogleAntigravityOAuth.CLIENT_VERSION)
         assertTrue(GoogleAntigravityOAuth.isAntigravityEndpoint("https://daily-cloudcode-pa.googleapis.com"))
         assertTrue(GoogleAntigravityOAuth.isAntigravityEndpoint("https://cloudcode-pa.googleapis.com/"))
         assertFalse(GoogleAntigravityOAuth.isAntigravityEndpoint("https://chatgpt.com/backend-api/codex"))
         assertFalse(GoogleAntigravityOAuth.isAntigravityEndpoint("https://api.openai.com/v1"))
-        assertTrue(GoogleAntigravityOAuth.requestUserAgent().startsWith("antigravity/hub/"))
+        assertTrue(GoogleAntigravityOAuth.requestUserAgent().startsWith("antigravity/hub/2.33.0 (aidev_client; os_type=darwin; arch=arm64; cl=1023160026)"))
     }
 
     @Test
@@ -39,6 +39,24 @@ class GoogleAntigravityOAuthTest {
         assertEquals(setOf("gemini-3-flash", "gemini-3.1-pro-high", "claude-sonnet-4-6", "gpt-oss-120b-medium"),
             models.map { it.modelId }.toSet())
         assertTrue(models.none { it.modelId.startsWith("MODEL_") })
+    }
+
+    @Test
+    fun parseModelsKeepsUltraTieredModelsBeyondFlashDeclaration() {
+        val models = GoogleAntigravityOAuth.parseModels(
+            """{"tieredModelIds":{"flash":["gemini-3.8-flash-high"],"pro":["gemini-4-hydrogen-xhigh"]},"models":{"gemini-3.8-flash-high":{"displayName":"Gemini 3.8 Flash High"},"gemini-4-hydrogen-xhigh":{"displayName":"Gemini 4 Hydrogen XHigh"},"chat_internal_preview":{"displayName":"Chat internal"}}}""",
+        )
+        assertEquals(setOf("gemini-3.8-flash-high", "gemini-4-hydrogen-xhigh"), models.map { it.modelId }.toSet())
+        val hydrogen = models.single { it.modelId == "gemini-4-hydrogen-xhigh" }
+        assertTrue(hydrogen.reasoningCapabilities?.supportedEfforts?.contains(io.github.mangi.eta.data.model.ReasoningEffort.XHIGH) == true)
+    }
+
+    @Test
+    fun defaultModelsIncludeCurrentGemini4AndUltraEntries() {
+        val ids = GoogleAntigravityOAuth.defaultModels().map { it.modelId }.toSet()
+        assertTrue("gemini-4-hydrogen-xhigh" in ids)
+        assertTrue("gemini-4-argon-high" in ids)
+        assertTrue("gemini-3.8-flash-high" in ids)
     }
 
     @Test

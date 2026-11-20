@@ -13,10 +13,14 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.captionBar
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -39,10 +43,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
@@ -55,6 +62,7 @@ import io.github.mangi.eta.agent.model.AgentFileReferenceKind
 import io.github.mangi.eta.ui.model.PendingFileReferenceUi
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
+import top.yukonga.miuix.kmp.basic.ListPopupDefaults
 import top.yukonga.miuix.kmp.basic.PopupPositionProvider
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextField
@@ -64,8 +72,89 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.window.WindowDialog
 
 internal val ChatInputPopupMargin = 8.dp
+internal val ChatInputPopupSafeMargin = 12.dp
 internal val ChatInputActionSize = 40.dp
 internal val ChatInputActionIconSize = 24.dp
+
+internal data class InputBarPopupLayout(
+    val gap: Dp,
+    val maxHeight: Dp,
+)
+
+/**
+ * 底部输入区弹窗需悬浮在整块输入容器上方，避免回退向上展开时压住按钮与输入栏本身。
+ *
+ * 弹窗内部按无 `ime` 的窗口底边判断是否向下展开；当软键盘抬高输入栏时，
+ * 下方看似空余极大而触发向下对齐，导致菜单压回输入框并被键盘裁切。这里按相同的窗口底边
+ * 提前判定实际对齐方向，并在向下对齐分支反推 `gap`，让菜单底边始终停在输入栏上方 [ChatInputPopupMargin]。
+ */
+internal fun calculateInputBarPopupLayout(
+    inputContainerTopPx: Float,
+    anchorTopPx: Float,
+    anchorBottomPx: Float,
+    measuredHeightPx: Float,
+    statusBarTopPx: Float,
+    windowBottomPx: Float,
+    safeMarginPx: Float,
+    marginPx: Float,
+    density: Float,
+    defaultMaxHeightDp: Dp = ListPopupDefaults.MaxPopupHeight,
+): InputBarPopupLayout {
+    val maxHeightDp = if (inputContainerTopPx > statusBarTopPx) {
+        ((inputContainerTopPx - statusBarTopPx - marginPx - safeMarginPx) / density).dp
+    } else {
+        defaultMaxHeightDp
+    }.coerceIn(96.dp, defaultMaxHeightDp)
+
+    if (inputContainerTopPx <= 0f || anchorBottomPx <= 0f) {
+        return InputBarPopupLayout(gap = 0.dp, maxHeight = maxHeightDp)
+    }
+
+    val targetBottomPx = inputContainerTopPx - marginPx
+    val baseGapPx = (targetBottomPx - anchorBottomPx).coerceAtMost(0f)
+    val gapPx = if (measuredHeightPx > 0f && anchorTopPx > 0f) {
+        val minTopPx = statusBarTopPx + safeMarginPx
+        val shiftedTop = anchorTopPx + baseGapPx
+        val below = windowBottomPx - safeMarginPx - shiftedTop
+        val above = targetBottomPx - minTopPx
+        val willAlignTop = measuredHeightPx <= below || below >= above
+        if (willAlignTop) {
+            ((targetBottomPx - measuredHeightPx) - anchorTopPx).coerceAtMost(0f)
+        } else {
+            baseGapPx
+        }
+    } else {
+        baseGapPx
+    }
+    return InputBarPopupLayout(gap = (gapPx / density).dp, maxHeight = maxHeightDp)
+}
+
+@Composable
+internal fun rememberInputBarPopupLayout(
+    inputContainerTopPx: Float,
+    anchorTopPx: Float,
+    anchorBottomPx: Float,
+    measuredHeightPx: Float,
+): InputBarPopupLayout {
+    val density = LocalDensity.current
+    val statusBarTopPx = WindowInsets.statusBars.getTop(density).toFloat()
+    val navBarBottomPx = WindowInsets.navigationBars.getBottom(density).toFloat()
+    val captionBarBottomPx = WindowInsets.captionBar.getBottom(density).toFloat()
+    val windowBottomPx = LocalWindowInfo.current.containerSize.height - navBarBottomPx - captionBarBottomPx
+    return with(density) {
+        calculateInputBarPopupLayout(
+            inputContainerTopPx = inputContainerTopPx,
+            anchorTopPx = anchorTopPx,
+            anchorBottomPx = anchorBottomPx,
+            measuredHeightPx = measuredHeightPx,
+            statusBarTopPx = statusBarTopPx,
+            windowBottomPx = windowBottomPx,
+            safeMarginPx = ChatInputPopupSafeMargin.toPx(),
+            marginPx = ChatInputPopupMargin.toPx(),
+            density = this.density,
+        )
+    }
+}
 
 /**
  * 附件选择器启动句柄。

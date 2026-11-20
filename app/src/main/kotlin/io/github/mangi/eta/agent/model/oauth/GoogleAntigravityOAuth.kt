@@ -5,6 +5,8 @@ import android.net.Uri
 import io.github.mangi.eta.data.model.CustomHeader
 import io.github.mangi.eta.data.model.Model
 import io.github.mangi.eta.data.model.ModelSource
+import io.github.mangi.eta.data.model.ModelReasoningCapabilities
+import io.github.mangi.eta.data.model.ReasoningEffort
 import io.github.mangi.eta.data.model.OpenAiEndpointMode
 import io.github.mangi.eta.data.model.ProviderAuthMode
 import io.github.mangi.eta.data.model.ProviderSetting
@@ -29,14 +31,15 @@ import org.json.JSONObject
 internal object GoogleAntigravityOAuth {
     const val DEFAULT_NAME = "反重力"
     const val BASE_URL = "https://daily-cloudcode-pa.googleapis.com"
-    const val CLIENT_VERSION = "2.9.1"
+    const val CLIENT_VERSION = "2.33.0"
+    private const val CHANGE_LIST = "1023160026"
     private const val AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
     private const val TOKEN_URL = "https://oauth2.googleapis.com/token"
     private const val CLIENT_ID = "1071006060591-tmhssin2h21lcre235vt" + "olojh4g403ep.apps.googleuserco" + "ntent.com"
     private const val CLIENT_SECRET = "GO" + "CSPX-K58FWR" + "486LdLJ1mLB8sX" + "C4z6qDAf"
     private const val CALLBACK_PORT = 51121
     private const val REDIRECT_PATH = "/oauth-callback"
-    private const val SCOPES = "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/cclog https://www.googleapis.com/auth/experimentsandconfigs"
+    private const val SCOPES = "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/cclog https://www.googleapis.com/auth/experimentsandconfigs https://www.googleapis.com/auth/aicode"
     private const val DEFAULT_PROJECT_ID = "rising-fact-p41fc"
     private val JSON = "application/json".toMediaType()
     private val endpoints = listOf(
@@ -81,14 +84,13 @@ internal object GoogleAntigravityOAuth {
         ProviderOAuthStore(context).loadString(providerId, "project_id")
             ?.takeIf { it.isNotBlank() && it != DEFAULT_PROJECT_ID }
 
-    fun ensureProjectId(context: Context, providerId: String, accessToken: String): String? {
-        projectId(context, providerId)?.let { return it }
+    fun ensureProjectId(context: Context, providerId: String, accessToken: String, refresh: Boolean = false): String? {
+        if (!refresh) projectId(context, providerId)?.let { return it }
         if (accessToken.isBlank()) return null
-        val store = ProviderOAuthStore(context)
-        discoverProjectId(store, providerId, accessToken)
+        discoverProjectId(ProviderOAuthStore(context), providerId, accessToken)
         return projectId(context, providerId)
     }
-    fun requestUserAgent(): String = "antigravity/hub/" + CLIENT_VERSION + " darwin/arm64"
+    fun requestUserAgent(): String = "antigravity/hub/$CLIENT_VERSION (aidev_client; os_type=darwin; arch=arm64; cl=$CHANGE_LIST)"
 
     fun onboardUserAgent(): String = requestUserAgent() + " google-api-nodejs-client/10.3.0"
 
@@ -105,10 +107,18 @@ internal object GoogleAntigravityOAuth {
             is io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting -> updated.copy(customHeaders = merged)
             is io.github.mangi.eta.data.model.CustomProviderSetting -> updated.copy(customHeaders = merged)
             is io.github.mangi.eta.data.model.AnthropicProviderSetting -> updated.copy(customHeaders = merged)
+            is io.github.mangi.eta.data.model.GeminiProviderSetting -> updated.copy(customHeaders = merged)
         }
     }
     fun defaultEndpointMode(): String = OpenAiEndpointMode.ANTIGRAVITY
     fun defaultModels(): List<Model> = listOf(
+        Triple("gemini-4-neon-xhigh", "Gemini 4 Neon", 1_000_000),
+        Triple("gemini-4-hydrogen-xhigh", "Gemini 4 Hydrogen (Ultra)", 1_000_000),
+        Triple("gemini-4-carbon-high", "Gemini 4 Carbon", 1_000_000),
+        Triple("gemini-4-argon-high", "Gemini 4 Argon", 1_000_000),
+        Triple("gemini-3.8-flash-high", "Gemini 3.8 Flash", 1_000_000),
+        Triple("claude-opus-5-5-high", "Claude Opus 5.5", 1_000_000),
+        Triple("claude-sonnet-5-5-high", "Claude Sonnet 5.5", 1_000_000),
         Triple("gemini-3.1-flash", "Gemini 3.1 Flash", 1_000_000),
         Triple("gemini-3-flash", "Gemini 3 Flash", 1_000_000),
         Triple("gemini-3.1-pro", "Gemini 3.1 Pro", 1_000_000),
@@ -120,20 +130,30 @@ internal object GoogleAntigravityOAuth {
         Model(id = UUID.randomUUID().toString(), modelId = id, displayName = name,
             ownedBy = if (id.startsWith("claude")) "anthropic" else "google", sortOrder = index,
             contextWindow = window, inputModalities = listOf(Model.TEXT_MODALITY, Model.IMAGE_MODALITY),
-            toolCall = true, reasoning = true, structuredOutput = true, source = ModelSource.CATALOG)
+            toolCall = true, reasoning = true, reasoningCapabilities = antigravityReasoningCapabilities(id),
+            structuredOutput = true, source = ModelSource.CATALOG)
     }
     fun fetchModels(context: Context, provider: ProviderSetting): List<Model> {
         val token = kotlinx.coroutines.runBlocking {
             validAccessToken(context, provider.id)
         } ?: provider.apiKey
-        if (token.isBlank()) return defaultModels()
-        val project = projectId(context, provider.id).orEmpty()
+        if (token.isBlank()) error("请先完成 Google 登录，或为该连接填写 API Key")
+        val project = ensureProjectId(context, provider.id, token, refresh = true).orEmpty()
         val body = JSONObject().also { if (project.isNotBlank()) it.put("project", project) }
+        var lastFailure: Throwable? = null
         endpoints.forEach { endpoint ->
-            val models = runCatching { listModels(endpoint, token, body) }.getOrNull()
-            if (!models.isNullOrEmpty()) return models
+            try {
+                val models = listModels(endpoint, token, body)
+                if (models.isNotEmpty()) return models
+                lastFailure = IllegalStateException("Cloud Code 返回空模型目录（$endpoint）")
+            } catch (failure: Exception) {
+                lastFailure = failure
+            }
         }
-        return defaultModels()
+        throw IllegalStateException(
+            "拉取 Google 模型目录失败：${lastFailure?.message ?: "所有 Cloud Code 端点均返回空结果"}",
+            lastFailure,
+        )
     }
     fun clear(context: Context, providerId: String) { ProviderOAuthStore(context).clear(providerId) }
     internal fun parseModels(body: String): List<Model> {
@@ -141,36 +161,37 @@ internal object GoogleAntigravityOAuth {
         val collected = mutableListOf<Model>()
         val modelsObject = root.optJSONObject("models")
         if (modelsObject != null) {
-            // `models` 是 CCA 的内部全量目录，混着 chat_*/tab_*_preview 这类内部 id。
-            // 原生客户端（以及 CLIProxyAPI）只列 agentModelSorts + tieredModelIds.flash
-            // + imageGenerationModelIds 声明的那部分，这里照做；三个字段都缺失时才退回全量。
+            // CCA declarations are incomplete for tier-specific Ultra models. Preserve all usable
+            // server entries after excluding internal UI/chat placeholders and image-only models.
             val declared = linkedSetOf<String>()
             root.optJSONArray("agentModelSorts")?.let { sorts ->
                 for (sort in 0 until sorts.length()) {
                     val groups = sorts.optJSONObject(sort)?.optJSONArray("groups") ?: continue
                     for (group in 0 until groups.length()) {
                         val ids = groups.optJSONObject(group)?.optJSONArray("modelIds") ?: continue
-                        for (index in 0 until ids.length()) {
-                            ids.optString(index).trim().takeIf { it.isNotBlank() }?.let(declared::add)
-                        }
+                        for (index in 0 until ids.length()) ids.optString(index).trim()
+                            .takeIf(String::isNotBlank)?.let(declared::add)
                     }
                 }
             }
-            root.optJSONObject("tieredModelIds")?.optJSONArray("flash")?.let { flash ->
-                for (index in 0 until flash.length()) {
-                    flash.optString(index).trim().takeIf { it.isNotBlank() }?.let(declared::add)
+            root.optJSONObject("tieredModelIds")?.let { tiered ->
+                tiered.keys().forEach { tier ->
+                    val ids = tiered.optJSONArray(tier) ?: return@forEach
+                    for (index in 0 until ids.length()) ids.optString(index).trim()
+                        .takeIf(String::isNotBlank)?.let(declared::add)
                 }
             }
             root.optJSONArray("imageGenerationModelIds")?.let { images ->
-                for (index in 0 until images.length()) {
-                    if (images.optString(index) == "gemini-3.1-flash-image") declared.add("gemini-3.1-flash-image")
-                }
+                for (index in 0 until images.length()) images.optString(index).trim()
+                    .takeIf(String::isNotBlank)?.let(declared::add)
             }
-            val source = if (declared.isNotEmpty()) declared.toList() else modelsObject.keys().asSequence().toList()
+            modelsObject.keys().forEach { modelId ->
+                val displayName = modelsObject.optJSONObject(modelId)?.optString("displayName").orEmpty()
+                if (isUsableModel(modelId, displayName)) declared.add(modelId)
+            }
             var order = 0
-            source.forEach { rawId ->
-                val modelId = rawId.trim()
-                if (modelId.isBlank()) return@forEach
+            declared.forEach { modelId ->
+                if (!isUsableModel(modelId, modelsObject.optJSONObject(modelId)?.optString("displayName").orEmpty())) return@forEach
                 val display = modelsObject.optJSONObject(modelId)?.optString("displayName")?.ifBlank { null } ?: modelId
                 addCatalogModel(collected, modelId, display, order++)
             }
@@ -196,6 +217,13 @@ internal object GoogleAntigravityOAuth {
             return name
         }
         return when (modelId.lowercase()) {
+            "gemini-4-neon", "gemini-4-neon-high", "gemini-4-neon-xhigh" -> "Gemini 4 Neon"
+            "gemini-4-hydrogen", "gemini-4-hydrogen-xhigh" -> "Gemini 4 Hydrogen (Ultra)"
+            "gemini-4-carbon", "gemini-4-carbon-high" -> "Gemini 4 Carbon"
+            "gemini-4-argon", "gemini-4-argon-high" -> "Gemini 4 Argon"
+            "gemini-3.8-flash", "gemini-3.8-flash-high" -> "Gemini 3.8 Flash"
+            "claude-sonnet-5-5", "claude-sonnet-5-5-high" -> "Claude Sonnet 5.5"
+            "claude-opus-5-5", "claude-opus-5-5-high" -> "Claude Opus 5.5"
             "gemini-3-flash" -> "Gemini 3 Flash"
             "gemini-3.1-flash" -> "Gemini 3.1 Flash"
             "gemini-3.1-pro" -> "Gemini 3.1 Pro"
@@ -215,6 +243,7 @@ internal object GoogleAntigravityOAuth {
         val id = modelId.trim()
         val name = displayName.trim()
         if (id.isBlank()) return false
+        if (id.startsWith("chat_", ignoreCase = true) || id.startsWith("tab_", ignoreCase = true)) return false
         val haystack = (id + " " + name).lowercase()
         if ("placeholder" in haystack) return false
         if (id.startsWith("MODEL_", true)) return false
@@ -228,8 +257,32 @@ internal object GoogleAntigravityOAuth {
         ownedBy = if (modelId.startsWith("claude", true)) "anthropic" else "google",
         sortOrder = order, contextWindow = 1_000_000,
         inputModalities = listOf(Model.TEXT_MODALITY, Model.IMAGE_MODALITY),
-        toolCall = true, reasoning = true, source = ModelSource.REMOTE,
+        toolCall = true,
+        reasoning = true,
+        reasoningCapabilities = antigravityReasoningCapabilities(modelId),
+        source = ModelSource.REMOTE,
     )
+
+    private fun antigravityReasoningCapabilities(modelId: String): ModelReasoningCapabilities? {
+        val routed = io.github.mangi.eta.agent.model.AntigravityModelRouting.runtimeModelId(modelId).lowercase()
+        val supported = when {
+            routed.startsWith("gemini-4-") && routed.endsWith("xhigh") -> listOf(
+                ReasoningEffort.LOW, ReasoningEffort.MEDIUM, ReasoningEffort.HIGH, ReasoningEffort.XHIGH,
+            )
+            routed.startsWith("gemini-4-") -> listOf(
+                ReasoningEffort.LOW, ReasoningEffort.MEDIUM, ReasoningEffort.HIGH,
+            )
+            else -> return null
+        }
+        return ModelReasoningCapabilities(
+            supportedEfforts = supported,
+            defaultEffort = if (routed.endsWith("xhigh")) ReasoningEffort.XHIGH else ReasoningEffort.HIGH,
+            defaultEnabled = true,
+            mandatory = true,
+            canDisable = false,
+        )
+    }
+
     private fun listModels(endpoint: String, token: String, body: JSONObject): List<Model> {
         val request = Request.Builder().url(endpoint + "/v1internal:fetchAvailableModels")
             .header("Authorization", "Bearer " + token).header("Content-Type", "application/json")
@@ -300,8 +353,9 @@ internal object GoogleAntigravityOAuth {
 
     private fun provisionProject(endpoint: String, token: String, metadata: JSONObject): String? {
         var loaded = loadCodeAssist(endpoint, token, JSONObject().put("metadata", metadata)) ?: return null
-        if (!loaded.has("currentTier") || loaded.isNull("currentTier")) {
-            onboardUser(endpoint, token, metadata)
+        val currentTier = tierId(loaded.opt("currentTier"))
+        if (currentTier.isNullOrBlank()) {
+            onboardUser(endpoint, token, metadata, preferredTierId(loaded))
             loaded = loadCodeAssist(endpoint, token, JSONObject().put("metadata", metadata)) ?: loaded
         }
         extractProject(loaded)?.let { return it }
@@ -317,8 +371,29 @@ internal object GoogleAntigravityOAuth {
         return extractProject(loaded)
     }
 
-    private fun onboardUser(endpoint: String, token: String, metadata: JSONObject) {
-        val body = JSONObject().put("tierId", "free-tier").put("metadata", metadata)
+    private fun tierId(value: Any?): String? = when (value) {
+        is String -> value.trim().takeIf(String::isNotEmpty)
+        is JSONObject -> sequenceOf("id", "tierId", "tier_id").map { value.optString(it).trim() }
+            .firstOrNull(String::isNotEmpty)
+        else -> null
+    }
+
+    private fun preferredTierId(loadCodeAssist: JSONObject): String? {
+        val tiers = loadCodeAssist.optJSONArray("allowedTiers") ?: return null
+        var fallback: String? = null
+        for (index in 0 until tiers.length()) {
+            val tier = tiers.optJSONObject(index) ?: continue
+            val id = tierId(tier) ?: continue
+            if (tier.optBoolean("isDefault", false)) return id
+            if (fallback == null) fallback = id
+        }
+        return fallback
+    }
+
+    private fun onboardUser(endpoint: String, token: String, metadata: JSONObject, tierId: String?) {
+        val body = JSONObject().put("metadata", metadata).also { request ->
+            tierId?.takeIf(String::isNotBlank)?.let { request.put("tierId", it) }
+        }
         val request = cloudRequest(endpoint + "/v1internal:onboardUser", token, body, onboardUserAgent())
         val operation = httpClient.newCall(request).execute().use { response ->
             val text = response.body?.string().orEmpty()

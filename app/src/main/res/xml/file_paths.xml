@@ -3,4 +3,6 @@
     <cache-path name="updates" path="updates/" />
     <cache-path name="browser_shares" path="browser-shares/" />
     <cache-path name="chat_files" path="chat-files/" />
+    <files-path name="generated_images" path="generated_images/" />
+    <cache-path name="shared_images" path="shared_images/" />
 </paths>

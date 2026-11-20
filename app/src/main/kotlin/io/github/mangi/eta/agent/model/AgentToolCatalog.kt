@@ -2,6 +2,7 @@ package io.github.mangi.eta.agent.model
 
 import org.json.JSONArray
 import io.github.mangi.eta.config.Prefs
+import io.github.mangi.eta.agent.imagegen.ImageGenToolCatalog
 import io.github.mangi.eta.agent.tool.AgentToolCapabilities
 import io.github.mangi.eta.agent.delegation.SubAgentPollGuard
 
@@ -16,6 +17,7 @@ internal object AgentToolCatalog {
         skillGitHubDiscovery: Boolean = false,
         skillGitHubInstall: Boolean = false,
         memoryTools: Boolean = false,
+        imageGenTools: Boolean = false,
         capabilities: AgentToolCapabilities = AgentToolCapabilities(rootAvailable = true),
         disabledTools: Set<String> = emptySet(),
     ): JSONArray =
@@ -26,6 +28,7 @@ internal object AgentToolCatalog {
             AgentSelfToolCatalog.appendTo(tools)
             AgentSpeechToolCatalog.appendTo(tools)
             AgentGestureToolCatalog.appendTo(tools)
+            if (imageGenTools) ImageGenToolCatalog.appendTo(tools)
             AgentTextSystemToolCatalog.appendTo(tools)
             AgentDeviceToolCatalog.appendTo(
                 tools,
@@ -60,7 +63,7 @@ internal object AgentToolCatalog {
 
     fun allForSwitches(): JSONArray = build(
         true, true, true, true, true,
-        skillGitHubDiscovery = true, skillGitHubInstall = true, memoryTools = true,
+        skillGitHubDiscovery = true, skillGitHubInstall = true, memoryTools = true, imageGenTools = true,
         capabilities = AgentToolCapabilities(rootAvailable = true, lsposedAvailable = true, virtualDisplay = true),
     )
 

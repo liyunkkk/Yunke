@@ -56,6 +56,7 @@ import androidx.compose.material.icons.rounded.Extension
 import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.rounded.PushPin
+import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.DrawerState
@@ -184,6 +185,7 @@ fun ConversationSidePaneScaffold(
     onOpenUsageStats: () -> Unit,
     onOpenSkills: () -> Unit,
     onOpenPermissions: () -> Unit,
+    onOpenScheduledTasks: () -> Unit = {},
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit,
 ) {
@@ -316,6 +318,7 @@ fun ConversationSidePaneScaffold(
                     onOpenUsageStats = { launchAfterDrawerClosed(onOpenUsageStats) },
                     onOpenSkills = { launchAfterDrawerClosed(onOpenSkills) },
                     onOpenPermissions = { launchAfterDrawerClosed(onOpenPermissions) },
+                    onOpenScheduledTasks = { launchAfterDrawerClosed(onOpenScheduledTasks) },
                     modifier = Modifier.fillMaxHeight(),
                 )
             },
@@ -355,6 +358,7 @@ private fun ConversationPanePanel(
     onOpenUsageStats: () -> Unit,
     onOpenSkills: () -> Unit,
     onOpenPermissions: () -> Unit,
+    onOpenScheduledTasks: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val query = state.searchQuery.trim()
@@ -469,6 +473,7 @@ private fun ConversationPanePanel(
                 onOpenModelProviders = onOpenModelProviders,
                 onOpenUsageStats = onOpenUsageStats,
                 onOpenSkills = onOpenSkills,
+                onOpenScheduledTasks = onOpenScheduledTasks,
             )
             Spacer(modifier = Modifier.height(DrawerMetrics.BottomInset))
         }
@@ -1114,6 +1119,7 @@ private fun PaneDock(
     onOpenModelProviders: () -> Unit,
     onOpenUsageStats: () -> Unit,
     onOpenSkills: () -> Unit,
+    onOpenScheduledTasks: () -> Unit = {},
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -1141,6 +1147,12 @@ private fun PaneDock(
             icon = Icons.Rounded.BarChart,
             label = stringResource(R.string.stats_page_title),
             onClick = onOpenUsageStats,
+        )
+        Spacer(modifier = Modifier.width(10.dp))
+        DrawerCircleButton(
+            icon = Icons.Rounded.Schedule,
+            label = stringResource(R.string.route_scheduled_tasks),
+            onClick = onOpenScheduledTasks,
         )
         Spacer(modifier = Modifier.weight(1f))
         DrawerCircleButton(

@@ -15,6 +15,7 @@ import android.view.View
  * TYPE_APPLICATION_OVERLAY 窗口承载，避免把厂商助手动画和输入层级绑定到系统会话窗口。
  */
 internal class EtaVoiceInteractionSession(context: Context) : VoiceInteractionSession(context) {
+    private var coalescedShow = false
     private val controlReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == ACTION_HIDE_FOR_FOREGROUND_OPERATION) {
@@ -35,9 +36,21 @@ internal class EtaVoiceInteractionSession(context: Context) : VoiceInteractionSe
 
     override fun onCreateContentView(): View = View(context)
 
+    override fun onPrepareShow(args: Bundle?, showFlags: Int) {
+        super.onPrepareShow(args, showFlags)
+        // 浮窗仍处于刚唤起的初始空闲态时合并重复唤醒，保留初次截取的底层界面上下文与截图。
+        coalescedShow = EtaAssistantOverlayService.hasFreshVisibleEntry()
+    }
+
     override fun onShow(args: Bundle?, showFlags: Int) {
         super.onShow(args, showFlags)
+        if (coalescedShow) return
         EtaAssistantOverlayService.show(context)
+    }
+
+    override fun onHide() {
+        coalescedShow = false
+        super.onHide()
     }
 
     override fun onBackPressed() {
@@ -51,6 +64,7 @@ internal class EtaVoiceInteractionSession(context: Context) : VoiceInteractionSe
     }
 
     override fun onDestroy() {
+        coalescedShow = false
         // 浮窗拥有独立生命周期；系统会话重建不代表用户关闭了助理。
         context.unregisterReceiver(controlReceiver)
         super.onDestroy()

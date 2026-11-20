@@ -6,6 +6,9 @@ import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.data.datastore.SettingsDataStore
 import io.github.mangi.eta.data.model.AnthropicProviderSetting
 import io.github.mangi.eta.data.model.CustomProviderSetting
+import io.github.mangi.eta.data.model.GeminiProviderSetting
+import io.github.mangi.eta.data.model.GeminiEndpointMode
+import io.github.mangi.eta.data.provider.GeminiModelCapabilities
 import io.github.mangi.eta.data.model.Model
 import io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting
 import io.github.mangi.eta.data.model.OpenAiEndpointMode
@@ -13,6 +16,7 @@ import io.github.mangi.eta.agent.model.oauth.GoogleAntigravityOAuth
 import io.github.mangi.eta.data.model.SessionGatewayRule
 import io.github.mangi.eta.agent.model.oauth.OpenAiCodexOAuth
 import io.github.mangi.eta.data.model.ProviderSetting
+import io.github.mangi.eta.data.model.ProviderTypes
 import io.github.mangi.eta.data.model.withApiKey
 import io.github.mangi.eta.data.model.ReasoningEffort
 import io.github.mangi.eta.data.model.runtimeProviderType
@@ -134,13 +138,22 @@ internal object RuntimeConfigRepository {
         val requested = settings.resolvedReasoningEffort
             ?: capabilities?.selectableEfforts?.minByOrNull { it.rank }
             ?: if (capabilities?.mandatory == true) ReasoningEffort.DEFAULT else ReasoningEffort.OFF
-        val effort = capabilities?.normalize(requested) ?: ReasoningEffort.OFF
+        val effort = if (base.providerType == ProviderTypes.GEMINI) {
+            if (requested == ReasoningEffort.DEFAULT || capabilities?.supportedEfforts.isNullOrEmpty()) requested
+            else capabilities.normalize(requested)
+        } else {
+            capabilities?.normalize(requested) ?: requested
+        }
         return base.copy(terminalTools = false, browserTools = false, deviceDirectTools = false,
             deviceSensitiveReadTools = false, deviceSensitiveActionTools = false,
             hostedWebSearchEnabled = false, thinkingEnabled = effort.enablesReasoning,
             reasoningEffort = effort, summaryOutputLimit = 128,
             errorReconnectPolicy = io.github.mangi.eta.data.model.ErrorReconnectPolicy.NONE.persistedValue)
     }
+
+    /** Scheduled/background runs use an enabled saved model and the active assistant. */
+    suspend fun runtimeConfigFor(modelId: String?): AgentModelClient.ModelConfig? =
+        if (modelId.isNullOrBlank()) currentRuntimeConfig() else enabledTextConfig(modelId)
 
     suspend fun currentRuntimeConfig(): AgentModelClient.ModelConfig? {
         ProviderRepository.ensureBuiltInsMerged()
@@ -173,11 +186,18 @@ internal object RuntimeConfigRepository {
             null
         }
         val config = baseConfig ?: currentRuntimeConfig() ?: return null
-        return config.copy(
-            thinkingEnabled = false,
-            reasoningEffort = ReasoningEffort.OFF,
-            reasoningCapabilities = null,
-        )
+        return if (config.providerType == ProviderTypes.GEMINI) {
+            config.copy(
+                thinkingEnabled = true,
+                reasoningEffort = ReasoningEffort.DEFAULT,
+            )
+        } else {
+            config.copy(
+                thinkingEnabled = false,
+                reasoningEffort = ReasoningEffort.OFF,
+                reasoningCapabilities = null,
+            )
+        }
     }
 
     suspend fun syncToRemotePreferences(service: XposedService?): Boolean {
@@ -209,10 +229,14 @@ internal object RuntimeConfigRepository {
             is OpenAiCompatibleProviderSetting -> provider.endpointMode
             is CustomProviderSetting -> provider.endpointMode
             is AnthropicProviderSetting -> ""
+            is GeminiProviderSetting -> ""
         }
         val inferOpenAiCatalog = sourceType == io.github.mangi.eta.data.model.ProviderSourceTypes.CUSTOM &&
             endpointMode == OpenAiEndpointMode.RESPONSES
-        val reasoningCapabilities = ReasoningCapabilityResolver.resolve(
+        val reasoningCapabilities = if (provider is GeminiProviderSetting) {
+            if (provider.isVertexAi) GeminiModelCapabilities.resolveVertexReasoning(model)
+            else GeminiModelCapabilities.resolveReasoning(model)
+        } else ReasoningCapabilityResolver.resolve(
             sourceType = if (inferOpenAiCatalog) {
                 io.github.mangi.eta.data.model.ProviderSourceTypes.OPENAI
             } else {
@@ -221,9 +245,17 @@ internal object RuntimeConfigRepository {
             model = model,
             inferExactCatalogModel = inferOpenAiCatalog,
         )
-        val reasoningEffort = reasoningCapabilities?.normalize(
-            model.preferredReasoningEffort ?: ReasoningEffort.OFF,
-        ) ?: ReasoningEffort.OFF
+        val requestedEffort = model.preferredReasoningEffort
+            ?: if (provider is GeminiProviderSetting) ReasoningEffort.DEFAULT else ReasoningEffort.OFF
+        val reasoningEffort = if (provider is GeminiProviderSetting) {
+            when {
+                requestedEffort == ReasoningEffort.DEFAULT -> ReasoningEffort.DEFAULT
+                reasoningCapabilities?.supportedEfforts.isNullOrEmpty() -> requestedEffort
+                else -> reasoningCapabilities.normalize(requestedEffort)
+            }
+        } else {
+            reasoningCapabilities?.normalize(requestedEffort) ?: requestedEffort
+        }
         val sessionRule = SessionGatewayRule.decode(provider.sessionGatewayJson)
         return AgentModelClient.ModelConfig(
             assistantId = assistant?.id.orEmpty(),
@@ -241,7 +273,10 @@ internal object RuntimeConfigRepository {
                 ?: AnthropicProviderSetting.DEFAULT_ANTHROPIC_VERSION,
             openAiEndpointMode = endpointMode,
             responsesStripReasoningStatus = provider.responsesStripReasoningStatus,
-            hostedWebSearchEnabled = provider.hostedWebSearchEnabled,
+            geminiEndpointMode = (provider as? GeminiProviderSetting)?.endpointMode?.let(GeminiEndpointMode::normalize) ?: GeminiEndpointMode.AI_STUDIO,
+            vertexProject = (provider as? GeminiProviderSetting)?.vertexProject?.trim().orEmpty(),
+            vertexLocation = (provider as? GeminiProviderSetting)?.vertexLocation?.trim()?.ifBlank { GeminiProviderSetting.DEFAULT_VERTEX_LOCATION } ?: GeminiProviderSetting.DEFAULT_VERTEX_LOCATION,
+            hostedWebSearchEnabled = provider.hostedWebSearchEnabled && (provider !is GeminiProviderSetting || !provider.isVertexAi),
             thinkingEnabled = reasoningEffort.enablesReasoning,
             reasoningEffort = reasoningEffort,
             reasoningCapabilities = reasoningCapabilities,

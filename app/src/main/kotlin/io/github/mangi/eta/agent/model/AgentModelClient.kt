@@ -8,17 +8,21 @@ import io.github.mangi.eta.agent.runtime.AgentRunController
 import io.github.mangi.eta.agent.runtime.AgentTokenUsage
 import io.github.mangi.eta.agent.memory.AgentMemoryContext
 import io.github.mangi.eta.agent.skill.SkillContext
+import io.github.mangi.eta.agent.scheduler.ScheduledTaskToolCatalog
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.agent.tool.AgentToolCapabilities
 import io.github.mangi.eta.data.model.AnthropicProviderSetting
 import io.github.mangi.eta.data.model.CustomBody
 import io.github.mangi.eta.data.model.CustomHeader
+import io.github.mangi.eta.data.model.GeminiEndpointMode
+import io.github.mangi.eta.data.model.GeminiProviderSetting
 import io.github.mangi.eta.data.model.GptSpeedMode
 import io.github.mangi.eta.data.model.OpenAiEndpointMode
 import io.github.mangi.eta.data.model.ModelReasoningCapabilities
 import io.github.mangi.eta.data.model.ProviderTypes
 import io.github.mangi.eta.data.model.ReasoningEffort
 import io.github.mangi.eta.data.provider.BuiltinProviders
+import io.github.mangi.eta.data.provider.GeminiModelCapabilities
 import io.github.mangi.eta.data.provider.ProviderSourceRegistry
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -109,8 +113,11 @@ internal object AgentModelClient {
         calibratedInputTokens: Int? = null,
         allowUnmeasuredContextSend: Boolean = false,
         onHistorySnapshot: ((Int, List<ConversationMessage>) -> String)? = null,
-        // The parent owner freezes this value; other model callers do not inherit its preference.
+        // The parent owner freezes these values; other model callers do not inherit them.
         interactiveModeEnabled: Boolean = false,
+        scheduledTaskTools: Boolean = false,
+        extraSystemContext: String = "",
+        toolFilter: ((JSONArray) -> JSONArray)? = null,
     ): ModelResponse.Text {
         config.validate()
         val initialCapabilities = capabilitiesProvider()
@@ -135,6 +142,7 @@ internal object AgentModelClient {
                 { (durable, _) -> durable })
         }.getOrNull()
         val delegationAvailable = AgentPromptBuilder.delegationToolsAvailable(additionalTools)
+        val scheduledTaskToolsAvailable = ScheduledTaskToolCatalog.containsManageTool(additionalTools)
         val messages = AgentPromptBuilder.buildInitialMessages(
             config,
             prompt,
@@ -146,6 +154,8 @@ internal object AgentModelClient {
             delegationAvailable = delegationAvailable,
             shellTools = initialCapabilities.shellTools,
             interactiveModeEnabled = interactiveModeEnabled,
+            scheduledTaskTools = scheduledTaskToolsAvailable,
+            extraSystemContext = extraSystemContext,
         )
         val systemCount = AgentPromptBuilder.buildSystemMessages(
             config,
@@ -155,6 +165,8 @@ internal object AgentModelClient {
             delegationAvailable = delegationAvailable,
             shellTools = initialCapabilities.shellTools,
             interactiveModeEnabled = interactiveModeEnabled,
+            scheduledTaskTools = scheduledTaskToolsAvailable,
+            extraSystemContext = extraSystemContext,
         ).length()
         var transcriptStartIndex = messages.length()
         fun toolsFor(
@@ -177,7 +189,8 @@ internal object AgentModelClient {
                 tools.put(additionalTools.opt(index))
             }
             if (compactionArchive != null) tools.put(AgentCompactionArchive.tool())
-            return AgentToolCatalog.filterAdvertised(AgentToolCatalog.filterEnabled(tools, Prefs.disabledTools()))
+            val filtered = AgentToolCatalog.filterAdvertised(AgentToolCatalog.filterEnabled(tools, Prefs.disabledTools()))
+            return toolFilter?.invoke(filtered) ?: filtered
         }
         val tools = toolsFor(initialCapabilities)
         val traceFormatter = AgentTraceFormatter(
@@ -230,6 +243,8 @@ internal object AgentModelClient {
                     config, nextSkillContext, nextMemoryContext, capabilities.rootAvailable, delegationAvailable,
                     capabilities.shellTools,
                     interactiveModeEnabled = interactiveModeEnabled,
+                    scheduledTaskTools = scheduledTaskToolsAvailable,
+                    extraSystemContext = extraSystemContext,
                 )
                 for (index in 0 until systemMessages.length()) {
                     messages.put(index, systemMessages.getJSONObject(index))
@@ -331,8 +346,12 @@ internal object AgentModelClient {
         val systemPrompt: String,
         val anthropicVersion: String = AnthropicProviderSetting.DEFAULT_ANTHROPIC_VERSION,
         val openAiEndpointMode: String = OpenAiEndpointMode.CHAT_COMPLETIONS,
+        val geminiEndpointMode: String = GeminiEndpointMode.AI_STUDIO,
+        val vertexProject: String = "",
+        val vertexLocation: String = GeminiProviderSetting.DEFAULT_VERTEX_LOCATION,
         val responsesStripReasoningStatus: Boolean = false,
         val hostedWebSearchEnabled: Boolean = false,
+        val supportsSearchSuggestions: Boolean = false,
         val terminalTools: Boolean = false,
         val browserTools: Boolean = true,
         val deviceDirectTools: Boolean = true,
@@ -355,6 +374,17 @@ internal object AgentModelClient {
     ) {
         val effectiveReasoningEffort: ReasoningEffort
             get() = reasoningEffort ?: ReasoningEffort.fromLegacy(thinkingEnabled)
+
+        val usesHostedWebSearch: Boolean
+            get() = hostedWebSearchEnabled && when (providerType) {
+                ProviderTypes.OPENAI_COMPATIBLE -> openAiEndpointMode == OpenAiEndpointMode.RESPONSES
+                ProviderTypes.GEMINI -> GeminiEndpointMode.normalize(geminiEndpointMode) == GeminiEndpointMode.AI_STUDIO &&
+                    supportsSearchSuggestions && GeminiModelCapabilities.supportsHostedSearch(model)
+                else -> false
+            }
+
+        val hostedWebSearchToolName: String
+            get() = if (providerType == ProviderTypes.GEMINI) "google_search" else "web_search"
     }
 
     @Serializable
@@ -389,6 +419,8 @@ internal object AgentModelClient {
          * 最终 assistant 自己组织的答复不受此标记影响。
          */
         val sensitive: Boolean = false,
+        /** UI-only structured activity payload; never included in provider tool-result history. */
+        val command: String? = null,
     )
 
     /** 图片引用：入口侧可为本地 URI/路径，进入模型协议前必须解析为远程 URL 或 data URL。 */

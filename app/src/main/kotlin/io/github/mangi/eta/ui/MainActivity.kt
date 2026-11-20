@@ -25,6 +25,8 @@ import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private var assistantConversationKey by mutableStateOf<String?>(null)
+    private var archivedConversationRequest by mutableStateOf<ArchivedConversationLaunchRequest?>(null)
+    private var openScheduledTaskId by mutableStateOf<String?>(null)
     private var inboundShareUris by mutableStateOf<List<String>>(emptyList())
     private var appliedPredictiveBackEnabled = true
     private var refreshRateWindowResumed = false
@@ -66,6 +68,10 @@ class MainActivity : ComponentActivity() {
                 ) {
                     AgentAppRoot(
                         assistantConversationKey = assistantConversationKey,
+                        requestedScheduledTaskId = openScheduledTaskId,
+                        onScheduledTaskOpened = { openScheduledTaskId = null },
+                        archivedConversationRequest = archivedConversationRequest,
+                        onArchivedConversationOpened = { archivedConversationRequest = null },
                         inboundShareUris = inboundShareUris,
                         onAssistantConversationOpened = { opened ->
                             assistantConversationKey = null
@@ -187,10 +193,21 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun updateAssistantHandoff(intent: Intent?) {
-        if (intent?.action != EtaAssistantOverlayService.ACTION_OPEN_CONVERSATION) return
-        assistantConversationKey = intent.getStringExtra(
-            EtaAssistantOverlayService.EXTRA_CONVERSATION_KEY,
-        )?.takeIf(String::isNotBlank)
+        when (intent?.action) {
+            EtaAssistantOverlayService.ACTION_OPEN_CONVERSATION -> {
+                assistantConversationKey = intent.getStringExtra(
+                    EtaAssistantOverlayService.EXTRA_CONVERSATION_KEY,
+                )?.takeIf(String::isNotBlank)
+            }
+            ACTION_OPEN_ARCHIVED_CONVERSATION -> {
+                archivedConversationRequest = MainActivityLaunchRequests.parseArchivedConversationRequest(intent)
+                intent.action = null
+            }
+            ACTION_OPEN_SCHEDULED_TASK_DETAIL -> {
+                openScheduledTaskId = MainActivityLaunchRequests.parseScheduledTaskDetailId(intent)
+                intent.action = null
+            }
+        }
     }
 
     private fun updateSystemBars(isDark: Boolean) {
@@ -227,5 +244,14 @@ class MainActivity : ComponentActivity() {
         @Volatile
         var isForeground = false
             private set
+
+        internal val isInForeground: Boolean
+            get() = isForeground
+
+        const val ACTION_OPEN_ARCHIVED_CONVERSATION = "io.github.mangi.eta.action.OPEN_ARCHIVED_CONVERSATION"
+        const val EXTRA_HANDOFF_SOURCE = "io.github.mangi.eta.extra.HANDOFF_SOURCE"
+        const val EXTRA_CONVERSATION_KEY = "io.github.mangi.eta.extra.CONVERSATION_KEY"
+        const val ACTION_OPEN_SCHEDULED_TASK_DETAIL = "io.github.mangi.eta.action.OPEN_SCHEDULED_TASK_DETAIL"
+        const val EXTRA_SCHEDULED_TASK_ID = "io.github.mangi.eta.extra.SCHEDULED_TASK_ID"
     }
 }
