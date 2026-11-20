@@ -50,6 +50,7 @@ internal interface ScheduledTaskDao {
         nextRunAt: Long?,
         updateSchedule: Boolean,
         updatedAt: Long,
+        resetFailures: Boolean = false,
     ): Int
 
     @Query("UPDATE scheduled_tasks SET enabled = CASE WHEN :disableTask THEN 0 ELSE enabled END, next_run_at = :nextRunAt, updated_at = :updatedAt WHERE id = :taskId AND enabled = 1 AND next_run_at = :expectedRunAt AND updated_at = :expectedUpdatedAt")
