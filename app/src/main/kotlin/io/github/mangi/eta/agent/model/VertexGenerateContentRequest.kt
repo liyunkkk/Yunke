@@ -103,7 +103,9 @@ internal object VertexGenerateContentRequest {
             effort == ReasoningEffort.OFF &&
                 (config.reasoningCapabilities?.canDisable == true || allowedEfforts.isEmpty()) -> generation.remove("thinkingConfig")
             else -> {
-                require(allowedEfforts.isEmpty() || effort in allowedEfforts) {
+                // A stale or custom capability list cannot expand a known model's supported levels.
+                require((allowedEfforts.isEmpty() || effort in allowedEfforts) &&
+                    (modelCapabilities == null || effort in modelCapabilities.supportedEfforts)) {
                     "当前 Vertex AI 模型不支持所选思考档位，请使用 Default 或模型支持的档位。"
                 }
                 generation.put("thinkingConfig", JSONObject()
