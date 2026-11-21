@@ -1,6 +1,8 @@
 package io.github.mangi.eta.agent.imagegen
 
 import io.github.mangi.eta.agent.model.AgentConversationCodec
+import io.github.mangi.eta.agent.model.AgentModelClient
+import io.github.mangi.eta.agent.model.AgentTurnIdentity
 import io.github.mangi.eta.data.model.CustomHeader
 import io.github.mangi.eta.data.model.GeminiEndpointMode
 import io.github.mangi.eta.data.model.ImageGenAspectRatio
@@ -575,6 +577,8 @@ class ImageGenClientsTest {
                                                 JSONArray()
                                                     .put("data:image/png;base64,iVBORw0KGgo=")
                                                     .put("/data/user/0/io.github.mangi.eta/files/secret.png")
+                                                    .put("file:///data/user/0/io.github.mangi.eta/files/private.png")
+                                                    .put("https://example.com/reference.png")
                                                     .put("latest_generated_image"),
                                             )
                                             .toString(),
@@ -583,17 +587,68 @@ class ImageGenClientsTest {
                     ),
                 ),
         )
-        val transcript = AgentConversationCodec.transcript(messages, startIndex = 0)
-        assertEquals(1, transcript.size)
-        val savedArgs = JSONArray(transcript[0].toolCallsJson)
-            .getJSONObject(0)
-            .getJSONObject("function")
-            .getString("arguments")
-        assertFalse(savedArgs.contains("iVBORw0KGgo"))
-        assertFalse(savedArgs.contains("secret.png"))
-        assertTrue(savedArgs.contains("<redacted_inline_image>"))
-        assertTrue(savedArgs.contains("<redacted_local_path>"))
-        assertTrue(savedArgs.contains("latest_generated_image"))
+        for (turnId in listOf("", "protected-turn")) {
+            messages.getJSONObject(0).put(AgentTurnIdentity.JSON_KEY, turnId)
+            val sourceJson = messages.toString()
+            val transcript = AgentConversationCodec.transcript(messages, startIndex = 0)
+            assertEquals(1, transcript.size)
+            assertEquals(turnId, transcript[0].turnId)
+            val savedArgs = JSONObject(JSONArray(transcript[0].toolCallsJson)
+                .getJSONObject(0)
+                .getJSONObject("function")
+                .getString("arguments"))
+            assertEquals("edit", savedArgs.getString("prompt"))
+            assertEquals(
+                listOf("<redacted_inline_image>", "<redacted_local_path>", "<redacted_local_path>",
+                    "https://example.com/reference.png", "latest_generated_image"),
+                (0 until savedArgs.getJSONArray("reference_images").length()).map {
+                    savedArgs.getJSONArray("reference_images").getString(it)
+                },
+            )
+            assertEquals(sourceJson, messages.toString())
+            val restored = AgentConversationCodec.decodeTranscript(
+                AgentConversationCodec.encodeTranscriptForStorage(transcript),
+            )
+            assertEquals(transcript, restored)
+        }
+    }
+
+    @Test
+    fun protectedTurnPreservesOtherToolArgumentsAndMetadataExactly() {
+        val arguments = JSONObject()
+            .put("reference_images", JSONArray().put("/keep/other-tool.png"))
+            .put("text", "x".repeat(33_000))
+            .toString()
+        val calls = JSONArray().put(JSONObject()
+            .put("id", "call_other")
+            .put("type", "function")
+            .put("provider_metadata", "keep")
+            .put("function", JSONObject().put("name", "write_file").put("arguments", arguments)))
+        val rawCalls = calls.toString()
+        val message = JSONObject()
+            .put("role", "assistant")
+            .put(AgentTurnIdentity.JSON_KEY, "protected-turn")
+            .put("content", "")
+            .put("tool_calls", calls)
+        assertEquals(rawCalls, AgentConversationCodec.durableMessage(message).toolCallsJson)
+        assertEquals(rawCalls, message.getJSONArray("tool_calls").toString())
+        calls.put(JSONObject().put("id", "call_image").put("type", "function")
+            .put("provider_metadata", "keep-image")
+            .put("function", JSONObject().put("name", "generate_image")
+                .put("arguments", """{"reference_images":["/private/image.png"]}""")))
+        val mixedSource = message.toString()
+        val savedCalls = JSONArray(AgentConversationCodec.durableMessage(message).toolCallsJson)
+        assertEquals(calls.getJSONObject(0).toString(), savedCalls.getJSONObject(0).toString())
+        assertEquals("keep-image", savedCalls.getJSONObject(1).getString("provider_metadata"))
+        assertTrue(savedCalls.getJSONObject(1).getJSONObject("function")
+            .getString("arguments").contains("<redacted_local_path>"))
+        assertEquals(mixedSource, message.toString())
+        val malformed = AgentModelClient.ConversationMessage(
+            role = "assistant", turnId = "protected-turn", toolCallsJson = "[unfinished raw tool calls",
+        )
+        assertEquals(listOf(malformed), AgentConversationCodec.decodeTranscript(
+            AgentConversationCodec.encodeTranscriptForStorage(listOf(malformed)),
+        ))
     }
 
     @Test

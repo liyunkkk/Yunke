@@ -6,6 +6,7 @@ import io.github.mangi.eta.agent.runtime.AgentRunController
 import io.github.mangi.eta.agent.runtime.AgentRuntimePolicy
 import io.github.mangi.eta.agent.runtime.AgentTokenUsage
 import io.github.mangi.eta.data.model.ErrorReconnectPolicy
+import io.github.mangi.eta.data.model.ProviderTypes
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -208,7 +209,9 @@ internal class AgentLoop(
         // Only annotate messages created by this run. The current user entry is initially last.
         messages.optJSONObject(messages.length() - 1)?.let { last ->
             last.put(AgentTurnIdentity.JSON_KEY, turnId)
-            GeminiEphemeralState.markRunStart(last)
+            if (config.providerType == ProviderTypes.GEMINI) {
+                GeminiEphemeralState.markRunStart(last)
+            }
         }
         // UI 手里有上一张可信回执时，用它折算到本次请求的值校准发送上限。
         // 自动压缩不看它：80% 只看本次 run 收到的真实回执（圆环上的数）。

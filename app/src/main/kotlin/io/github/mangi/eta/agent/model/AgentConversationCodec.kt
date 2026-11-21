@@ -530,10 +530,22 @@ internal object AgentConversationCodec {
 
     private fun sanitizeToolCallsJson(raw: String, preserveText: Boolean = false): String {
         if (raw.isBlank()) return ""
+        val source = runCatching { JSONArray(raw) }.getOrNull() ?: return if (preserveText) raw else ""
         if (preserveText) {
-            if (runCatching { JSONArray(raw) }.isSuccess) return raw
+            // Protected turns retain exact text and call metadata, but transient image
+            // references must still be removed before storage or transcript transport.
+            var mutated = false
+            for (index in 0 until source.length()) {
+                val function = source.optJSONObject(index)?.optJSONObject("function") ?: continue
+                val arguments = function.optString("arguments")
+                val sanitized = sanitizeToolArguments(function.optString("name"), arguments)
+                if (sanitized != arguments) {
+                    function.put("arguments", sanitized)
+                    mutated = true
+                }
+            }
+            return if (mutated) source.toString() else raw
         }
-        val source = runCatching { JSONArray(raw) }.getOrNull() ?: return ""
         val target = JSONArray()
         for (index in 0 until minOf(source.length(), MAX_TOOL_CALLS_PER_MESSAGE)) {
             val call = source.optJSONObject(index) ?: continue
@@ -573,11 +585,16 @@ internal object AgentConversationCodec {
         val cleaned = JSONArray()
         for (i in 0 until refs.length()) {
             val item = refs.optString(i).trim()
-            if (item.startsWith("data:image/", ignoreCase = true) || item.startsWith("/") || item.startsWith("file://", ignoreCase = true)) {
-                cleaned.put("[reference_image_omitted]")
-                mutated = true
-            } else {
-                cleaned.put(item)
+            when {
+                item.startsWith("data:image/", ignoreCase = true) -> {
+                    cleaned.put("<redacted_inline_image>")
+                    mutated = true
+                }
+                item.startsWith("/") || item.startsWith("file://", ignoreCase = true) -> {
+                    cleaned.put("<redacted_local_path>")
+                    mutated = true
+                }
+                else -> cleaned.put(item)
             }
         }
         if (!mutated) return arguments

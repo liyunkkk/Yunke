@@ -263,7 +263,7 @@ class VertexGenerateContentTest {
         }
         val tools = JSONArray()
         for (name in listOf("capture_a", "capture_b")) {
-            tools.put(JSONObject().put("type", "function").put("function", JSONObject().put("name", name)))
+            tools.put(AgentToolSchema.function(name, "Capture test image", JSONObject().put("type", "object")))
         }
         val result = AgentModelClient.complete(
             config = cfg,

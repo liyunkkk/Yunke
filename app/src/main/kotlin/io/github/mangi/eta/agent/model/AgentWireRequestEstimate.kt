@@ -233,6 +233,8 @@ internal object AgentWireRequestEstimate {
             val url = part.optJSONObject(key)?.optString("url") ?: part.optString(key)
             val source = part.optJSONObject("source")
             val encoded = source?.takeIf { it.optString("type") == "base64" }?.optString("data")
+                // Gemini Interactions uses top-level data; Vertex passes unwrapped inlineData.
+                ?: part.optString("data").takeIf { part.has("data") }
             val marker = url.indexOf("base64,", ignoreCase = true)
             val chars = when { encoded != null -> encoded.length.toLong(); marker >= 0 -> (url.length - marker - 7).toLong(); else -> 0L }
             media.chars += chars

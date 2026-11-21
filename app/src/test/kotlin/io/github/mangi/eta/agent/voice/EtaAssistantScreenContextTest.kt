@@ -1,9 +1,15 @@
 package io.github.mangi.eta.agent.voice
 
+import android.app.Application
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
+@RunWith(RobolectricTestRunner::class)
+@Config(application = Application::class, sdk = [34])
 class EtaAssistantScreenContextTest {
     @Test
     fun freshVisibleEntryCoalescesDuplicateShowsUntilDismissedOrExpired() {

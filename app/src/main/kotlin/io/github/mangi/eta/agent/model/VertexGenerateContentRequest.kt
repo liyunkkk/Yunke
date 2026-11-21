@@ -84,9 +84,21 @@ internal object VertexGenerateContentRequest {
         generation.remove("thinkingConfig")
         generation.remove("thinking_config")
         val effort = config.effectiveReasoningEffort
-        val allowedEfforts = config.reasoningCapabilities?.supportedEfforts?.takeIf { it.isNotEmpty() }
-            ?: GeminiModelCapabilities.reasoningCapabilities(config.model)?.supportedEfforts.orEmpty()
+        val configuredCapabilities = config.reasoningCapabilities
+        val modelCapabilities = GeminiModelCapabilities.reasoningCapabilities(config.model)
+        val allowedEfforts = configuredCapabilities?.supportedEfforts?.takeIf { it.isNotEmpty() }
+            ?: modelCapabilities?.supportedEfforts.orEmpty()
+        val defaultEnablesThinking = configuredCapabilities?.let {
+            it.mandatory || it.defaultEnabled == true
+        } == true || configuredCapabilities?.supportedEfforts.isNullOrEmpty() && modelCapabilities?.let {
+            it.mandatory || it.defaultEnabled == true
+        } == true
         when {
+            effort == ReasoningEffort.DEFAULT && defaultEnablesThinking ->
+                generation.put(
+                    "thinkingConfig",
+                    JSONObject().put("includeThoughts", true),
+                )
             effort == ReasoningEffort.DEFAULT -> generation.remove("thinkingConfig")
             effort == ReasoningEffort.OFF &&
                 (config.reasoningCapabilities?.canDisable == true || allowedEfforts.isEmpty()) -> generation.remove("thinkingConfig")
