@@ -6,6 +6,7 @@ import io.github.mangi.eta.ui.model.toolCardAction
 import io.github.mangi.eta.ui.model.visibleOnCurrentDevice
 import io.github.mangi.eta.ui.model.decodeUserMessageImages
 import java.io.File
+import kotlin.io.path.createTempDirectory
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -51,7 +52,7 @@ class ImageGenUiContractTest {
 
     @Test
     fun currentConversationAttachmentOwnershipRequiresCanonicalChildPath() {
-        val cache = createTempDir(prefix = "imagegen-cache-")
+        val cache = createTempDirectory("imagegen-cache-").toFile()
         val own = File(cache, "eta-chat-images/session-1/photo.jpg").apply {
             parentFile?.mkdirs()
             writeBytes(byteArrayOf(1))
