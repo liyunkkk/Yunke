@@ -6,6 +6,7 @@ ksp = "2.3.13"
 libxposedApi = "102.0.0"
 libxposedService = "102.0.0"
 coui = "2.1.0"
+couiEta = "0.0.1-alpha11"
 miuix = "0.9.5-beta03"
 materialIcons = "1.7.8"
 androidx-navigationevent = "1.1.2"
@@ -36,6 +37,8 @@ miuix-blur = { group = "top.yukonga.miuix.kmp", name = "miuix-blur-android", ver
 miuix-glass = { group = "top.yukonga.miuix.kmp", name = "miuix-glass-android", version.ref = "miuix" }
 miuix-glass-icons = { group = "top.yukonga.miuix.kmp", name = "miuix-glass-icons-android", version.ref = "miuix" }
 miuix-material = { group = "top.yukonga.miuix.kmp", name = "miuix-material-android", version.ref = "miuix" }
+coui-eta = { group = "io.github.itoseo", name = "coui", version.ref = "couiEta" }
+coui-eta-icons = { group = "io.github.itoseo", name = "coui-icons", version.ref = "couiEta" }
 coui-ui = { group = "io.github.suqi8.coui.kmp", name = "coui-ui-android", version.ref = "coui" }
 coui-preference = { group = "io.github.suqi8.coui.kmp", name = "coui-preference-android", version.ref = "coui" }
 coui-icons = { group = "io.github.suqi8.coui.kmp", name = "coui-icons-android", version.ref = "coui" }

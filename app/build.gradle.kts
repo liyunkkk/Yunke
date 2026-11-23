@@ -165,6 +165,8 @@ dependencies {
     implementation(libs.miuix.material)
     implementation(libs.miuix.nav)
     implementation(libs.miuix.preference)
+    implementation(libs.coui.eta)
+    implementation(libs.coui.eta.icons)
     implementation(libs.coui.ui)
     implementation(libs.coui.preference)
     implementation(libs.coui.icons)
