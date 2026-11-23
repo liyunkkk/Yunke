@@ -239,6 +239,12 @@
   <string name="appearance_palette_monochrome">单色（Monochrome）</string>
   <string name="appearance_palette_fidelity">保真（Fidelity）</string>
   <string name="appearance_palette_content">内容（Content）</string>
+  <string name="appearance_ui_style">界面样式</string>
+  <string name="appearance_ui_style_coui">COUI</string>
+  <string name="appearance_ui_style_miuix">Miuix</string>
+  <string name="appearance_palette_cmf">质感工艺（CMF）</string>
+  <string name="appearance_progressive_blur">渐进模糊</string>
+  <string name="appearance_progressive_blur_summary">为顶栏与侧栏浮层启用渐进模糊，关闭可提升流畅度</string>
   <string name="appearance_accent_color">强调色</string>
   <string name="appearance_accent_system">系统取色</string>
   <string name="appearance_accent_blue">蓝色</string>

@@ -33,11 +33,18 @@ import io.github.mangi.eta.data.model.AppearancePaletteStyle
 import io.github.mangi.eta.data.model.AppearanceSettings
 import io.github.mangi.eta.data.model.AppearanceThemeMode
 import io.github.mangi.eta.data.model.AppearanceTopBarBlurStyle
+import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.data.model.MAX_INTERFACE_SCALE
 import io.github.mangi.eta.data.model.MIN_INTERFACE_SCALE
 import io.github.mangi.eta.data.model.normalizeInterfaceScale
 import io.github.mangi.eta.data.repository.AppearanceSettingsRepository
 import io.github.mangi.eta.ui.app.LocalAppearanceSettings
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.ui.components.coui.CouiDropdownPreference
+import io.github.mangi.eta.ui.components.coui.CouiPageBottomSpacer
+import io.github.mangi.eta.ui.components.coui.CouiPreferenceGroup
+import io.github.mangi.eta.ui.components.coui.CouiScaffoldPage
+import io.github.mangi.eta.ui.components.coui.CouiSwitchPreference
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import kotlinx.coroutines.launch
@@ -52,7 +59,7 @@ import top.yukonga.miuix.kmp.basic.SliderDefaults
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextField
-import top.yukonga.miuix.kmp.blur.isRuntimeShaderSupported
+import top.yukonga.miuix.kmp.material.isRuntimeShaderSupported
 import io.github.mangi.eta.ui.components.ArrowPreference
 import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
 import io.github.mangi.eta.ui.components.SwitchPreference
@@ -84,6 +91,19 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
         update { current -> current.copy(interfaceScale = scale) }
     }
 
+    fun selectUiStyle(uiStyle: AppearanceUiStyle) {
+        coroutineScope.launch {
+            AppearanceSettingsRepository.selectUiStyle(uiStyle)
+        }
+    }
+
+    val uiStyles = remember { AppearanceUiStyle.entries.sortedBy { it != AppearanceUiStyle.Default } }
+    val uiStyleLabels = uiStyles.map { style ->
+        when (style) {
+            AppearanceUiStyle.MIUIX -> stringResource(R.string.appearance_ui_style_miuix)
+            AppearanceUiStyle.COUI -> stringResource(R.string.appearance_ui_style_coui)
+        }
+    }
     val themeModes = AppearanceThemeMode.entries
     val themeModeLabels = listOf(
         stringResource(R.string.appearance_theme_system),
@@ -101,6 +121,7 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
         stringResource(R.string.appearance_palette_monochrome),
         stringResource(R.string.appearance_palette_fidelity),
         stringResource(R.string.appearance_palette_content),
+        stringResource(R.string.appearance_palette_cmf),
     )
     val accentColors = AppearanceAccentColor.entries
     val accentLabels = listOf(
@@ -130,6 +151,21 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
         stringResource(R.string.appearance_blur_style_progressive_summary),
     )
 
+    if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
+        CouiAppearanceSettingsContent(
+            appearance = appearance,
+            onBack = onBack,
+            uiStyles = uiStyles,
+            uiStyleLabels = uiStyleLabels,
+            themeModeLabels = themeModeLabels,
+            foldLabels = foldLabels,
+            onSelectUiStyle = ::selectUiStyle,
+            onUpdate = ::update,
+            onCommitScale = ::commitScale,
+        )
+        return
+    }
+
     MiuixScaffoldPage(
         title = stringResource(R.string.appearance_title),
         onBack = onBack,
@@ -139,6 +175,15 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
         }
         item(key = "appearance_color_card") {
             Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+                OverlayDropdownPreference(
+                    title = stringResource(R.string.appearance_ui_style),
+                    summary = uiStyleLabels[uiStyles.indexOf(appearance.uiStyle)],
+                    items = uiStyleLabels,
+                    selectedIndex = uiStyles.indexOf(appearance.uiStyle),
+                    onSelectedIndexChange = { index ->
+                        uiStyles.getOrNull(index)?.let(::selectUiStyle)
+                    },
+                )
                 OverlayDropdownPreference(
                     title = stringResource(R.string.appearance_theme_mode),
                     summary = themeModeLabels[appearance.themeMode.ordinal],
@@ -150,6 +195,20 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
                         }
                     },
                 )
+                SwitchPreference(
+                    title = stringResource(R.string.appearance_monet),
+                    summary = stringResource(R.string.appearance_monet_summary),
+                    checked = appearance.monetEnabled,
+                    onCheckedChange = { enabled ->
+                        update { current -> current.copy(monetEnabled = enabled) }
+                    },
+                )
+                AnimatedVisibility(
+                    visible = appearance.monetEnabled,
+                    enter = expandVertically(expandFrom = Alignment.Top) + fadeIn(),
+                    exit = shrinkVertically(shrinkTowards = Alignment.Top) + fadeOut(),
+                ) {
+                Column {
                 OverlayDropdownPreference(
                     title = stringResource(R.string.appearance_palette_style),
                     summary = paletteLabels[appearance.paletteStyle.ordinal],
@@ -180,6 +239,8 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
                         update { current -> current.copy(pureBlackEnabled = enabled) }
                     },
                 )
+                }
+                }
             }
         }
 
@@ -316,6 +377,16 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
                         update { current -> current.copy(predictiveBackEnabled = enabled) }
                     },
                 )
+                if (blurSupported) {
+                    SwitchPreference(
+                        title = stringResource(R.string.appearance_progressive_blur),
+                        summary = stringResource(R.string.appearance_progressive_blur_summary),
+                        checked = appearance.progressiveBlurEnabled,
+                        onCheckedChange = { enabled ->
+                            update { current -> current.copy(progressiveBlurEnabled = enabled) }
+                        },
+                    )
+                }
                 ArrowPreference(
                     title = stringResource(R.string.appearance_interface_scale),
                     summary = stringResource(R.string.appearance_interface_scale_summary),
@@ -379,5 +450,108 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
                 modifier = Modifier.padding(top = 16.dp),
             )
         }
+    }
+}
+
+private val InterfaceScalePresets = listOf(80, 90, 100, 110)
+
+@Composable
+private fun CouiAppearanceSettingsContent(
+    appearance: AppearanceSettings,
+    onBack: () -> Unit,
+    uiStyles: List<AppearanceUiStyle>,
+    uiStyleLabels: List<String>,
+    themeModeLabels: List<String>,
+    foldLabels: List<String>,
+    onSelectUiStyle: (AppearanceUiStyle) -> Unit,
+    onUpdate: ((AppearanceSettings) -> AppearanceSettings) -> Unit,
+    onCommitScale: (Float) -> Unit,
+) {
+    val themeModes = AppearanceThemeMode.entries
+    val foldLevels = AnswerFoldLevel.entries
+    val currentScale = (appearance.interfaceScale * 100f).roundToInt()
+    val scaleLabels = InterfaceScalePresets.map { "$it%" }
+    CouiScaffoldPage(
+        title = stringResource(R.string.appearance_title),
+        onBack = onBack,
+    ) {
+        CouiPreferenceGroup(title = stringResource(R.string.appearance_group_color)) {
+            item {
+                CouiDropdownPreference(
+                    title = stringResource(R.string.appearance_ui_style),
+                    items = uiStyleLabels,
+                    selectedIndex = uiStyles.indexOf(appearance.uiStyle),
+                    onSelectedIndexChange = { index -> uiStyles.getOrNull(index)?.let(onSelectUiStyle) },
+                )
+            }
+            item {
+                CouiDropdownPreference(
+                    title = stringResource(R.string.appearance_theme_mode),
+                    items = themeModeLabels,
+                    selectedIndex = appearance.themeMode.ordinal,
+                    onSelectedIndexChange = { index ->
+                        themeModes.getOrNull(index)?.let { mode -> onUpdate { it.copy(themeMode = mode) } }
+                    },
+                )
+            }
+        }
+
+        CouiPreferenceGroup(title = stringResource(R.string.appearance_group_interface)) {
+            item {
+                CouiSwitchPreference(
+                    title = stringResource(R.string.appearance_message_timestamps),
+                    summary = stringResource(R.string.appearance_message_timestamps_summary),
+                    checked = appearance.messageTimestampsEnabled,
+                    onCheckedChange = { enabled -> onUpdate { it.copy(messageTimestampsEnabled = enabled) } },
+                )
+            }
+            item {
+                CouiDropdownPreference(
+                    title = stringResource(R.string.appearance_answer_fold),
+                    summary = stringResource(R.string.appearance_answer_fold_summary),
+                    items = foldLabels,
+                    selectedIndex = appearance.answerFoldLevel.ordinal,
+                    onSelectedIndexChange = { index ->
+                        foldLevels.getOrNull(index)?.let { level -> onUpdate { it.copy(answerFoldLevel = level) } }
+                    },
+                )
+            }
+            item {
+                CouiSwitchPreference(
+                    title = stringResource(R.string.appearance_morph_loading),
+                    summary = stringResource(R.string.appearance_morph_loading_summary),
+                    checked = appearance.morphLoadingIndicator,
+                    onCheckedChange = { enabled -> onUpdate { it.copy(morphLoadingIndicator = enabled) } },
+                )
+            }
+            item {
+                CouiSwitchPreference(
+                    title = stringResource(R.string.appearance_swipe_dismiss),
+                    summary = stringResource(R.string.appearance_swipe_dismiss_summary),
+                    checked = appearance.swipeDismissEnabled,
+                    onCheckedChange = { enabled -> onUpdate { it.copy(swipeDismissEnabled = enabled) } },
+                )
+            }
+            item {
+                CouiSwitchPreference(
+                    title = stringResource(R.string.appearance_predictive_back),
+                    summary = stringResource(R.string.appearance_predictive_back_summary),
+                    checked = appearance.predictiveBackEnabled,
+                    onCheckedChange = { enabled -> onUpdate { it.copy(predictiveBackEnabled = enabled) } },
+                )
+            }
+            item {
+                CouiDropdownPreference(
+                    title = stringResource(R.string.appearance_interface_scale),
+                    items = scaleLabels,
+                    selectedIndex = InterfaceScalePresets.indexOf(currentScale).coerceAtLeast(0),
+                    onSelectedIndexChange = { index ->
+                        InterfaceScalePresets.getOrNull(index)?.let { onCommitScale(it.toFloat()) }
+                    },
+                )
+            }
+        }
+
+        CouiPageBottomSpacer()
     }
 }

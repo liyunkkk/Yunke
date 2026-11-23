@@ -210,6 +210,12 @@
   <string name="appearance_palette_monochrome">Monochrome</string>
   <string name="appearance_palette_fidelity">Fidelity</string>
   <string name="appearance_palette_content">Content</string>
+  <string name="appearance_ui_style">UI style</string>
+  <string name="appearance_ui_style_coui">COUI</string>
+  <string name="appearance_ui_style_miuix">Miuix</string>
+  <string name="appearance_palette_cmf">CMF</string>
+  <string name="appearance_progressive_blur">Progressive blur</string>
+  <string name="appearance_progressive_blur_summary">Apply progressive blur to top bars and sidebar overlays; disable for smoother performance</string>
   <string name="appearance_accent_color">Accent color</string>
   <string name="appearance_accent_system">System colors</string>
   <string name="appearance_accent_blue">Blue</string>
