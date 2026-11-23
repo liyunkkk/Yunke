@@ -52,8 +52,8 @@ jobs:
           echo "ANDROID_SDK_ROOT=$sdk_root" >> "$GITHUB_ENV"
           yes | "$sdkmanager" --licenses >/dev/null || true
 
-      - name: 安装 Android SDK 37
-        run: sdkmanager --channel=3 "platforms;android-37.0"
+      - name: 安装 Android SDK 37.2
+        run: sdkmanager --channel=3 "platforms;android-37.2"
 
       - name: 生成临时签名证书
         run: |

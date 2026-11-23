@@ -36,7 +36,11 @@ java {
 
 android {
     namespace = "io.github.mangi.eta"
-    compileSdk = 37
+    compileSdk {
+        version = release(37) {
+            minorApiLevel = 2
+        }
+    }
     ndkVersion = libs.versions.ndk.get()
 
     defaultConfig {
@@ -152,6 +156,9 @@ dependencies {
     implementation(libs.libxposed.service)
     implementation(libs.miuix.ui)
     implementation(libs.miuix.blur)
+    implementation(libs.miuix.glass)
+    implementation(libs.miuix.glass.icons)
+    implementation(libs.miuix.material)
     implementation(libs.miuix.nav)
     implementation(libs.miuix.preference)
     implementation(libs.material.icons.extended)
