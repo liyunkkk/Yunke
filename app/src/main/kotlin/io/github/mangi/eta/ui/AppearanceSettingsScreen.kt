@@ -42,7 +42,8 @@ import io.github.mangi.eta.ui.app.LocalAppearanceSettings
 import io.github.mangi.eta.ui.app.LocalUiStyle
 import io.github.mangi.eta.ui.components.coui.CouiDropdownPreference
 import io.github.mangi.eta.ui.components.coui.CouiPageBottomSpacer
-import io.github.mangi.eta.ui.components.coui.CouiPreferenceGroup
+import com.itos.coui.layout.Divider
+import com.itos.coui.layout.Group
 import io.github.mangi.eta.ui.components.coui.CouiScaffoldPage
 import io.github.mangi.eta.ui.components.coui.CouiSwitchPreference
 import io.github.mangi.eta.ui.components.MiuixDialogActions
@@ -475,81 +476,71 @@ private fun CouiAppearanceSettingsContent(
         title = stringResource(R.string.appearance_title),
         onBack = onBack,
     ) {
-        CouiPreferenceGroup(title = stringResource(R.string.appearance_group_color)) {
-            item {
-                CouiDropdownPreference(
-                    title = stringResource(R.string.appearance_ui_style),
-                    items = uiStyleLabels,
-                    selectedIndex = uiStyles.indexOf(appearance.uiStyle),
-                    onSelectedIndexChange = { index -> uiStyles.getOrNull(index)?.let(onSelectUiStyle) },
-                )
-            }
-            item {
-                CouiDropdownPreference(
-                    title = stringResource(R.string.appearance_theme_mode),
-                    items = themeModeLabels,
-                    selectedIndex = appearance.themeMode.ordinal,
-                    onSelectedIndexChange = { index ->
-                        themeModes.getOrNull(index)?.let { mode -> onUpdate { it.copy(themeMode = mode) } }
-                    },
-                )
-            }
+        Group(title = stringResource(R.string.appearance_group_color)) {
+            CouiDropdownPreference(
+                title = stringResource(R.string.appearance_ui_style),
+                items = uiStyleLabels,
+                selectedIndex = uiStyles.indexOf(appearance.uiStyle),
+                onSelectedIndexChange = { index -> uiStyles.getOrNull(index)?.let(onSelectUiStyle) },
+            )
+            Divider()
+            CouiDropdownPreference(
+                title = stringResource(R.string.appearance_theme_mode),
+                items = themeModeLabels,
+                selectedIndex = appearance.themeMode.ordinal,
+                onSelectedIndexChange = { index ->
+                    themeModes.getOrNull(index)?.let { mode -> onUpdate { it.copy(themeMode = mode) } }
+                },
+            )
         }
 
-        CouiPreferenceGroup(title = stringResource(R.string.appearance_group_interface)) {
-            item {
-                CouiSwitchPreference(
-                    title = stringResource(R.string.appearance_message_timestamps),
-                    summary = stringResource(R.string.appearance_message_timestamps_summary),
-                    checked = appearance.messageTimestampsEnabled,
-                    onCheckedChange = { enabled -> onUpdate { it.copy(messageTimestampsEnabled = enabled) } },
-                )
-            }
-            item {
-                CouiDropdownPreference(
-                    title = stringResource(R.string.appearance_answer_fold),
-                    summary = stringResource(R.string.appearance_answer_fold_summary),
-                    items = foldLabels,
-                    selectedIndex = appearance.answerFoldLevel.ordinal,
-                    onSelectedIndexChange = { index ->
-                        foldLevels.getOrNull(index)?.let { level -> onUpdate { it.copy(answerFoldLevel = level) } }
-                    },
-                )
-            }
-            item {
-                CouiSwitchPreference(
-                    title = stringResource(R.string.appearance_morph_loading),
-                    summary = stringResource(R.string.appearance_morph_loading_summary),
-                    checked = appearance.morphLoadingIndicator,
-                    onCheckedChange = { enabled -> onUpdate { it.copy(morphLoadingIndicator = enabled) } },
-                )
-            }
-            item {
-                CouiSwitchPreference(
-                    title = stringResource(R.string.appearance_swipe_dismiss),
-                    summary = stringResource(R.string.appearance_swipe_dismiss_summary),
-                    checked = appearance.swipeDismissEnabled,
-                    onCheckedChange = { enabled -> onUpdate { it.copy(swipeDismissEnabled = enabled) } },
-                )
-            }
-            item {
-                CouiSwitchPreference(
-                    title = stringResource(R.string.appearance_predictive_back),
-                    summary = stringResource(R.string.appearance_predictive_back_summary),
-                    checked = appearance.predictiveBackEnabled,
-                    onCheckedChange = { enabled -> onUpdate { it.copy(predictiveBackEnabled = enabled) } },
-                )
-            }
-            item {
-                CouiDropdownPreference(
-                    title = stringResource(R.string.appearance_interface_scale),
-                    items = scaleLabels,
-                    selectedIndex = InterfaceScalePresets.indexOf(currentScale).coerceAtLeast(0),
-                    onSelectedIndexChange = { index ->
-                        InterfaceScalePresets.getOrNull(index)?.let { onCommitScale(it.toFloat()) }
-                    },
-                )
-            }
+        Group(title = stringResource(R.string.appearance_group_interface)) {
+            CouiSwitchPreference(
+                title = stringResource(R.string.appearance_message_timestamps),
+                summary = stringResource(R.string.appearance_message_timestamps_summary),
+                checked = appearance.messageTimestampsEnabled,
+                onCheckedChange = { enabled -> onUpdate { it.copy(messageTimestampsEnabled = enabled) } },
+            )
+            Divider()
+            CouiDropdownPreference(
+                title = stringResource(R.string.appearance_answer_fold),
+                summary = stringResource(R.string.appearance_answer_fold_summary),
+                items = foldLabels,
+                selectedIndex = appearance.answerFoldLevel.ordinal,
+                onSelectedIndexChange = { index ->
+                    foldLevels.getOrNull(index)?.let { level -> onUpdate { it.copy(answerFoldLevel = level) } }
+                },
+            )
+            Divider()
+            CouiSwitchPreference(
+                title = stringResource(R.string.appearance_morph_loading),
+                summary = stringResource(R.string.appearance_morph_loading_summary),
+                checked = appearance.morphLoadingIndicator,
+                onCheckedChange = { enabled -> onUpdate { it.copy(morphLoadingIndicator = enabled) } },
+            )
+            Divider()
+            CouiSwitchPreference(
+                title = stringResource(R.string.appearance_swipe_dismiss),
+                summary = stringResource(R.string.appearance_swipe_dismiss_summary),
+                checked = appearance.swipeDismissEnabled,
+                onCheckedChange = { enabled -> onUpdate { it.copy(swipeDismissEnabled = enabled) } },
+            )
+            Divider()
+            CouiSwitchPreference(
+                title = stringResource(R.string.appearance_predictive_back),
+                summary = stringResource(R.string.appearance_predictive_back_summary),
+                checked = appearance.predictiveBackEnabled,
+                onCheckedChange = { enabled -> onUpdate { it.copy(predictiveBackEnabled = enabled) } },
+            )
+            Divider()
+            CouiDropdownPreference(
+                title = stringResource(R.string.appearance_interface_scale),
+                items = scaleLabels,
+                selectedIndex = InterfaceScalePresets.indexOf(currentScale).coerceAtLeast(0),
+                onSelectedIndexChange = { index ->
+                    InterfaceScalePresets.getOrNull(index)?.let { onCommitScale(it.toFloat()) }
+                },
+            )
         }
 
         CouiPageBottomSpacer()
