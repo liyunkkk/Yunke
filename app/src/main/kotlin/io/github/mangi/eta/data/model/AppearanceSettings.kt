@@ -8,12 +8,14 @@ const val DEFAULT_INTERFACE_SCALE = 1f
 
 @Serializable
 data class AppearanceSettings(
+    val uiStyle: AppearanceUiStyle = AppearanceUiStyle.Default,
     val themeMode: AppearanceThemeMode = AppearanceThemeMode.LIGHT,
-    val monetEnabled: Boolean = true,
+    val monetEnabled: Boolean = false,
     val paletteStyle: AppearancePaletteStyle = AppearancePaletteStyle.NEUTRAL,
     val accentColor: AppearanceAccentColor = AppearanceAccentColor.SYSTEM,
     val pureBlackEnabled: Boolean = false,
     val blurEnabled: Boolean = true,
+    val progressiveBlurEnabled: Boolean = true,
     val topBarBlurStyle: AppearanceTopBarBlurStyle = AppearanceTopBarBlurStyle.GAUSSIAN,
     val swipeDismissEnabled: Boolean = true,
     val predictiveBackEnabled: Boolean = false,
@@ -29,9 +31,26 @@ data class AppearanceSettings(
     val answerFoldLevel: AnswerFoldLevel = AnswerFoldLevel.AGGRESSIVE,
 ) {
     fun normalized(): AppearanceSettings = copy(
-        monetEnabled = true,
         interfaceScale = normalizeInterfaceScale(interfaceScale),
     )
+}
+
+@Serializable
+enum class AppearanceUiStyle(val persistedValue: String) {
+    COUI("coui"),
+    MIUIX("miuix");
+
+    val isCoui: Boolean
+        get() = this == COUI
+
+    companion object {
+        val Default = MIUIX
+        // 仅在需要让已有用户重新采用默认样式时递增。
+        internal const val DEFAULT_REVISION = 1
+
+        fun fromPersistedValue(value: String?): AppearanceUiStyle =
+            entries.firstOrNull { it.persistedValue == value } ?: Default
+    }
 }
 
 @Serializable
@@ -56,7 +75,8 @@ enum class AppearancePaletteStyle(val persistedValue: String) {
     FRUIT_SALAD("fruit_salad"),
     MONOCHROME("monochrome"),
     FIDELITY("fidelity"),
-    CONTENT("content");
+    CONTENT("content"),
+    CMF("cmf");
 
     companion object {
         fun fromPersistedValue(value: String?): AppearancePaletteStyle =
