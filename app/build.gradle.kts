@@ -5,8 +5,12 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.ksp)
-    id("eta.compose-semantics-cache")
 }
+
+// Compose 语义补丁只适配 Compose 1.12.0-rc01；Miuix 0.9.5-beta03 需要 Compose 1.13，默认关闭。
+// 需要时以 -Peta.composeSemanticsPatch=true 显式开启（届时补丁须先按 1.13 重写）。
+val composeSemanticsPatchEnabled = providers.gradleProperty("eta.composeSemanticsPatch").orNull == "true"
+if (composeSemanticsPatchEnabled) apply(plugin = "eta.compose-semantics-cache")
 
 val keystoreProperties = Properties().apply {
     val file = rootProject.file("keystore.properties")
@@ -195,9 +199,9 @@ dependencies {
     testImplementation(libs.json)
     testImplementation(libs.room.testing)
     testImplementation(libs.robolectric)
-    // Match the Compose UI supplied by miuix 0.9.4-rc01; selection needs real gesture coverage.
-    testImplementation("androidx.compose.ui:ui-test-junit4:1.12.0-rc01")
-    debugImplementation("androidx.compose.ui:ui-test-manifest:1.12.0-rc01")
+    // Match the Compose UI supplied by miuix 0.9.5-beta03 (Compose 1.13.0-rc01); selection needs real gesture coverage.
+    testImplementation("androidx.compose.ui:ui-test-junit4:1.13.0-rc01")
+    debugImplementation("androidx.compose.ui:ui-test-manifest:1.13.0-rc01")
 }
 
 // Pin and verify the small JNI runtime; speech model is opt-in at runtime, never bundled.
@@ -211,3 +215,12 @@ val prepareSpeechRuntime by tasks.registering(Exec::class) {
 android.sourceSets.getByName("main").jniLibs.srcDir(speechJniDir.get().asFile)
 tasks.named("preBuild").configure { dependsOn(prepareSpeechRuntime) }
 
+// 补丁关闭时，依赖补丁注入类的等价性测试无法运行，一并排除。
+tasks.withType<Test>().configureEach {
+    if (!composeSemanticsPatchEnabled) {
+        exclude(
+            "**/ComposeSemanticsSortEquivalenceTest*",
+            "**/ComposeTransparencyEquivalenceTest*",
+        )
+    }
+}
