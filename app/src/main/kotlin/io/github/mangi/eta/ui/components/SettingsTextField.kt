@@ -19,6 +19,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.data.model.AppearanceUiStyle
@@ -46,12 +48,13 @@ internal fun SettingsTextField(
         AppearanceUiStyle.COUI -> {
             val colors = CouiPageDefaults.themeColors()
             CouiTextField(
-                state = fieldState,
-                inputTransformation = inputTransformation,
+                value = value,
+                onValueChange = { text -> onChange(if (inputTransformation != null) text.trim() else text) },
                 label = label,
                 singleLine = singleLine,
                 enabled = enabled,
-                secretVisible = if (secret) visible else null,
+                visualTransformation = if (secret && !visible) PasswordVisualTransformation() else VisualTransformation.None,
+                showClearButton = singleLine && !secret,
                 trailingIcon = if (secret) {
                     {
                         Box(
