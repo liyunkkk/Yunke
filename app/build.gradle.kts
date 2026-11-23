@@ -226,6 +226,7 @@ tasks.withType<Test>().configureEach {
         exclude(
             "**/ComposeSemanticsSortEquivalenceTest*",
             "**/ComposeTransparencyEquivalenceTest*",
+            "**/ComposeTraversalFocusEquivalenceTest*",
         )
     }
 }

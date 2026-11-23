@@ -77,6 +77,7 @@ class ImageGenUiContractTest {
                 id = "img_$index",
                 filePath = "/managed/img_$index.png",
                 mimeType = "image/png",
+                createdAt = 1_700_000_000_000L + index,
                 sessionKey = "session-$index",
             )
         }
