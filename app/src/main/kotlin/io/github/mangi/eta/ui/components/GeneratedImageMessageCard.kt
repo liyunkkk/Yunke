@@ -10,6 +10,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,8 +20,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -56,13 +59,20 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.itos.coui.layout.CouiPageDefaults
+import com.itos.coui.theme.CouiTheme
+import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.imagegen.GeneratedImageActivityPayload
 import io.github.mangi.eta.agent.imagegen.GeneratedImageStore
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.app.LocalUiStyle
 import io.github.mangi.eta.ui.model.ToolActivityMessageUi
 import io.github.mangi.eta.ui.model.ToolActivityStatusUi
 import java.io.File
@@ -91,6 +101,7 @@ internal fun GeneratedImageMessageCard(
     modifier: Modifier = Modifier,
 ) {
     val payload = remember(message.command) { GeneratedImageActivityPayload.decode(message.command) }
+    val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
     val horizontalPad = if (assistantOverlay) 14.dp else 20.dp
 
     Box(
@@ -103,6 +114,7 @@ internal fun GeneratedImageMessageCard(
                 GeneratingPlaceholderCard(
                     messageId = message.id,
                     payload = payload,
+                    isCoui = isCoui,
                     assistantOverlay = assistantOverlay,
                 )
             }
@@ -113,26 +125,30 @@ internal fun GeneratedImageMessageCard(
                     GeneratedImagesGalleryCard(
                         messageId = message.id,
                         payload = payload!!,
+                        isCoui = isCoui,
                         assistantOverlay = assistantOverlay,
                         onEditImage = onEditImage,
                     )
                 } else {
                     GeneratedImageStatusNotice(
                         isError = false,
-                        title = message.resultSummary ?: "图片生成完成",
+                        title = message.resultSummary ?: stringResource(R.string.imagegen_card_completed),
                         detail = payload?.prompt,
+                        isCoui = isCoui,
                     )
                 }
             }
 
             ToolActivityStatusUi.Failed, ToolActivityStatusUi.Unknown -> {
+                val failedTitle = stringResource(R.string.imagegen_card_failed)
                 val detail = payload?.errorMessage
                     ?: message.resultSummary
-                    ?: "图片生成失败"
+                    ?: failedTitle
                 GeneratedImageStatusNotice(
                     isError = true,
-                    title = "图片生成失败",
+                    title = failedTitle,
                     detail = detail,
+                    isCoui = isCoui,
                 )
             }
         }
@@ -143,6 +159,7 @@ internal fun GeneratedImageMessageCard(
 private fun GeneratingPlaceholderCard(
     messageId: String,
     payload: GeneratedImageActivityPayload?,
+    isCoui: Boolean,
     assistantOverlay: Boolean,
 ) {
     var elapsedSeconds by remember(messageId) { mutableIntStateOf(0) }
@@ -164,18 +181,34 @@ private fun GeneratingPlaceholderCard(
     )
 
     val aspectRatio = remember(payload?.aspectRatio) { parsePlaceholderRatio(payload?.aspectRatio) }
-    val surfaceBg = MiuixTheme.colorScheme.surfaceContainerHigh
-    val accent = MiuixTheme.colorScheme.primary
-    val titleColor = MiuixTheme.colorScheme.onSurface
-    val summaryColor = MiuixTheme.colorScheme.onSurfaceVariantSummary
+    val couiDark = if (isCoui) CouiTheme.isDark else false
+    val surfaceBg = if (isCoui) {
+        if (couiDark) Color(0xFF1F2229) else Color(0xFFF2F4F8)
+    } else {
+        MiuixTheme.colorScheme.surfaceContainerHigh
+    }
+    val accent = if (isCoui) CouiPageDefaults.themeColors(couiDark).accent else MiuixTheme.colorScheme.primary
+    val titleColor = if (isCoui) CouiPageDefaults.themeColors(couiDark).title else MiuixTheme.colorScheme.onSurface
+    val summaryColor = if (isCoui) CouiPageDefaults.themeColors(couiDark).summary else MiuixTheme.colorScheme.onSurfaceVariantSummary
     val maxCardWidth = if (assistantOverlay) 260.dp else 300.dp
+    val cornerShape = RoundedCornerShape(18.dp)
 
     Column(
         modifier = Modifier
             .widthIn(max = maxCardWidth)
             .fillMaxWidth()
-            .squircleSurface(color = surfaceBg, cornerRadius = 18.dp)
-            .squircleBorder(0.75.dp, accent.copy(alpha = 0.16f), 18.dp),
+            .then(
+                if (isCoui) {
+                    Modifier
+                        .clip(cornerShape)
+                        .background(surfaceBg)
+                        .border(0.75.dp, accent.copy(alpha = 0.16f), cornerShape)
+                } else {
+                    Modifier
+                        .squircleSurface(color = surfaceBg, cornerRadius = 18.dp)
+                        .squircleBorder(0.75.dp, accent.copy(alpha = 0.16f), 18.dp)
+                },
+            ),
     ) {
         Box(
             modifier = Modifier
@@ -211,8 +244,14 @@ private fun GeneratingPlaceholderCard(
                         modifier = Modifier.size(22.dp),
                     )
                 }
-                val countLabel = payload?.requestedCount?.takeIf { it > 1 }?.let { "（$it 张）" }.orEmpty()
-                val actionLabel = if ((payload?.referenceCount ?: 0) > 0) "正在编辑图片$countLabel" else "正在绘制图片$countLabel"
+                val requestedCount = payload?.requestedCount ?: 1
+                val isEditing = (payload?.referenceCount ?: 0) > 0
+                val actionLabel = when {
+                    isEditing && requestedCount > 1 -> stringResource(R.string.imagegen_card_editing_multiple, requestedCount)
+                    isEditing -> stringResource(R.string.imagegen_card_editing)
+                    requestedCount > 1 -> stringResource(R.string.imagegen_card_generating_multiple, requestedCount)
+                    else -> stringResource(R.string.imagegen_card_generating)
+                }
                 Text(
                     text = actionLabel,
                     fontSize = 14.sp,
@@ -220,7 +259,11 @@ private fun GeneratingPlaceholderCard(
                     color = titleColor,
                 )
                 Text(
-                    text = if (elapsedSeconds > 0) "已用时 ${elapsedSeconds}s" else "请稍候…",
+                    text = if (elapsedSeconds > 0) {
+                        stringResource(R.string.imagegen_card_elapsed_seconds, elapsedSeconds)
+                    } else {
+                        stringResource(R.string.imagegen_card_please_wait)
+                    },
                     fontSize = 12.sp,
                     color = summaryColor,
                 )
@@ -245,10 +288,12 @@ private fun GeneratingPlaceholderCard(
 private fun GeneratedImagesGalleryCard(
     messageId: String,
     payload: GeneratedImageActivityPayload,
+    isCoui: Boolean,
     assistantOverlay: Boolean,
     onEditImage: ((String) -> Unit)?,
 ) {
     val context = LocalContext.current
+    val resources = LocalResources.current
     val scope = rememberCoroutineScope()
     val haptic = LocalHapticFeedback.current
     val previewer = LocalChatImagePreviewer.current.takeUnless { assistantOverlay }
@@ -257,10 +302,19 @@ private fun GeneratedImagesGalleryCard(
     var promptExpanded by rememberSaveable(messageId) { mutableStateOf(false) }
     var saving by remember { mutableStateOf(false) }
 
-    val surfaceBg = MiuixTheme.colorScheme.surfaceContainerHigh
-    val titleColor = MiuixTheme.colorScheme.onSurface
-    val summaryColor = MiuixTheme.colorScheme.onSurfaceVariantSummary
-    val borderColor = MiuixTheme.colorScheme.outline.copy(alpha = 0.14f)
+    val couiDark = if (isCoui) CouiTheme.isDark else false
+    val surfaceBg = if (isCoui) {
+        if (couiDark) Color(0xFF1F2229) else Color(0xFFF4F6FA)
+    } else {
+        MiuixTheme.colorScheme.surfaceContainerHigh
+    }
+    val titleColor = if (isCoui) CouiPageDefaults.themeColors(couiDark).title else MiuixTheme.colorScheme.onSurface
+    val summaryColor = if (isCoui) CouiPageDefaults.themeColors(couiDark).summary else MiuixTheme.colorScheme.onSurfaceVariantSummary
+    val borderColor = if (isCoui) {
+        if (couiDark) Color.White.copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.06f)
+    } else {
+        MiuixTheme.colorScheme.outline.copy(alpha = 0.14f)
+    }
     val maxWidth = if (assistantOverlay) 276.dp else 324.dp
 
     val openPreviewAt: (Int) -> Unit = { idx ->
@@ -294,6 +348,7 @@ private fun GeneratedImagesGalleryCard(
                 groupKey = messageId,
                 index = 0,
                 previewer = previewer,
+                isCoui = isCoui,
                 surfaceBg = surfaceBg,
                 borderColor = borderColor,
                 modifier = Modifier
@@ -317,6 +372,7 @@ private fun GeneratedImagesGalleryCard(
                                 groupKey = messageId,
                                 index = globalIdx,
                                 previewer = previewer,
+                                isCoui = isCoui,
                                 surfaceBg = surfaceBg,
                                 borderColor = borderColor,
                                 modifier = Modifier
@@ -344,7 +400,11 @@ private fun GeneratedImagesGalleryCard(
             ) {
                 ImageCardChipButton(
                     icon = Icons.Rounded.Download,
-                    label = if (saving) "保存中" else if (payload.images.size > 1) "全部保存" else "保存",
+                    label = when {
+                        saving -> stringResource(R.string.imagegen_card_saving)
+                        payload.images.size > 1 -> stringResource(R.string.imagegen_card_save_all)
+                        else -> stringResource(R.string.action_save)
+                    },
                     enabled = !saving,
                     surfaceBg = surfaceBg,
                     contentColor = titleColor,
@@ -360,17 +420,25 @@ private fun GeneratedImagesGalleryCard(
                             saving = false
                             if (okCount > 0) {
                                 haptic.performHapticFeedback(HapticFeedbackType.Confirm)
-                                val msg = if (okCount == 1) "已保存到相册 Pictures/Eta" else "已保存 $okCount 张图片到相册"
+                                val msg = if (okCount == 1) {
+                                    resources.getString(R.string.imagegen_card_saved_single)
+                                } else {
+                                    resources.getString(R.string.imagegen_card_saved_multiple, okCount)
+                                }
                                 Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                             } else {
-                                Toast.makeText(context, "保存失败，请重试", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(
+                                    context,
+                                    resources.getString(R.string.imagegen_card_save_failed),
+                                    Toast.LENGTH_SHORT,
+                                ).show()
                             }
                         }
                     },
                 )
                 ImageCardChipButton(
                     icon = Icons.Rounded.Share,
-                    label = "分享",
+                    label = stringResource(R.string.imagegen_card_action_share),
                     surfaceBg = surfaceBg,
                     contentColor = titleColor,
                     onClick = {
@@ -379,7 +447,11 @@ private fun GeneratedImagesGalleryCard(
                                 GeneratedImageStore.shareImage(context, firstPath)
                             }
                             if (res.isFailure) {
-                                Toast.makeText(context, "分享失败", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(
+                                    context,
+                                    resources.getString(R.string.imagegen_card_share_failed),
+                                    Toast.LENGTH_SHORT,
+                                ).show()
                             }
                         }
                     },
@@ -387,13 +459,17 @@ private fun GeneratedImagesGalleryCard(
                 if (onEditImage != null) {
                     ImageCardChipButton(
                         icon = Icons.Rounded.AutoFixHigh,
-                        label = "改图",
+                        label = stringResource(R.string.imagegen_card_action_edit),
                         surfaceBg = surfaceBg,
                         contentColor = titleColor,
                         onClick = {
                             haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                             onEditImage(toAttachableUri(firstPath))
-                            Toast.makeText(context, "已载入输入框，可直接描述修改要求", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(
+                                context,
+                                resources.getString(R.string.imagegen_card_edit_loaded_hint),
+                                Toast.LENGTH_SHORT,
+                            ).show()
                         },
                     )
                 }
@@ -408,7 +484,7 @@ private fun GeneratedImagesGalleryCard(
                         horizontalArrangement = Arrangement.spacedBy(2.dp),
                     ) {
                         Text(
-                            text = "提示词",
+                            text = stringResource(R.string.imagegen_card_prompt_label),
                             fontSize = 11.sp,
                             color = summaryColor,
                         )
@@ -463,6 +539,7 @@ private fun GeneratedImageTile(
     groupKey: Any,
     index: Int,
     previewer: ChatImagePreviewer?,
+    isCoui: Boolean,
     surfaceBg: Color,
     borderColor: Color,
     modifier: Modifier = Modifier,
@@ -471,6 +548,7 @@ private fun GeneratedImageTile(
 ) {
     val bitmap = rememberChatImageBitmap(source = filePath, maxDimensionPx = 1600)
     val fileMissing = remember(filePath, bitmap) { bitmap == null && !File(filePath.removePrefix("file://")).isFile }
+    val cornerShape = RoundedCornerShape(16.dp)
 
     Box(
         modifier = modifier
@@ -480,8 +558,18 @@ private fun GeneratedImageTile(
             .graphicsLayer {
                 alpha = if (previewer?.isPresenting(groupKey, index) == true) 0f else 1f
             }
-            .squircleSurface(color = surfaceBg, cornerRadius = 16.dp)
-            .squircleBorder(0.75.dp, borderColor, 16.dp)
+            .then(
+                if (isCoui) {
+                    Modifier
+                        .clip(cornerShape)
+                        .background(surfaceBg)
+                        .border(0.75.dp, borderColor, cornerShape)
+                } else {
+                    Modifier
+                        .squircleSurface(color = surfaceBg, cornerRadius = 16.dp)
+                        .squircleBorder(0.75.dp, borderColor, 16.dp)
+                },
+            )
             .clickable(enabled = bitmap != null && previewer != null, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
@@ -489,7 +577,7 @@ private fun GeneratedImageTile(
             bitmap != null -> {
                 Image(
                     bitmap = bitmap,
-                    contentDescription = "AI 生成的图片",
+                    contentDescription = stringResource(R.string.imagegen_generated_image_desc),
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize(),
                 )
@@ -507,7 +595,7 @@ private fun GeneratedImageTile(
                         modifier = Modifier.size(22.dp),
                     )
                     Text(
-                        text = "本地图片已被清理",
+                        text = stringResource(R.string.imagegen_card_image_missing),
                         fontSize = 11.sp,
                         color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                     )
@@ -562,15 +650,19 @@ private fun GeneratedImageStatusNotice(
     isError: Boolean,
     title: String,
     detail: String?,
+    isCoui: Boolean,
 ) {
+    val couiDark = if (isCoui) CouiTheme.isDark else false
     val bg = if (isError) {
-        StatusError.copy(alpha = 0.09f)
+        StatusError.copy(alpha = if (couiDark) 0.16f else 0.09f)
+    } else if (isCoui) {
+        if (couiDark) Color(0xFF1F2229) else Color(0xFFF4F6FA)
     } else {
         MiuixTheme.colorScheme.surfaceContainerHigh
     }
     val tint = if (isError) StatusError else MiuixTheme.colorScheme.primary
-    val titleColor = MiuixTheme.colorScheme.onSurface
-    val summaryColor = MiuixTheme.colorScheme.onSurfaceVariantSummary
+    val titleColor = if (isCoui) CouiPageDefaults.themeColors(couiDark).title else MiuixTheme.colorScheme.onSurface
+    val summaryColor = if (isCoui) CouiPageDefaults.themeColors(couiDark).summary else MiuixTheme.colorScheme.onSurfaceVariantSummary
 
     Row(
         modifier = Modifier

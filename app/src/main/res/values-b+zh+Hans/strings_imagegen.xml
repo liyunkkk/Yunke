@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="imagegen_generated_image_desc">AI 生成的图片</string>
+    <string name="imagegen_card_completed">图片生成完成</string>
+    <string name="imagegen_card_failed">图片生成失败</string>
+    <string name="imagegen_card_generating">正在绘制图片</string>
+    <string name="imagegen_card_generating_multiple">正在绘制图片（%1$d 张）</string>
+    <string name="imagegen_card_editing">正在编辑图片</string>
+    <string name="imagegen_card_editing_multiple">正在编辑图片（%1$d 张）</string>
+    <string name="imagegen_card_elapsed_seconds">已用时 %1$ds</string>
+    <string name="imagegen_card_please_wait">请稍候…</string>
+    <string name="imagegen_card_saving">保存中</string>
+    <string name="imagegen_card_save_all">全部保存</string>
+    <string name="imagegen_card_saved_single">已保存到相册 Pictures/Eta</string>
+    <string name="imagegen_card_saved_multiple">已保存 %1$d 张图片到相册</string>
+    <string name="imagegen_card_save_failed">保存失败，请重试</string>
+    <string name="imagegen_card_action_share">分享</string>
+    <string name="imagegen_card_share_failed">分享失败</string>
+    <string name="imagegen_card_action_edit">改图</string>
+    <string name="imagegen_card_edit_loaded_hint">已载入输入框，可直接描述修改要求</string>
+    <string name="imagegen_card_prompt_label">提示词</string>
+    <string name="imagegen_card_image_missing">本地图片已被清理</string>
+</resources>

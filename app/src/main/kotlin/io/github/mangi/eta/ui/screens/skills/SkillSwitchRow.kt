@@ -101,13 +101,12 @@ internal fun SkillSwitchRow(
             modifier = Modifier.padding(top = 2.dp),
         )
     }
-    if (showDescription) {
-        ItemDescriptionDialog(
-            title = skill.name,
-            description = description,
-            onDismiss = { showDescription = false },
-        )
-    }
+    ItemDescriptionDialog(
+        show = showDescription,
+        title = skill.name,
+        description = description,
+        onDismiss = { showDescription = false },
+    )
 }
 
 internal fun iconForSkill(skillId: String): ImageVector = when (skillId) {

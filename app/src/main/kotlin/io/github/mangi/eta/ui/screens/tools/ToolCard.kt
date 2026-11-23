@@ -146,13 +146,12 @@ internal fun ToolCard(
             }
         }
     }
-    if (showDescription) {
-        ItemDescriptionDialog(
-            title = tool.title,
-            description = listOfNotNull(description, requirementText).joinToString("\n\n"),
-            onDismiss = { showDescription = false },
-        )
-    }
+    ItemDescriptionDialog(
+        show = showDescription,
+        title = tool.title,
+        description = listOfNotNull(description, requirementText).joinToString("\n\n"),
+        onDismiss = { showDescription = false },
+    )
 }
 
 @Composable
