@@ -46,9 +46,9 @@ import io.github.mangi.eta.ui.model.AgentModelPickerUiState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import top.yukonga.miuix.kmp.basic.Card
-import top.yukonga.miuix.kmp.basic.SmallTitle
-import top.yukonga.miuix.kmp.preference.SwitchPreference
+import io.github.mangi.eta.ui.components.Card
+import io.github.mangi.eta.ui.components.SmallTitle
+import io.github.mangi.eta.ui.components.SwitchPreference
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable

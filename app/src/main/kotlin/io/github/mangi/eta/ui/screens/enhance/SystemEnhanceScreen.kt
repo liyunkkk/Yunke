@@ -22,10 +22,10 @@ import io.github.mangi.eta.ui.app.rememberDeviceCapabilities
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import io.github.mangi.eta.ui.components.PreferenceIcon
 import io.github.mangi.eta.ui.model.AgentSystemEnhanceAction
-import top.yukonga.miuix.kmp.basic.BasicComponent
-import top.yukonga.miuix.kmp.basic.Card
+import io.github.mangi.eta.ui.components.BasicComponent
+import io.github.mangi.eta.ui.components.Card
 import io.github.mangi.eta.ui.components.SmallTitle
-import top.yukonga.miuix.kmp.basic.TextButton
+import io.github.mangi.eta.ui.components.TextButton
 
 @Composable
 fun SystemEnhanceScreen(

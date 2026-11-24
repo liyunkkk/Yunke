@@ -28,9 +28,9 @@ import java.time.YearMonth
 import java.time.format.TextStyle
 import java.util.Locale
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
-import top.yukonga.miuix.kmp.basic.TextButton
+import io.github.mangi.eta.ui.components.TextButton
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import top.yukonga.miuix.kmp.window.WindowDialog
+import io.github.mangi.eta.ui.components.WindowDialog
 
 @Composable
 internal fun UsageDateTimePickerDialog(

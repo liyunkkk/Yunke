@@ -26,9 +26,9 @@ import io.github.mangi.eta.ui.components.PreferenceIcon
 import io.github.mangi.eta.ui.components.WindowSpinnerPreference
 import io.github.mangi.eta.ui.icons.SubAgents
 import io.github.mangi.eta.ui.navigation.AppRoute
-import top.yukonga.miuix.kmp.basic.Card
+import io.github.mangi.eta.ui.components.Card
 import top.yukonga.miuix.kmp.basic.DropdownItem
-import top.yukonga.miuix.kmp.basic.SmallTitle
+import io.github.mangi.eta.ui.components.SmallTitle
 
 /**
  * 设置二级页：模型与对话。

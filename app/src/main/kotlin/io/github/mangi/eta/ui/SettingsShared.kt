@@ -42,7 +42,7 @@ import io.github.mangi.eta.ui.components.SwitchPreference
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import top.yukonga.miuix.kmp.window.WindowDialog
+import io.github.mangi.eta.ui.components.WindowDialog
 
 // ── 设置页共享：状态持有器与开关 helper（一级页与各二级页共用） ─────────────
 // 来源：Yunke SettingsScreen.kt 底部 helper（原样搬出，只改可见性 private → internal，

@@ -34,7 +34,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.ButtonDefaults as MiuixButtonDefaults
 import top.yukonga.miuix.kmp.basic.TextButton as MiuixTextButton
-import top.yukonga.miuix.kmp.window.WindowDialog
 
 /** One opening owns one editor, application, expected profile and parallel-pool snapshot.
  * Nothing here writes preferences until commitProfileDraft; abandoning a session is zero-write. */

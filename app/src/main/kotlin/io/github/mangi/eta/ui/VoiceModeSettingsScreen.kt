@@ -25,7 +25,7 @@ import io.github.mangi.eta.agent.voice.VoiceModeController
 import io.github.mangi.eta.data.model.SpeechSynthesisModels
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.data.repository.ProviderRepository
-import top.yukonga.miuix.kmp.basic.Card
+import io.github.mangi.eta.ui.components.Card
 import io.github.mangi.eta.ui.components.ArrowPreference
 
 @Composable

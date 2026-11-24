@@ -11,7 +11,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import top.yukonga.miuix.kmp.window.WindowDialog
 
 /**
  * Use the app's window-level form host, also used for conversation names in AgentAppRoot.
