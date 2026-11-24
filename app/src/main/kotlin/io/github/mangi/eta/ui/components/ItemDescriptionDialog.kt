@@ -34,15 +34,20 @@ internal fun ItemDescriptionDialog(
 ) {
     when (LocalUiStyle.current) {
         AppearanceUiStyle.COUI -> {
+            // COUI 弹窗须常驻组合，由 visible 控制显隐，否则关闭时没有退场动画。
+            var retainedTitle by remember { mutableStateOf(title) }
+            var retainedDescription by remember { mutableStateOf(description) }
             if (show) {
-                CouiNoticeDialog(
-                    visible = true,
-                    title = title,
-                    message = description,
-                    confirmText = stringResource(R.string.action_close),
-                    onDismissRequest = onDismiss,
-                )
+                retainedTitle = title
+                retainedDescription = description
             }
+            CouiNoticeDialog(
+                visible = show,
+                title = retainedTitle,
+                message = retainedDescription,
+                confirmText = stringResource(R.string.action_close),
+                onDismissRequest = onDismiss,
+            )
         }
         AppearanceUiStyle.MIUIX -> {
             var retainedTitle by remember { mutableStateOf(title) }
