@@ -699,7 +699,7 @@ private fun UserMessageBubble(
         horizontalAlignment = Alignment.End,
     ) {
         val isCouiBubble = LocalUiStyle.current == AppearanceUiStyle.COUI
-        val isDarkBubble = com.itos.coui.theme.LocalCouiDarkTheme.current
+        val isDarkBubble = com.itos.coui.theme.LocalCouiDarkTheme.current ?: CouiTheme.isDark
         val bubblePrimary = MiuixTheme.colorScheme.primary
         val hasCustomAccent = LocalAppearanceSettings.current.accentColor != io.github.mangi.eta.data.model.AppearanceAccentColor.SYSTEM
         val bubbleFillColor = when {
