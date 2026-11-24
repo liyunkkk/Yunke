@@ -17,8 +17,12 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.itos.coui.layout.CouiPageDefaults
+import com.itos.coui.theme.CouiTheme
 import io.github.mangi.eta.agent.delegation.ConversationSubAgentPreferences
 import io.github.mangi.eta.agent.delegation.SubAgentPreset
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.app.LocalUiStyle
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.collect
@@ -94,9 +98,14 @@ internal fun SubAgentPresetCard(
     trailing: @Composable (() -> Unit)? = null,
 ) {
     val view = LocalView.current
-    Surface(shape = RoundedCornerShape(24.dp),
-        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.38f),
-        contentColor = MaterialTheme.colorScheme.onSurface, modifier = Modifier.fillMaxWidth()) {
+    val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
+    val couiColors = if (isCoui) CouiPageDefaults.themeColors(CouiTheme.isDark) else null
+    Surface(
+        shape = if (isCoui) CouiPageDefaults.shape else RoundedCornerShape(24.dp),
+        color = couiColors?.card ?: MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.38f),
+        contentColor = couiColors?.title ?: MaterialTheme.colorScheme.onSurface,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Row(Modifier.weight(1f).heightIn(min = 96.dp)
                 .semantics { contentDescription = actionLabel }
@@ -106,14 +115,32 @@ internal fun SubAgentPresetCard(
                     onClick()
                 }.padding(20.dp), verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                Icon(Icons.Rounded.AccountTree, null, tint = MaterialTheme.colorScheme.primary)
+                Icon(Icons.Rounded.AccountTree, null, tint = couiColors?.accent ?: MaterialTheme.colorScheme.primary)
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(preset.name, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    Text("${preset.config.profiles.size} 个子代理 · ${if (preset.config.enabled) "自动委派已开启" else "自动委派已关闭"}",
-                        style = MaterialTheme.typography.bodySmall)
-                    if (selected) Text("当前使用", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                    Text(
+                        preset.name,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = couiColors?.title ?: MaterialTheme.colorScheme.onSurface,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        "${preset.config.profiles.size} 个子代理 · ${if (preset.config.enabled) "自动委派已开启" else "自动委派已关闭"}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = couiColors?.summary ?: MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (selected) Text(
+                        "当前使用",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = couiColors?.accent ?: MaterialTheme.colorScheme.primary,
+                    )
                 }
-                Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, null, Modifier.size(20.dp))
+                Icon(
+                    Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                    null,
+                    Modifier.size(20.dp),
+                    tint = couiColors?.summary ?: MaterialTheme.colorScheme.onSurface,
+                )
             }
             trailing?.invoke()
         }

@@ -2,6 +2,7 @@ package io.github.mangi.eta.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -32,6 +33,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -210,6 +212,48 @@ private fun SurfaceChoiceRow(
     selected: Boolean,
     onClick: () -> Unit,
 ) {
+    if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
+        val couiColors = com.itos.coui.layout.CouiPageDefaults.themeColors(com.itos.coui.theme.CouiTheme.isDark)
+        Surface(
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
+            color = if (selected) couiColors.accent.copy(alpha = 0.10f) else Color.Transparent,
+            modifier = Modifier
+                .fillMaxWidth()
+                .selectable(selected = selected, role = Role.RadioButton, onClick = onClick),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Icon(
+                    icon,
+                    contentDescription = null,
+                    modifier = Modifier.size(24.dp),
+                    tint = if (selected) couiColors.accent else couiColors.summary,
+                )
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    Text(
+                        title,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = couiColors.title,
+                    )
+                    Text(
+                        summary,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = couiColors.summary,
+                    )
+                }
+                EtaRadioButton(selected = selected, onClick = null)
+            }
+        }
+        return
+    }
     ListItem(
         colors = ListItemDefaults.colors(containerColor = Color.Transparent),
         modifier = Modifier

@@ -21,8 +21,8 @@ import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import io.github.mangi.eta.ui.components.coui.EtaMaterialSwitch as Switch
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -49,7 +49,6 @@ import io.github.mangi.eta.ui.model.ConversationTokenUsageUi
 import io.github.mangi.eta.ui.model.MessageSearchHit
 import io.github.mangi.eta.ui.CompressConversationDialog
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import io.github.mangi.eta.ui.components.coui.EtaMaterialSwitch
 
 private val TopBarMenuIconSize = 24.dp
 private val CompactMenuItemModifier = Modifier.height(40.dp)
@@ -149,7 +148,7 @@ internal fun TopBarOverflowMenu(
                     )
                 },
                 trailingIcon = {
-                    EtaMaterialSwitch(
+                    Switch(
                         checked = interactiveModeEnabled,
                         onCheckedChange = { enabled ->
                             TouchHaptics.click(view)
@@ -260,7 +259,7 @@ internal fun TopBarOverflowMenu(
                     )
                 },
                 trailingIcon = {
-                    EtaMaterialSwitch(
+                    Switch(
                         checked = autoCompressEnabled,
                         onCheckedChange = null,
                         modifier = Modifier.scale(0.72f),

@@ -42,12 +42,18 @@ import io.github.mangi.eta.ui.haptics.TouchHaptics
 import kotlinx.coroutines.launch
 import io.github.mangi.eta.ui.app.LocalUiStyle
 import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.components.coui.CouiButton
+import io.github.mangi.eta.ui.components.coui.CouiButtonRole
 import io.github.mangi.eta.ui.components.coui.CouiConfirmDialog
 import io.github.mangi.eta.ui.components.coui.CouiNoticeDialog
+import io.github.mangi.eta.ui.components.coui.CouiScaffold
+import io.github.mangi.eta.ui.components.coui.CouiTopAppBarIconButton
 import io.github.mangi.eta.ui.components.coui.EtaRadioButton
 import io.github.mangi.eta.ui.components.coui.EtaMaterialCheckbox
 import io.github.mangi.eta.ui.components.coui.EtaFloatingActionButton
 import io.github.mangi.eta.ui.components.coui.EtaLinearProgressIndicator
+import com.itos.coui.layout.CouiPageDefaults
+import com.itos.coui.theme.CouiTheme
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -143,49 +149,30 @@ internal fun DoubaoVoiceSettings(page: String, onBack: () -> Unit) {
     }
     val home = page == "voices" && mode == null && !showAccount && !showSync
     LaunchedEffect(home) { if (!home) preview.stop() }
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text(when {
-                    showSync -> "同步音色名额"
-                    showAccount -> "声音复刻账户"
-                    mode == "create" -> "制作声音"
-                    mode == "import" -> "导入声音"
-                    page == "asr" -> "识别方式"
-                    else -> "我的声音"
-                }) },
-                navigationIcon = {
-                    IconButton(enabled = !busy && !importBusy, onClick = { TouchHaptics.click(view); back() }) {
-                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "返回")
-                    }
-                },
-                actions = {
-                    if (home) Box {
-                        IconButton(onClick = { TouchHaptics.click(view); settingsMenu = true }) { Icon(Icons.Rounded.MoreVert, contentDescription = "声音设置") }
-                        EtaMaterialDropdownMenu(expanded = settingsMenu, onDismissRequest = { settingsMenu = false }) {
-                            EtaMaterialDropdownMenuItem(text = "声音复刻账户", onClick = { TouchHaptics.click(view); settingsMenu = false; showAccount = true; notice = "" })
-                            EtaMaterialDropdownMenuItem(text = "同步音色名额", enabled = config.cloneKey.isNotBlank(), onClick = { TouchHaptics.click(view); settingsMenu = false; showSync = true; notice = "" })
-                        }
-                    }
-                },
-            )
-        },
-        floatingActionButton = {
-            if (home) Box {
-                EtaFloatingActionButton(onClick = { TouchHaptics.click(view); if (config.cloneKey.isBlank()) showAccount = true else addMenu = true }) {
-                    Icon(Icons.Rounded.Add, contentDescription = "添加声音")
-                }
-                EtaMaterialDropdownMenu(expanded = addMenu, onDismissRequest = { addMenu = false }) {
-                    EtaMaterialDropdownMenuItem(text = "用录音制作声音", onClick = { TouchHaptics.click(view); beginMode("create") })
-                    EtaMaterialDropdownMenuItem(text = "导入已有声音", onClick = { TouchHaptics.click(view); beginMode("import") })
-                }
+    val screenTitle = when {
+        showSync -> "同步音色名额"
+        showAccount -> "声音复刻账户"
+        mode == "create" -> "制作声音"
+        mode == "import" -> "导入声音"
+        page == "asr" -> "识别方式"
+        else -> "我的声音"
+    }
+    val fabBlock: @Composable () -> Unit = {
+        if (home) Box {
+            EtaFloatingActionButton(onClick = { TouchHaptics.click(view); if (config.cloneKey.isBlank()) showAccount = true else addMenu = true }) {
+                Icon(Icons.Rounded.Add, contentDescription = "添加声音")
             }
-        },
-    ) { padding ->
+            EtaMaterialDropdownMenu(expanded = addMenu, onDismissRequest = { addMenu = false }) {
+                EtaMaterialDropdownMenuItem(text = "用录音制作声音", onClick = { TouchHaptics.click(view); beginMode("create") })
+                EtaMaterialDropdownMenuItem(text = "导入已有声音", onClick = { TouchHaptics.click(view); beginMode("import") })
+            }
+        }
+    }
+    val listBody: @Composable (Modifier, PaddingValues) -> Unit = { listModifier, listPadding ->
         key(mode, step, showAccount, showSync) {
             LazyColumn(
-                modifier = Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).imePadding(),
-                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 96.dp),
+                modifier = listModifier,
+                contentPadding = listPadding,
             ) {
                 item {
                     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -350,6 +337,72 @@ internal fun DoubaoVoiceSettings(page: String, onBack: () -> Unit) {
                     }
                 }
             }
+        }
+    }
+    if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
+        CouiScaffold(
+            title = screenTitle,
+            onBack = { if (!busy && !importBusy) { TouchHaptics.click(view); back() } },
+            actions = {
+                if (home) Box {
+                    CouiTopAppBarIconButton(
+                        icon = Icons.Rounded.MoreVert,
+                        contentDescription = "声音设置",
+                        onClick = { TouchHaptics.click(view); settingsMenu = true },
+                    )
+                    EtaMaterialDropdownMenu(expanded = settingsMenu, onDismissRequest = { settingsMenu = false }) {
+                        EtaMaterialDropdownMenuItem(text = "声音复刻账户", onClick = { TouchHaptics.click(view); settingsMenu = false; showAccount = true; notice = "" })
+                        EtaMaterialDropdownMenuItem(text = "同步音色名额", enabled = config.cloneKey.isNotBlank(), onClick = { TouchHaptics.click(view); settingsMenu = false; showSync = true; notice = "" })
+                    }
+                }
+            },
+            floatingAction = if (home) {
+                {
+                    Box(Modifier.align(Alignment.BottomEnd).padding(16.dp)) {
+                        fabBlock()
+                    }
+                }
+            } else {
+                null
+            },
+        ) { contentPadding, rawPadding, _, sidePadding ->
+            listBody(
+                Modifier.fillMaxSize().consumeWindowInsets(rawPadding).imePadding(),
+                PaddingValues(
+                    start = sidePadding + 16.dp,
+                    end = sidePadding + 16.dp,
+                    top = contentPadding.calculateTopPadding() + 12.dp,
+                    bottom = contentPadding.calculateBottomPadding() + 96.dp,
+                ),
+            )
+        }
+    } else {
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = { Text(screenTitle) },
+                    navigationIcon = {
+                        IconButton(enabled = !busy && !importBusy, onClick = { TouchHaptics.click(view); back() }) {
+                            Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "返回")
+                        }
+                    },
+                    actions = {
+                        if (home) Box {
+                            IconButton(onClick = { TouchHaptics.click(view); settingsMenu = true }) { Icon(Icons.Rounded.MoreVert, contentDescription = "声音设置") }
+                            EtaMaterialDropdownMenu(expanded = settingsMenu, onDismissRequest = { settingsMenu = false }) {
+                                EtaMaterialDropdownMenuItem(text = "声音复刻账户", onClick = { TouchHaptics.click(view); settingsMenu = false; showAccount = true; notice = "" })
+                                EtaMaterialDropdownMenuItem(text = "同步音色名额", enabled = config.cloneKey.isNotBlank(), onClick = { TouchHaptics.click(view); settingsMenu = false; showSync = true; notice = "" })
+                            }
+                        }
+                    },
+                )
+            },
+            floatingActionButton = fabBlock,
+        ) { padding ->
+            listBody(
+                Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).imePadding(),
+                PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 96.dp),
+            )
         }
     }
 }
@@ -531,36 +584,84 @@ private fun PersonalVoiceRow(
     onPreview: () -> Unit,
 ) {
     val view = LocalView.current
+    val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
     var menu by remember { mutableStateOf(false) }
     var showError by remember { mutableStateOf(false) }
-    Column {
-        ListItem(
-            headlineContent = { Text(voice.name, style = MaterialTheme.typography.bodyLarge) },
-            supportingContent = { Text(if (previewLoading) "正在加载试听…" else if (previewActive) "正在试听" else when (voice.status) {
-                -2 -> "请求被拒绝"; 0 -> "服务端未找到"; 1 -> "训练中"; 2 -> "训练成功"; 3 -> "训练失败"; 4 -> "已正式使用"; else -> "请求待确认"
-            }) },
-            leadingContent = { Icon(Icons.Rounded.Mic, contentDescription = null) },
-            trailingContent = {
-                Row {
-                    IconButton(enabled = previewActive || voice.demo.startsWith("https://"), onClick = { TouchHaptics.click(view); onPreview() }) {
-                        Icon(if (previewActive) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
-                            contentDescription = if (previewActive) "停止试听" else "试听")
+    val statusText = if (previewLoading) "正在加载试听…" else if (previewActive) "正在试听" else when (voice.status) {
+        -2 -> "请求被拒绝"; 0 -> "服务端未找到"; 1 -> "训练中"; 2 -> "训练成功"; 3 -> "训练失败"; 4 -> "已正式使用"; else -> "请求待确认"
+    }
+    if (isCoui) {
+        val couiColors = CouiPageDefaults.themeColors(CouiTheme.isDark)
+        Surface(
+            shape = CouiPageDefaults.shape,
+            color = couiColors.card,
+            contentColor = couiColors.title,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Icon(Icons.Rounded.Mic, contentDescription = null, tint = couiColors.accent)
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(voice.name, style = MaterialTheme.typography.bodyLarge, color = couiColors.title)
+                        Text(statusText, style = MaterialTheme.typography.bodySmall, color = couiColors.summary)
                     }
-                    Box {
-                        IconButton(onClick = { TouchHaptics.click(view); menu = true }) { Icon(Icons.Rounded.MoreVert, contentDescription = "声音操作") }
-                        EtaMaterialDropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                            EtaMaterialDropdownMenuItem(text = "查询状态", onClick = { TouchHaptics.click(view); menu = false; onRefresh() })
-                            if (voice.error.isNotBlank()) EtaMaterialDropdownMenuItem(text = "错误详情", onClick = { TouchHaptics.click(view); menu = false; showError = true })
-                            EtaMaterialDropdownMenuItem(text = "移除本机记录", enabled = enabled, onClick = { TouchHaptics.click(view); menu = false; onDelete() })
+                    Row {
+                        IconButton(enabled = previewActive || voice.demo.startsWith("https://"), onClick = { TouchHaptics.click(view); onPreview() }) {
+                            Icon(
+                                if (previewActive) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
+                                contentDescription = if (previewActive) "停止试听" else "试听",
+                                tint = if (previewActive) couiColors.accent else couiColors.title,
+                            )
+                        }
+                        Box {
+                            IconButton(onClick = { TouchHaptics.click(view); menu = true }) {
+                                Icon(Icons.Rounded.MoreVert, contentDescription = "声音操作", tint = couiColors.summary)
+                            }
+                            EtaMaterialDropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                                EtaMaterialDropdownMenuItem(text = "查询状态", onClick = { TouchHaptics.click(view); menu = false; onRefresh() })
+                                if (voice.error.isNotBlank()) EtaMaterialDropdownMenuItem(text = "错误详情", onClick = { TouchHaptics.click(view); menu = false; showError = true })
+                                EtaMaterialDropdownMenuItem(text = "移除本机记录", enabled = enabled, onClick = { TouchHaptics.click(view); menu = false; onDelete() })
+                            }
                         }
                     }
                 }
-            },
-        )
-        if (voice.tts && !voice.accepted) {
-            VoiceAction(text = "确认音色，允许正式合成（可能产生音色费用）", onClick = onAccept)
+                if (voice.tts && !voice.accepted) {
+                    VoiceAction(text = "确认音色，允许正式合成（可能产生音色费用）", onClick = onAccept)
+                }
+            }
         }
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+    } else {
+        Column {
+            ListItem(
+                headlineContent = { Text(voice.name, style = MaterialTheme.typography.bodyLarge) },
+                supportingContent = { Text(statusText) },
+                leadingContent = { Icon(Icons.Rounded.Mic, contentDescription = null) },
+                trailingContent = {
+                    Row {
+                        IconButton(enabled = previewActive || voice.demo.startsWith("https://"), onClick = { TouchHaptics.click(view); onPreview() }) {
+                            Icon(if (previewActive) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
+                                contentDescription = if (previewActive) "停止试听" else "试听")
+                        }
+                        Box {
+                            IconButton(onClick = { TouchHaptics.click(view); menu = true }) { Icon(Icons.Rounded.MoreVert, contentDescription = "声音操作") }
+                            EtaMaterialDropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                                EtaMaterialDropdownMenuItem(text = "查询状态", onClick = { TouchHaptics.click(view); menu = false; onRefresh() })
+                                if (voice.error.isNotBlank()) EtaMaterialDropdownMenuItem(text = "错误详情", onClick = { TouchHaptics.click(view); menu = false; showError = true })
+                                EtaMaterialDropdownMenuItem(text = "移除本机记录", enabled = enabled, onClick = { TouchHaptics.click(view); menu = false; onDelete() })
+                            }
+                        }
+                    }
+                },
+            )
+            if (voice.tts && !voice.accepted) {
+                VoiceAction(text = "确认音色，允许正式合成（可能产生音色费用）", onClick = onAccept)
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        }
     }
     if (showError) if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiNoticeDialog(
         visible = true,
@@ -595,6 +696,30 @@ private fun VoiceSlotRow(
         else -> "状态待确认"
     }
     val quota = if (slot.remaining >= 0) "剩余 ${slot.remaining} 次" else "次数待查询"
+    if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
+        val couiColors = CouiPageDefaults.themeColors(CouiTheme.isDark)
+        val alpha = if (enabled) 1f else 0.38f
+        Surface(
+            shape = CouiPageDefaults.shape,
+            color = if (selected) couiColors.accent.copy(alpha = 0.12f) else couiColors.card,
+            modifier = Modifier
+                .fillMaxWidth()
+                .selectable(selected = selected, enabled = enabled, role = Role.RadioButton, onClick = { TouchHaptics.click(view); onClick() }),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                EtaRadioButton(selected = selected, enabled = enabled, onClick = null)
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(title, style = MaterialTheme.typography.bodyLarge, color = couiColors.title.copy(alpha = alpha))
+                    Text("$status · $quota", style = MaterialTheme.typography.bodySmall, color = couiColors.summary.copy(alpha = alpha))
+                }
+            }
+        }
+        return
+    }
     ListItem(
         modifier = Modifier.selectable(selected = selected, enabled = enabled, role = Role.RadioButton, onClick = { TouchHaptics.click(view); onClick() }),
         headlineContent = { Text(title) },
@@ -632,6 +757,16 @@ private fun VoiceAction(
 ) {
     val view = LocalView.current
     val click = { TouchHaptics.click(view); onClick() }
+    if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
+        CouiButton(
+            text = text,
+            onClick = click,
+            enabled = enabled,
+            role = if (primary) CouiButtonRole.Primary else CouiButtonRole.Secondary,
+            modifier = if (primary) modifier.fillMaxWidth() else modifier,
+        )
+        return
+    }
     if (primary) Button(onClick = click, enabled = enabled, modifier = modifier.fillMaxWidth()) { Text(text) }
     else TextButton(onClick = click, enabled = enabled, modifier = modifier) { Text(text) }
 }
