@@ -73,7 +73,7 @@ import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import io.github.mangi.eta.ui.components.Card
 import io.github.mangi.eta.ui.components.Checkbox
 import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.InputField
+import io.github.mangi.eta.ui.components.InputField
 import io.github.mangi.eta.ui.components.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import io.github.mangi.eta.ui.components.TextButton

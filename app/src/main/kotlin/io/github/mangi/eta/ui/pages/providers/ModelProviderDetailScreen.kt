@@ -81,13 +81,13 @@ import io.github.mangi.eta.ui.components.HorizontalDivider
 import top.yukonga.miuix.kmp.basic.Icon
 import io.github.mangi.eta.ui.components.IconButton
 import top.yukonga.miuix.kmp.basic.ScrollBehavior
-import top.yukonga.miuix.kmp.basic.TabRow
+import io.github.mangi.eta.ui.components.TabRow
 import top.yukonga.miuix.kmp.basic.Text
 import io.github.mangi.eta.ui.components.TextButton
 import io.github.mangi.eta.ui.components.TextField
 import top.yukonga.miuix.kmp.overlay.OverlayDialog
 import io.github.mangi.eta.ui.components.SwitchPreference
-import top.yukonga.miuix.kmp.preference.WindowSpinnerPreference
+import io.github.mangi.eta.ui.components.WindowSpinnerPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import top.yukonga.miuix.kmp.utils.scrollEndHaptic

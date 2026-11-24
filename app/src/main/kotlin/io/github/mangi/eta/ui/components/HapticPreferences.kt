@@ -22,6 +22,7 @@ import top.yukonga.miuix.kmp.basic.DropdownItem
 import top.yukonga.miuix.kmp.preference.ArrowPreference as MiuixArrowPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference as MiuixSwitchPreference
 import top.yukonga.miuix.kmp.preference.WindowSpinnerPreference as MiuixWindowSpinnerPreference
+import io.github.mangi.eta.ui.components.coui.CouiDropdownPreference
 
 @Composable
 internal fun ArrowPreference(
@@ -147,6 +148,23 @@ internal fun WindowSpinnerPreference(
     onSelectedIndexChange: ((Int) -> Unit)? = null,
 ) {
     val view = LocalView.current
+    // COUI 风格下用 COUI 下拉选择行（带底部操作区的仍走 Miuix）。
+    if (LocalUiStyle.current == AppearanceUiStyle.COUI && bottomAction == null) {
+        CouiDropdownPreference(
+            modifier = modifier,
+            title = title,
+            items = items.map { it.text },
+            selectedIndex = selectedIndex,
+            onSelectedIndexChange = { index ->
+                TouchHaptics.click(view)
+                onSelectedIndexChange?.invoke(index)
+            },
+            summary = summary,
+            enabled = enabled,
+            icon = startAction,
+        )
+        return
+    }
     MiuixWindowSpinnerPreference(
         items = items,
         selectedIndex = selectedIndex,

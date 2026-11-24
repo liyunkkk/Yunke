@@ -62,7 +62,7 @@ import top.yukonga.miuix.kmp.basic.Text
 import io.github.mangi.eta.ui.components.TextField
 import top.yukonga.miuix.kmp.material.isRuntimeShaderSupported
 import io.github.mangi.eta.ui.components.ArrowPreference
-import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
+import io.github.mangi.eta.ui.components.OverlayDropdownPreference
 import io.github.mangi.eta.ui.components.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import io.github.mangi.eta.ui.components.WindowDialog
@@ -204,6 +204,18 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
                         update { current -> current.copy(monetEnabled = enabled) }
                     },
                 )
+                // 主题色在莫奈关闭时也生效（直接决定按钮、标签等强调色）。
+                OverlayDropdownPreference(
+                    title = stringResource(R.string.appearance_accent_color),
+                    summary = accentLabels[appearance.accentColor.ordinal],
+                    items = accentLabels,
+                    selectedIndex = appearance.accentColor.ordinal,
+                    onSelectedIndexChange = { index ->
+                        accentColors.getOrNull(index)?.let { accent ->
+                            update { current -> current.copy(accentColor = accent) }
+                        }
+                    },
+                )
                 AnimatedVisibility(
                     visible = appearance.monetEnabled,
                     enter = expandVertically(expandFrom = Alignment.Top) + fadeIn(),
@@ -218,17 +230,6 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
                     onSelectedIndexChange = { index ->
                         paletteStyles.getOrNull(index)?.let { style ->
                             update { current -> current.copy(paletteStyle = style) }
-                        }
-                    },
-                )
-                OverlayDropdownPreference(
-                    title = stringResource(R.string.appearance_accent_color),
-                    summary = accentLabels[appearance.accentColor.ordinal],
-                    items = accentLabels,
-                    selectedIndex = appearance.accentColor.ordinal,
-                    onSelectedIndexChange = { index ->
-                        accentColors.getOrNull(index)?.let { accent ->
-                            update { current -> current.copy(accentColor = accent) }
                         }
                     },
                 )

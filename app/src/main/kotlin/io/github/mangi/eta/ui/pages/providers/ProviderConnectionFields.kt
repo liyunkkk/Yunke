@@ -17,7 +17,7 @@ import top.yukonga.miuix.kmp.basic.DropdownItem
 import top.yukonga.miuix.kmp.basic.Text
 import io.github.mangi.eta.ui.components.TextField
 import io.github.mangi.eta.ui.components.SwitchPreference
-import top.yukonga.miuix.kmp.preference.WindowSpinnerPreference
+import io.github.mangi.eta.ui.components.WindowSpinnerPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 /** Native Miuix connection form; independent of OAuth provider identities. */

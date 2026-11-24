@@ -61,7 +61,7 @@ import top.yukonga.miuix.kmp.basic.Text
 import io.github.mangi.eta.ui.components.TextButton
 import io.github.mangi.eta.ui.components.TextField
 import io.github.mangi.eta.ui.components.ArrowPreference
-import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
+import io.github.mangi.eta.ui.components.OverlayDropdownPreference
 import io.github.mangi.eta.ui.components.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 

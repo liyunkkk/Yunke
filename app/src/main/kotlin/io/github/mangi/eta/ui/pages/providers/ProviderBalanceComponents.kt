@@ -43,7 +43,7 @@ import io.github.mangi.eta.ui.components.IconButton
 import top.yukonga.miuix.kmp.basic.Text
 import io.github.mangi.eta.ui.components.TextButton
 import io.github.mangi.eta.ui.components.TextField
-import top.yukonga.miuix.kmp.preference.WindowSpinnerPreference
+import io.github.mangi.eta.ui.components.WindowSpinnerPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 /**

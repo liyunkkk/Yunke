@@ -42,7 +42,7 @@ import kotlinx.coroutines.withContext
 import io.github.mangi.eta.ui.components.SmallTitle
 import io.github.mangi.eta.ui.components.TextButton
 import io.github.mangi.eta.ui.components.TextField
-import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
+import io.github.mangi.eta.ui.components.OverlayDropdownPreference
 import io.github.mangi.eta.ui.components.SwitchPreference
 
 private val OnceFormat = DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm", Locale.ROOT)

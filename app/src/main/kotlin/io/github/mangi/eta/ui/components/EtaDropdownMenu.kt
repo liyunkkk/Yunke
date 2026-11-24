@@ -59,6 +59,9 @@ import top.yukonga.miuix.kmp.squircle.isSquircleEnabled
 import top.yukonga.miuix.kmp.squircle.squircleBorder
 import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import com.itos.coui.theme.CouiTheme
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.app.LocalUiStyle
 
 private val MenuCornerRadius = 16.dp
 private val MenuMinWidth = 180.dp
@@ -126,6 +129,7 @@ internal fun EtaDropdownMenu(
     visibleState.targetState = expanded
 
     val colors = MiuixTheme.colorScheme
+    val couiMenu = if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiTheme.colorScheme.menuSurface else null
     val density = LocalDensity.current
     val offsetXPx = with(density) { offset.x.roundToPx() }
     val offsetYPx = with(density) { offset.y.roundToPx() }
@@ -225,7 +229,7 @@ internal fun EtaDropdownMenu(
                         ),
                     )
                     .squircleSurface(
-                        color = colors.surface,
+                        color = couiMenu ?: colors.surface,
                         cornerRadius = MenuCornerRadius,
                     )
                     .squircleBorder(

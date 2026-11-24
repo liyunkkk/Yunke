@@ -106,7 +106,7 @@ import io.github.mangi.eta.ui.components.Checkbox
 import io.github.mangi.eta.ui.components.HorizontalDivider
 import top.yukonga.miuix.kmp.basic.Icon
 import io.github.mangi.eta.ui.components.IconButton
-import top.yukonga.miuix.kmp.basic.InputField
+import io.github.mangi.eta.ui.components.InputField
 import top.yukonga.miuix.kmp.basic.ScrollBehavior
 import io.github.mangi.eta.ui.components.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
