@@ -82,7 +82,7 @@ import io.github.mangi.eta.ui.components.Card
 import io.github.mangi.eta.ui.components.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import io.github.mangi.eta.ui.components.WindowDialog
+import io.github.mangi.eta.ui.components.AdaptiveConfirmDialog
 
 /**
  * 设置一级页：6 个分类入口 + 权限未授权计数 + 诊断 + 关于。
@@ -545,54 +545,51 @@ internal fun SettingsScreen(
         )
 
         if (showClearLogsDialog) {
-            WindowDialog(
+            AdaptiveConfirmDialog(
                 show = true,
                 title = stringResource(R.string.settings_clear_logs_confirm_title),
                 summary = stringResource(R.string.settings_clear_logs_confirm_summary),
                 onDismissRequest = {
                     if (!clearingLogs) showClearLogsDialog = false
                 },
-            ) {
-                MiuixDialogActions(
-                    confirmText = if (clearingLogs) {
-                        stringResource(R.string.settings_export_logs_working)
-                    } else {
-                        stringResource(R.string.settings_clear_logs)
-                    },
-                    destructive = true,
-                    cancelEnabled = !clearingLogs,
-                    confirmEnabled = !clearingLogs,
-                    onCancel = { showClearLogsDialog = false },
-                    onConfirm = {
-                        if (clearingLogs) return@MiuixDialogActions
-                        clearingLogs = true
-                        coroutineScope.launch {
-                            try {
-                                withContext(Dispatchers.IO) {
-                                    AppFileLogger.clear()
-                                    io.github.mangi.eta.agent.voice.doubao.DoubaoDiagnostics.clear()
-                                }
-                                Toast.makeText(
-                                    context.applicationContext,
-                                    context.getString(R.string.settings_clear_logs_done),
-                                    Toast.LENGTH_SHORT,
-                                ).show()
-                                showClearLogsDialog = false
-                            } catch (throwable: Throwable) {
-                                if (throwable is CancellationException) throw throwable
-                                Toast.makeText(
-                                    context.applicationContext,
-                                    throwable.message?.takeIf { it.isNotBlank() }
-                                        ?: context.getString(R.string.settings_export_logs_failed),
-                                    Toast.LENGTH_SHORT,
-                                ).show()
-                            } finally {
-                                clearingLogs = false
+                confirmText = if (clearingLogs) {
+                    stringResource(R.string.settings_export_logs_working)
+                } else {
+                    stringResource(R.string.settings_clear_logs)
+                },
+                destructive = true,
+                cancelEnabled = !clearingLogs,
+                confirmEnabled = !clearingLogs,
+                onCancel = { showClearLogsDialog = false },
+                onConfirm = {
+                    if (clearingLogs) return@MiuixDialogActions
+                    clearingLogs = true
+                    coroutineScope.launch {
+                        try {
+                            withContext(Dispatchers.IO) {
+                                AppFileLogger.clear()
+                                io.github.mangi.eta.agent.voice.doubao.DoubaoDiagnostics.clear()
                             }
+                            Toast.makeText(
+                                context.applicationContext,
+                                context.getString(R.string.settings_clear_logs_done),
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                            showClearLogsDialog = false
+                        } catch (throwable: Throwable) {
+                            if (throwable is CancellationException) throw throwable
+                            Toast.makeText(
+                                context.applicationContext,
+                                throwable.message?.takeIf { it.isNotBlank() }
+                                    ?: context.getString(R.string.settings_export_logs_failed),
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                        } finally {
+                            clearingLogs = false
                         }
-                    },
-                )
-            }
+                    }
+                },
+            )
         }
 
 }

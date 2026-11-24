@@ -72,7 +72,6 @@ import io.github.mangi.eta.ui.SettingsExtensionsScreen
 import io.github.mangi.eta.ui.SettingsToolsScreen
 import io.github.mangi.eta.ui.SettingsGeneralScreen
 import io.github.mangi.eta.ui.components.AppUpdateDialog
-import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.AgentPendingChildStopDialog
 import io.github.mangi.eta.ui.model.AgentChatAction
 import io.github.mangi.eta.ui.model.AgentHomeAction
@@ -128,6 +127,7 @@ import top.yukonga.miuix.kmp.nav.core.rememberNavBackStack
 import top.yukonga.miuix.kmp.nav.core.rememberNavSystemCornerRadius
 import top.yukonga.miuix.kmp.nav.transition.NavSwipeDirection
 import io.github.mangi.eta.ui.components.WindowDialog
+import io.github.mangi.eta.ui.components.AdaptiveConfirmDialog
 
 /**
  * Agent App 根组件：持有本地导航栈，并把 Screen actions 交给 [AgentAppState]。
@@ -1255,12 +1255,18 @@ internal fun AgentAppRoot(
 
     conversationRenameTarget?.let { conversation ->
         var renameInput by remember(conversation.id) { mutableStateOf(conversation.title) }
-        WindowDialog(
+        AdaptiveConfirmDialog(
             show = true,
             title = stringResource(R.string.conversation_rename_title),
             onDismissRequest = { conversationRenameTarget = null },
+            confirmText = stringResource(R.string.action_save),
+            confirmEnabled = renameInput.isNotBlank(),
+            onCancel = { conversationRenameTarget = null },
+            onConfirm = {
+                        agentState.renameConversation(conversation.id, renameInput)
+                        conversationRenameTarget = null
+                    },
         ) {
-            Column {
                 TextField(
                     value = renameInput,
                     onValueChange = { renameInput = it },
@@ -1268,17 +1274,6 @@ internal fun AgentAppRoot(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
-                MiuixDialogActions(
-                    confirmText = stringResource(R.string.action_save),
-                    confirmEnabled = renameInput.isNotBlank(),
-                    onCancel = { conversationRenameTarget = null },
-                    onConfirm = {
-                        agentState.renameConversation(conversation.id, renameInput)
-                        conversationRenameTarget = null
-                    },
-                    modifier = Modifier.padding(top = 16.dp),
-                )
-            }
         }
     }
 
@@ -1294,7 +1289,7 @@ internal fun AgentAppRoot(
     }
 
     if (conversationExportConfirmation) {
-        WindowDialog(
+        AdaptiveConfirmDialog(
             show = true,
             title = stringResource(R.string.conversation_export_title),
             summary = stringResource(R.string.conversation_export_summary),
@@ -1302,25 +1297,22 @@ internal fun AgentAppRoot(
                 conversationExportConfirmation = false
                 conversationExportId = null
             },
-        ) {
-            MiuixDialogActions(
-                confirmText = stringResource(R.string.conversation_export_choose_location),
-                onCancel = {
-                    conversationExportConfirmation = false
-                    conversationExportId = null
-                },
-                onConfirm = {
-                    conversationExportConfirmation = false
-                    val stamp = SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())
-                    val title = conversationExportTitle.replace(Regex("""[\\/:*?"<>|]"""), "_").take(40)
-                    conversationExportLauncher.launch("YUNKe-$title-$stamp.zip")
-                },
-            )
-        }
+            confirmText = stringResource(R.string.conversation_export_choose_location),
+            onCancel = {
+                conversationExportConfirmation = false
+                conversationExportId = null
+            },
+            onConfirm = {
+                conversationExportConfirmation = false
+                val stamp = SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())
+                val title = conversationExportTitle.replace(Regex("""[\\/:*?"<>|]"""), "_").take(40)
+                conversationExportLauncher.launch("YUNKe-$title-$stamp.zip")
+            },
+        )
     }
 
     if (conversationExportMarkdownConfirmation) {
-        WindowDialog(
+        AdaptiveConfirmDialog(
             show = true,
             title = stringResource(R.string.conversation_export_markdown_title),
             summary = stringResource(R.string.conversation_export_markdown_summary),
@@ -1328,43 +1320,37 @@ internal fun AgentAppRoot(
                 conversationExportMarkdownConfirmation = false
                 conversationExportMarkdownId = null
             },
-        ) {
-            MiuixDialogActions(
-                confirmText = stringResource(R.string.conversation_export_markdown_choose_location),
-                onCancel = {
-                    conversationExportMarkdownConfirmation = false
-                    conversationExportMarkdownId = null
-                },
-                onConfirm = {
-                    conversationExportMarkdownConfirmation = false
-                    conversationExportMarkdownLauncher.launch(
-                        ConversationMarkdownExporter.defaultFileName(
-                            title = conversationExportMarkdownTitle,
-                            fallback = context.getString(R.string.conversation_export_default_name),
-                        )
+            confirmText = stringResource(R.string.conversation_export_markdown_choose_location),
+            onCancel = {
+                conversationExportMarkdownConfirmation = false
+                conversationExportMarkdownId = null
+            },
+            onConfirm = {
+                conversationExportMarkdownConfirmation = false
+                conversationExportMarkdownLauncher.launch(
+                    ConversationMarkdownExporter.defaultFileName(
+                        title = conversationExportMarkdownTitle,
+                        fallback = context.getString(R.string.conversation_export_default_name),
                     )
-                },
-            )
-        }
+                )
+            },
+        )
     }
 
     conversationDeleteTarget?.let { conversation ->
-        WindowDialog(
+        AdaptiveConfirmDialog(
             show = true,
             title = stringResource(R.string.conversation_delete_title),
             summary = stringResource(R.string.conversation_delete_message),
             onDismissRequest = { conversationDeleteTarget = null },
-        ) {
-            MiuixDialogActions(
-                confirmText = stringResource(R.string.action_delete),
-                destructive = true,
-                onCancel = { conversationDeleteTarget = null },
-                onConfirm = {
-                    agentState.deleteConversation(conversation.id)
-                    conversationDeleteTarget = null
-                },
-            )
-        }
+            confirmText = stringResource(R.string.action_delete),
+            destructive = true,
+            onCancel = { conversationDeleteTarget = null },
+            onConfirm = {
+                agentState.deleteConversation(conversation.id)
+                conversationDeleteTarget = null
+            },
+        )
     }
 
     conversationMoveTarget?.let { conversation ->
@@ -1398,7 +1384,7 @@ internal fun AgentAppRoot(
     }
 
     messageDeleteTarget?.let { target ->
-        WindowDialog(
+        AdaptiveConfirmDialog(
             show = true,
             title = stringResource(R.string.conversation_delete_message_title),
             summary = if (target.laterTurnCount == 0) {
@@ -1411,17 +1397,14 @@ internal fun AgentAppRoot(
                 )
             },
             onDismissRequest = { messageDeleteTarget = null },
-        ) {
-            MiuixDialogActions(
-                confirmText = stringResource(R.string.action_delete),
-                destructive = true,
-                onCancel = { messageDeleteTarget = null },
-                onConfirm = {
-                    agentState.deleteMessageTurn(target.messageId)
-                    messageDeleteTarget = null
-                },
-            )
-        }
+            confirmText = stringResource(R.string.action_delete),
+            destructive = true,
+            onCancel = { messageDeleteTarget = null },
+            onConfirm = {
+                agentState.deleteMessageTurn(target.messageId)
+                messageDeleteTarget = null
+            },
+        )
     }
 
     AppUpdateDialog(
@@ -1431,7 +1414,7 @@ internal fun AgentAppRoot(
     )
 
     messageRegenerateTarget?.let { target ->
-        WindowDialog(
+        AdaptiveConfirmDialog(
             show = true,
             title = stringResource(R.string.conversation_regenerate_title),
             summary = if (target.laterTurnCount == 0) {
@@ -1444,17 +1427,14 @@ internal fun AgentAppRoot(
                 )
             },
             onDismissRequest = { messageRegenerateTarget = null },
-        ) {
-            MiuixDialogActions(
-                confirmText = stringResource(R.string.action_regenerate),
-                destructive = true,
-                onCancel = { messageRegenerateTarget = null },
-                onConfirm = {
-                    agentState.regenerateMessage(target.messageId)
-                    messageRegenerateTarget = null
-                },
-            )
-        }
+            confirmText = stringResource(R.string.action_regenerate),
+            destructive = true,
+            onCancel = { messageRegenerateTarget = null },
+            onConfirm = {
+                agentState.regenerateMessage(target.messageId)
+                messageRegenerateTarget = null
+            },
+        )
     }
     } // task controls overlay
     } // selected conversation settings context

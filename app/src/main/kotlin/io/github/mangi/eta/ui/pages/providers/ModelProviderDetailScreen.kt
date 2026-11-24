@@ -61,7 +61,6 @@ import io.github.mangi.eta.data.model.withId
 import io.github.mangi.eta.data.repository.ProviderRepository
 import io.github.mangi.eta.data.repository.RemoteModelFetcher
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
-import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixPageBottomSpacer
 import io.github.mangi.eta.ui.components.MiuixScaffold
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
@@ -85,12 +84,12 @@ import io.github.mangi.eta.ui.components.TabRow
 import top.yukonga.miuix.kmp.basic.Text
 import io.github.mangi.eta.ui.components.TextButton
 import io.github.mangi.eta.ui.components.TextField
-import top.yukonga.miuix.kmp.overlay.OverlayDialog
 import io.github.mangi.eta.ui.components.SwitchPreference
 import io.github.mangi.eta.ui.components.WindowSpinnerPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import top.yukonga.miuix.kmp.utils.scrollEndHaptic
+import io.github.mangi.eta.ui.components.AdaptiveConfirmDialog
 
 @Composable
 internal fun ModelProviderDetailScreen(
@@ -688,19 +687,17 @@ private fun ProviderConfigTab(
     }
 
     if (showDeleteDialog) {
-        OverlayDialog(
+        AdaptiveConfirmDialog(
             show = true,
             title = stringResource(R.string.ui_remove_provider_9f848f),
             summary = stringResource(R.string.provider_delete_summary, provider.name),
             onDismissRequest = { if (!isWorking) showDeleteDialog = false },
-        ) {
-            MiuixDialogActions(
-                confirmText = if (isWorking) context.getString(R.string.page_deleting_6f941d) else context.getString(R.string.page_delete_3755f5),
-                cancelEnabled = !isWorking,
-                confirmEnabled = !isWorking,
-                destructive = true,
-                onCancel = { showDeleteDialog = false },
-                onConfirm = {
+            confirmText = if (isWorking) context.getString(R.string.page_deleting_6f941d) else context.getString(R.string.page_delete_3755f5),
+            cancelEnabled = !isWorking,
+            confirmEnabled = !isWorking,
+            destructive = true,
+            onCancel = { showDeleteDialog = false },
+            onConfirm = {
                     scope.launch {
                         isWorking = true
                         try {
@@ -721,23 +718,20 @@ private fun ProviderConfigTab(
                         }
                     }
                 },
-            )
-        }
+        )
     }
 
     if (showResetDialog) {
-        OverlayDialog(
+        AdaptiveConfirmDialog(
             show = true,
             title = stringResource(R.string.ui_reset_built_in_configuration_35b6ec),
             summary = stringResource(R.string.provider_reset_summary, provider.name),
             onDismissRequest = { if (!isWorking) showResetDialog = false },
-        ) {
-            MiuixDialogActions(
-                confirmText = if (isWorking) context.getString(R.string.page_resetting_616090) else context.getString(R.string.page_reset_3d8134),
-                cancelEnabled = !isWorking,
-                confirmEnabled = !isWorking,
-                onCancel = { showResetDialog = false },
-                onConfirm = {
+            confirmText = if (isWorking) context.getString(R.string.page_resetting_616090) else context.getString(R.string.page_reset_3d8134),
+            cancelEnabled = !isWorking,
+            confirmEnabled = !isWorking,
+            onCancel = { showResetDialog = false },
+            onConfirm = {
                     scope.launch {
                         isWorking = true
                         try {
@@ -761,8 +755,7 @@ private fun ProviderConfigTab(
                         }
                     }
                 },
-            )
-        }
+        )
     }
 }
 

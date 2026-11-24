@@ -17,7 +17,6 @@ import io.github.mangi.eta.data.model.ScheduledTaskRun
 import io.github.mangi.eta.data.model.ScheduledTaskRunStatus
 import io.github.mangi.eta.data.repository.ProviderRepository
 import io.github.mangi.eta.data.repository.ScheduledTaskRepository
-import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import io.github.mangi.eta.ui.navigation.AppRoute
 import kotlinx.coroutines.CancellationException
@@ -27,9 +26,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import io.github.mangi.eta.ui.components.SmallTitle
 import io.github.mangi.eta.ui.components.TextButton
-import top.yukonga.miuix.kmp.overlay.OverlayDialog
 import io.github.mangi.eta.ui.components.ArrowPreference
 import io.github.mangi.eta.ui.components.SwitchPreference
+import io.github.mangi.eta.ui.components.AdaptiveConfirmDialog
 
 private enum class PendingConfirmation { DELETE, CLEAR_MEMO }
 
@@ -149,11 +148,15 @@ internal fun ScheduledTaskDetailScreen(
 
     confirm?.let { pending ->
         val delete = pending == PendingConfirmation.DELETE
-        OverlayDialog(show = true, title = if (delete) "删除任务？" else "清空任务记忆？",
+        AdaptiveConfirmDialog(
+            show = true,
+            title = if (delete) "删除任务？" else "清空任务记忆？",
             summary = if (delete) "删除排期和运行记录。已归档的对话仍会保留。" else "下次运行将从空记忆开始。",
-            onDismissRequest = { confirm = null }) {
-            MiuixDialogActions(confirmText = if (delete) "删除" else "清空", destructive = true,
-                onCancel = { confirm = null }, onConfirm = {
+            onDismissRequest = { confirm = null },
+            confirmText = if (delete) "删除" else "清空",
+            destructive = true,
+            onCancel = { confirm = null },
+            onConfirm = {
                     confirm = null
                     act {
                         if (delete) {
@@ -162,8 +165,8 @@ internal fun ScheduledTaskDetailScreen(
                             onBack()
                         } else withContext(Dispatchers.IO) { ScheduledTaskRepository.updateMemo(taskId, "", context = context) }
                     }
-                })
-        }
+                },
+        )
     }
 }
 

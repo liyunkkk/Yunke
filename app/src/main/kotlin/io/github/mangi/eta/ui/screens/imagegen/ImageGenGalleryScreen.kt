@@ -45,7 +45,6 @@ import io.github.mangi.eta.agent.imagegen.GeneratedImageRecord
 import io.github.mangi.eta.agent.imagegen.GeneratedImageStore
 import io.github.mangi.eta.ui.components.ListEmptyState
 import io.github.mangi.eta.ui.components.LocalChatImagePreviewer
-import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import io.github.mangi.eta.ui.components.StatusError
 import io.github.mangi.eta.ui.components.rememberChatImageBitmap
@@ -59,7 +58,7 @@ import top.yukonga.miuix.kmp.basic.Icon
 import io.github.mangi.eta.ui.components.IconButton
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import io.github.mangi.eta.ui.components.WindowDialog
+import io.github.mangi.eta.ui.components.AdaptiveConfirmDialog
 
 @Composable
 internal fun ImageGenGalleryScreen(
@@ -117,37 +116,31 @@ internal fun ImageGenGalleryScreen(
     }
 
     if (confirmClearAll) {
-        WindowDialog(
+        AdaptiveConfirmDialog(
             show = true,
             title = "清空已生成图片",
             summary = "将删除本地缓存的 ${records.size} 张图片（约 ${formatImageStorageSize(totalBytes)}），已保存到系统相册的图片不受影响。",
             onDismissRequest = { confirmClearAll = false },
-        ) {
-            MiuixDialogActions(
-                cancelText = "取消",
-                confirmText = "清空",
-                destructive = true,
-                onCancel = { confirmClearAll = false },
-                onConfirm = clearAll,
-            )
-        }
+            cancelText = "取消",
+            confirmText = "清空",
+            destructive = true,
+            onCancel = { confirmClearAll = false },
+            onConfirm = clearAll,
+        )
     }
 
     pendingDelete?.let { target ->
-        WindowDialog(
+        AdaptiveConfirmDialog(
             show = true,
             title = "删除这张图片",
             summary = "删除后将无法在聊天历史中再次加载这张本地原图。",
             onDismissRequest = { pendingDelete = null },
-        ) {
-            MiuixDialogActions(
-                cancelText = "取消",
-                confirmText = "删除",
-                destructive = true,
-                onCancel = { pendingDelete = null },
-                onConfirm = { deleteSingle(target) },
-            )
-        }
+            cancelText = "取消",
+            confirmText = "删除",
+            destructive = true,
+            onCancel = { pendingDelete = null },
+            onConfirm = { deleteSingle(target) },
+        )
     }
 
     // 惰性按行（每行 2 张）渲染，避免一次合成全量缩略图导致高刷掉帧。

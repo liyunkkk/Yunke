@@ -76,7 +76,6 @@ import top.yukonga.miuix.kmp.basic.DropdownItem
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.data.datastore.SettingsDataStore
 import io.github.mangi.eta.data.repository.ProviderRepository
-import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import io.github.mangi.eta.ui.model.AgentModelOptionUi
 import io.github.mangi.eta.ui.model.AgentModelPickerProjector
@@ -92,6 +91,7 @@ import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Text as MiuixText
 import io.github.mangi.eta.ui.components.TextButton
 import io.github.mangi.eta.ui.components.WindowDialog
+import io.github.mangi.eta.ui.components.AdaptiveConfirmDialog
 
 
 private val CompressDialogChrome = 200.dp
@@ -323,11 +323,28 @@ internal fun CompressConversationDialog(
         isLoadingModels = false
     }
 
-    WindowDialog(
+    AdaptiveConfirmDialog(
         show = show,
         title = stringResource(R.string.action_compress_conversation),
         modifier = Modifier.offset(y = dialogImeOffset),
         onDismissRequest = onDismiss,
+        confirmText = stringResource(R.string.compress_conversation_confirm),
+        cancelText = stringResource(R.string.action_cancel),
+        confirmEnabled = !isCompressing && !isLoadingModels,
+        cancelEnabled = !isCompressing,
+        onCancel = onDismiss,
+        onConfirm = {
+                    if (isCompressing) return@AdaptiveConfirmDialog
+                    focusManager.clearFocus()
+                    keyboard?.hide()
+                    Prefs.putString(Prefs.Keys.AGENT_MANUAL_COMPRESS_ENDPOINT_MODE, endpointMode)
+                    onConfirm(
+                        selectedModel?.providerId.takeIf { customModelEnabled },
+                        selectedModel?.id.takeIf { customModelEnabled },
+                    ) { ok ->
+                        if (ok) onDismiss()
+                    }
+                },
     ) {
         val scrollState = rememberScrollState()
         val dialogFocus = remember { FocusRequester() }
@@ -449,28 +466,6 @@ internal fun CompressConversationDialog(
                 }
             }
 
-            MiuixDialogActions(
-                confirmText = stringResource(R.string.compress_conversation_confirm),
-                cancelText = stringResource(R.string.action_cancel),
-                confirmEnabled = !isCompressing && !isLoadingModels,
-                cancelEnabled = !isCompressing,
-                modifier = Modifier
-                    .padding(top = 16.dp)
-                    .alpha(if (isCompressing) 0.42f else 1f),
-                onCancel = onDismiss,
-                onConfirm = {
-                    if (isCompressing) return@MiuixDialogActions
-                    focusManager.clearFocus()
-                    keyboard?.hide()
-                    Prefs.putString(Prefs.Keys.AGENT_MANUAL_COMPRESS_ENDPOINT_MODE, endpointMode)
-                    onConfirm(
-                        selectedModel?.providerId.takeIf { customModelEnabled },
-                        selectedModel?.id.takeIf { customModelEnabled },
-                    ) { ok ->
-                        if (ok) onDismiss()
-                    }
-                },
-            )
         }
     }
 

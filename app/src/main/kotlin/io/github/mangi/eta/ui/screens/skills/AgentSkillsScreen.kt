@@ -19,7 +19,6 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.ui.components.ListEmptyState
-import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import io.github.mangi.eta.ui.components.PreferenceIcon
 import io.github.mangi.eta.ui.model.AgentSkillsAction
@@ -33,6 +32,7 @@ import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
 import io.github.mangi.eta.ui.components.SmallTitle
 import io.github.mangi.eta.ui.components.TextButton
 import io.github.mangi.eta.ui.components.WindowDialog
+import io.github.mangi.eta.ui.components.AdaptiveConfirmDialog
 
 private val CardHorizontalPadding = 12.dp
 private val CardBottomPadding = 12.dp
@@ -185,39 +185,33 @@ fun AgentSkillsScreen(
     }
 
     state.replacement?.let { replacement ->
-        WindowDialog(
+        AdaptiveConfirmDialog(
             show = true,
             title = stringResource(R.string.ui_replace_user_skills_250e98),
             summary = stringResource(R.string.skills_replace_summary, replacement.name, replacement.id),
             onDismissRequest = { onAction(AgentSkillsAction.CancelZipReplacement) },
-        ) {
-            MiuixDialogActions(
-                confirmText = stringResource(R.string.skills_replace),
-                confirmEnabled = !operationPending,
-                onCancel = { onAction(AgentSkillsAction.CancelZipReplacement) },
-                onConfirm = { onAction(AgentSkillsAction.ConfirmZipReplacement) },
-            )
-        }
+            confirmText = stringResource(R.string.skills_replace),
+            confirmEnabled = !operationPending,
+            onCancel = { onAction(AgentSkillsAction.CancelZipReplacement) },
+            onConfirm = { onAction(AgentSkillsAction.ConfirmZipReplacement) },
+        )
     }
 
     deleteTarget?.let { skill ->
-        WindowDialog(
+        AdaptiveConfirmDialog(
             show = true,
             title = stringResource(R.string.ui_delete_user_skills_f319a9),
             summary = stringResource(R.string.skills_delete_summary, skill.name),
             onDismissRequest = { deleteTarget = null },
-        ) {
-            MiuixDialogActions(
-                confirmText = stringResource(R.string.ui_delete_3755f5),
-                destructive = true,
-                confirmEnabled = !operationPending,
-                onCancel = { deleteTarget = null },
-                onConfirm = {
-                    deleteTarget = null
-                    onAction(AgentSkillsAction.DeleteSkill(skill.id))
-                },
-            )
-        }
+            confirmText = stringResource(R.string.ui_delete_3755f5),
+            destructive = true,
+            confirmEnabled = !operationPending,
+            onCancel = { deleteTarget = null },
+            onConfirm = {
+                deleteTarget = null
+                onAction(AgentSkillsAction.DeleteSkill(skill.id))
+            },
+        )
     }
 
     state.notice?.let { notice ->

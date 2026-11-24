@@ -411,13 +411,20 @@ internal fun AgentAttachmentPickerButton(
             onDismissRequest = { showPathDialog = false },
         )
     } else {
-        WindowDialog(
+        AdaptiveConfirmDialog(
             show = showPathDialog,
             title = stringResource(R.string.ui_input_file_path_36d474),
             summary = stringResource(R.string.ui_supports_files_and_folders_under_internal_storage_or_520786),
             onDismissRequest = { showPathDialog = false },
+            confirmText = stringResource(R.string.attachment_add),
+            confirmEnabled = pathInput.trim().startsWith('/'),
+            onCancel = { showPathDialog = false },
+            onConfirm = {
+                        val path = pathInput.trim()
+                        showPathDialog = false
+                        onAttachFilePath(path)
+                    },
         ) {
-            Column {
                 TextField(
                     value = pathInput,
                     onValueChange = { pathInput = it },
@@ -427,18 +434,6 @@ internal fun AgentAttachmentPickerButton(
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                     modifier = Modifier.fillMaxWidth(),
                 )
-                MiuixDialogActions(
-                    confirmText = stringResource(R.string.attachment_add),
-                    confirmEnabled = pathInput.trim().startsWith('/'),
-                    onCancel = { showPathDialog = false },
-                    onConfirm = {
-                        val path = pathInput.trim()
-                        showPathDialog = false
-                        onAttachFilePath(path)
-                    },
-                    modifier = Modifier.padding(top = 16.dp),
-                )
-            }
         }
     }
 }
@@ -524,13 +519,20 @@ internal fun OverlayAttachmentPickerButton(
             }
         }
     }
-    WindowDialog(
+    AdaptiveConfirmDialog(
         show = showPathDialog,
         title = stringResource(R.string.ui_input_file_path_36d474),
         summary = stringResource(R.string.ui_supports_files_and_folders_under_internal_storage_or_520786),
         onDismissRequest = { showPathDialog = false },
+        confirmText = stringResource(R.string.attachment_add),
+        confirmEnabled = pathInput.trim().startsWith('/'),
+        onCancel = { showPathDialog = false },
+        onConfirm = {
+                    val path = pathInput.trim()
+                    showPathDialog = false
+                    onAttachFilePath(path)
+                },
     ) {
-        Column {
             TextField(
                 value = pathInput,
                 onValueChange = { pathInput = it },
@@ -540,18 +542,6 @@ internal fun OverlayAttachmentPickerButton(
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                 modifier = Modifier.fillMaxWidth(),
             )
-            MiuixDialogActions(
-                confirmText = stringResource(R.string.attachment_add),
-                confirmEnabled = pathInput.trim().startsWith('/'),
-                onCancel = { showPathDialog = false },
-                onConfirm = {
-                    val path = pathInput.trim()
-                    showPathDialog = false
-                    onAttachFilePath(path)
-                },
-                modifier = Modifier.padding(top = 16.dp),
-            )
-        }
     }
 }
 

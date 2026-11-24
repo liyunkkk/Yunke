@@ -37,7 +37,6 @@ import io.github.mangi.eta.agent.terminal.LinuxFileExplorer
 import io.github.mangi.eta.agent.terminal.SharedFolderMounts
 import io.github.mangi.eta.agent.terminal.terminalEnvironment
 import io.github.mangi.eta.agent.terminal.ShellProcessSupervisor
-import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import java.io.File
 import kotlinx.coroutines.CancellationException
@@ -48,7 +47,7 @@ import io.github.mangi.eta.ui.components.BasicComponent
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import io.github.mangi.eta.ui.components.WindowDialog
+import io.github.mangi.eta.ui.components.AdaptiveConfirmDialog
 
 /**
  * Linux 环境文件浏览：目录列举、预览、导出和删除都在 Linux 会话中完成，
@@ -374,7 +373,7 @@ internal fun LinuxFilesScreen(
     }
 
     pendingDelete?.let { target ->
-        WindowDialog(
+        AdaptiveConfirmDialog(
             show = true,
             title = stringResource(R.string.linux_files_delete_title),
             summary = stringResource(
@@ -383,15 +382,12 @@ internal fun LinuxFilesScreen(
                 target.name,
             ),
             onDismissRequest = { if (!busy) pendingDelete = null },
-        ) {
-            MiuixDialogActions(
-                confirmText = stringResource(R.string.action_delete),
-                destructive = true,
-                confirmEnabled = !busy,
-                onCancel = { if (!busy) pendingDelete = null },
-                onConfirm = { if (!busy) deleteItem(target) },
-            )
-        }
+            confirmText = stringResource(R.string.action_delete),
+            destructive = true,
+            confirmEnabled = !busy,
+            onCancel = { if (!busy) pendingDelete = null },
+            onConfirm = { if (!busy) deleteItem(target) },
+        )
     }
 }
 

@@ -46,7 +46,6 @@ import com.itos.coui.layout.Divider
 import com.itos.coui.layout.Group
 import io.github.mangi.eta.ui.components.coui.CouiScaffoldPage
 import io.github.mangi.eta.ui.components.coui.CouiSwitchPreference
-import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import kotlinx.coroutines.launch
 import io.github.mangi.eta.ui.components.BasicComponent
@@ -65,8 +64,8 @@ import io.github.mangi.eta.ui.components.ArrowPreference
 import io.github.mangi.eta.ui.components.OverlayDropdownPreference
 import io.github.mangi.eta.ui.components.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import io.github.mangi.eta.ui.components.WindowDialog
 import kotlin.math.roundToInt
+import io.github.mangi.eta.ui.components.AdaptiveConfirmDialog
 
 @Composable
 internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
@@ -426,13 +425,19 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
     }
 
     val parsedScale = scaleInput.toIntOrNull()
-    WindowDialog(
+    AdaptiveConfirmDialog(
         show = showScaleDialog,
         title = stringResource(R.string.appearance_interface_scale_dialog_title),
         summary = stringResource(R.string.appearance_interface_scale_dialog_summary),
         onDismissRequest = { showScaleDialog = false },
+        confirmText = stringResource(R.string.action_confirm),
+        confirmEnabled = parsedScale != null && parsedScale in 80..110,
+        onCancel = { showScaleDialog = false },
+        onConfirm = {
+                    parsedScale?.let { commitScale(it.toFloat()) }
+                    showScaleDialog = false
+                },
     ) {
-        Column {
             TextField(
                 value = scaleInput,
                 onValueChange = { value -> scaleInput = value.filter(Char::isDigit).take(3) },
@@ -441,17 +446,6 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
-            MiuixDialogActions(
-                confirmText = stringResource(R.string.action_confirm),
-                confirmEnabled = parsedScale != null && parsedScale in 80..110,
-                onCancel = { showScaleDialog = false },
-                onConfirm = {
-                    parsedScale?.let { commitScale(it.toFloat()) }
-                    showScaleDialog = false
-                },
-                modifier = Modifier.padding(top = 16.dp),
-            )
-        }
     }
 }
 

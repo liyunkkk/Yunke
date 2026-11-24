@@ -51,7 +51,6 @@ import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import io.github.mangi.eta.ui.app.SearchHistoryDialog
-import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import io.github.mangi.eta.ui.components.streamDiagnosticDraw
 import io.github.mangi.eta.ui.components.streamDiagnosticMeasure
@@ -65,7 +64,7 @@ import top.yukonga.miuix.kmp.basic.Icon
 import io.github.mangi.eta.ui.components.IconButton
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import io.github.mangi.eta.ui.components.WindowDialog
+import io.github.mangi.eta.ui.components.AdaptiveConfirmDialog
 
 
 /** 管理页列表顺序。已有会话保持原位；新会话按当前列表里的相对顺序插到最前。置顶变化才整表重排。 */
@@ -181,22 +180,19 @@ internal fun ManageChatsScreen(
     )
 
     if (showDeleteAll) {
-        WindowDialog(
+        AdaptiveConfirmDialog(
             show = true,
             title = stringResource(R.string.history_page_delete_all_title),
             summary = stringResource(R.string.history_page_delete_all_message),
             onDismissRequest = { showDeleteAll = false },
-        ) {
-            MiuixDialogActions(
-                confirmText = stringResource(R.string.action_delete),
-                destructive = true,
-                onCancel = { showDeleteAll = false },
-                onConfirm = {
-                    onDeleteAll()
-                    showDeleteAll = false
-                },
-            )
-        }
+            confirmText = stringResource(R.string.action_delete),
+            destructive = true,
+            onCancel = { showDeleteAll = false },
+            onConfirm = {
+                onDeleteAll()
+                showDeleteAll = false
+            },
+        )
     }
 }
 

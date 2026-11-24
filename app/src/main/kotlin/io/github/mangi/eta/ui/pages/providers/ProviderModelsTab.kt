@@ -90,7 +90,6 @@ import io.github.mangi.eta.agent.model.oauth.OpenAiCodexOAuth
 import io.github.mangi.eta.data.repository.RemoteModelFetcher
 import io.github.mangi.eta.data.model.SpeechSynthesisModels
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
-import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import io.github.mangi.eta.ui.components.PreferenceIcon
 import io.github.mangi.eta.ui.components.StatusError
@@ -112,7 +111,6 @@ import io.github.mangi.eta.ui.components.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import io.github.mangi.eta.ui.components.TextButton
 import io.github.mangi.eta.ui.components.TextField
-import top.yukonga.miuix.kmp.overlay.OverlayDialog
 import io.github.mangi.eta.ui.components.ArrowPreference
 import io.github.mangi.eta.ui.components.SwitchPreference
 import top.yukonga.miuix.kmp.squircle.squircleSurface
@@ -120,6 +118,7 @@ import top.yukonga.miuix.kmp.theme.LocalContentColor
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import top.yukonga.miuix.kmp.utils.scrollEndHaptic
+import io.github.mangi.eta.ui.components.AdaptiveConfirmDialog
 
 private val modelSearchSeparators = Regex("""[^\p{L}\p{N}]+""")
 private val allReasoningEffortTiers = listOf(
@@ -601,19 +600,17 @@ internal fun ProviderModelsTab(
     }
 
     modelPendingDelete?.let { model ->
-        OverlayDialog(
+        AdaptiveConfirmDialog(
             show = true,
             title = stringResource(R.string.ui_delete_model_cf24da),
             summary = stringResource(R.string.provider_model_delete_summary, model.displayName),
             onDismissRequest = { if (!isMutatingModel) modelPendingDelete = null },
-        ) {
-            MiuixDialogActions(
-                confirmText = if (isMutatingModel) context.getString(R.string.page_deleting_6f941d) else context.getString(R.string.page_delete_3755f5),
-                cancelEnabled = !isMutatingModel,
-                confirmEnabled = !isMutatingModel,
-                destructive = true,
-                onCancel = { modelPendingDelete = null },
-                onConfirm = {
+            confirmText = if (isMutatingModel) context.getString(R.string.page_deleting_6f941d) else context.getString(R.string.page_delete_3755f5),
+            cancelEnabled = !isMutatingModel,
+            confirmEnabled = !isMutatingModel,
+            destructive = true,
+            onCancel = { modelPendingDelete = null },
+            onConfirm = {
                     scope.launch {
                         isMutatingModel = true
                         try {
@@ -634,8 +631,7 @@ internal fun ProviderModelsTab(
                         }
                     }
                 },
-            )
-        }
+        )
     }
 
     remoteCandidates?.let { candidates ->
@@ -672,7 +668,7 @@ internal fun ProviderModelsTab(
     }
 
     if (showBatchDeleteDialog) {
-        OverlayDialog(
+        AdaptiveConfirmDialog(
             show = true,
             title = stringResource(R.string.ui_delete_model_cf24da),
             summary = pluralStringResource(
@@ -681,14 +677,12 @@ internal fun ProviderModelsTab(
                 selectedModelIds.size,
             ),
             onDismissRequest = { if (!isMutatingModel) showBatchDeleteDialog = false },
-        ) {
-            MiuixDialogActions(
-                confirmText = if (isMutatingModel) context.getString(R.string.page_deleting_6f941d) else context.getString(R.string.page_delete_3755f5),
-                cancelEnabled = !isMutatingModel,
-                confirmEnabled = !isMutatingModel,
-                destructive = true,
-                onCancel = { showBatchDeleteDialog = false },
-                onConfirm = {
+            confirmText = if (isMutatingModel) context.getString(R.string.page_deleting_6f941d) else context.getString(R.string.page_delete_3755f5),
+            cancelEnabled = !isMutatingModel,
+            confirmEnabled = !isMutatingModel,
+            destructive = true,
+            onCancel = { showBatchDeleteDialog = false },
+            onConfirm = {
                     scope.launch {
                         val deletedCount = selectedModelIds.size
                         isMutatingModel = true
@@ -716,8 +710,7 @@ internal fun ProviderModelsTab(
                         }
                     }
                 },
-            )
-        }
+        )
     }
 }
 
@@ -1028,10 +1021,18 @@ private fun ModelEditDialog(
         },
     )
 
-    OverlayDialog(
+    AdaptiveConfirmDialog(
         show = true,
         title = if (isNew) context.getString(R.string.page_add_model_532a64) else context.getString(R.string.page_edit_model_29e31e),
         onDismissRequest = { if (!isSaving) onDismiss() },
+        confirmText = if (isSaving) context.getString(R.string.page_saving_d70d42) else context.getString(R.string.page_save_fadf24),
+        confirmEnabled = !isSaving &&
+                displayName.isNotBlank() &&
+                modelId.isNotBlank() &&
+                contextError == null && vertexModelError == null,
+        cancelEnabled = !isSaving,
+        onCancel = onDismiss,
+        onConfirm = { onSubmit(updated()) },
     ) {
         Column {
             Column(
@@ -1169,17 +1170,6 @@ private fun ModelEditDialog(
                 }
             }
         }
-        MiuixDialogActions(
-            confirmText = if (isSaving) context.getString(R.string.page_saving_d70d42) else context.getString(R.string.page_save_fadf24),
-            confirmEnabled = !isSaving &&
-                displayName.isNotBlank() &&
-                modelId.isNotBlank() &&
-                contextError == null && vertexModelError == null,
-            cancelEnabled = !isSaving,
-            onCancel = onDismiss,
-            onConfirm = { onSubmit(updated()) },
-            modifier = Modifier.padding(top = 16.dp),
-        )
     }
 }
 

@@ -61,7 +61,6 @@ import io.github.mangi.eta.data.model.ProviderSourceTypes
 import io.github.mangi.eta.data.model.typeLabel
 import io.github.mangi.eta.data.repository.ProviderRepository
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
-import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import io.github.mangi.eta.ui.components.MiuixScaffold
 import io.github.mangi.eta.ui.layout.horizontalCutoutPadding
@@ -78,11 +77,11 @@ import io.github.mangi.eta.ui.components.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import io.github.mangi.eta.ui.components.TextButton
 import top.yukonga.miuix.kmp.overlay.OverlayDialog
-import io.github.mangi.eta.ui.components.WindowDialog
 import io.github.mangi.eta.ui.components.ArrowPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import top.yukonga.miuix.kmp.utils.scrollEndHaptic
+import io.github.mangi.eta.ui.components.AdaptiveConfirmDialog
 
 @Composable
 internal fun ModelProviderListScreen(
@@ -440,7 +439,7 @@ internal fun ModelProviderListScreen(
     }
 
     if (showBatchDeleteDialog) {
-        WindowDialog(
+        AdaptiveConfirmDialog(
             show = true,
             onDismissRequest = { if (!isDeleting) showBatchDeleteDialog = false },
             title = stringResource(R.string.ui_remove_provider_9f848f),
@@ -449,35 +448,32 @@ internal fun ModelProviderListScreen(
                 selectedProviderIds.size,
                 selectedProviderIds.size,
             ),
-        ) {
-            MiuixDialogActions(
-                confirmText = if (isDeleting) {
-                    context.getString(R.string.page_deleting_6f941d)
-                } else {
-                    context.getString(R.string.page_delete_3755f5)
-                },
-                cancelEnabled = !isDeleting,
-                confirmEnabled = !isDeleting && selectedProviderIds.isNotEmpty(),
-                destructive = true,
-                onCancel = { showBatchDeleteDialog = false },
-                onConfirm = {
-                    scope.launch {
-                        isDeleting = true
-                        try {
-                            ProviderRepository.deleteProviders(selectedProviderIds)
-                            RuntimeConfigRepository.syncToRemotePreferences(EtaApp.serviceInstance)
-                            showBatchDeleteDialog = false
-                            selectionMode = false
-                            selectedProviderIds = emptySet()
-                        } catch (cancelled: CancellationException) {
-                            throw cancelled
-                        } finally {
-                            isDeleting = false
-                        }
+            confirmText = if (isDeleting) {
+                context.getString(R.string.page_deleting_6f941d)
+            } else {
+                context.getString(R.string.page_delete_3755f5)
+            },
+            cancelEnabled = !isDeleting,
+            confirmEnabled = !isDeleting && selectedProviderIds.isNotEmpty(),
+            destructive = true,
+            onCancel = { showBatchDeleteDialog = false },
+            onConfirm = {
+                scope.launch {
+                    isDeleting = true
+                    try {
+                        ProviderRepository.deleteProviders(selectedProviderIds)
+                        RuntimeConfigRepository.syncToRemotePreferences(EtaApp.serviceInstance)
+                        showBatchDeleteDialog = false
+                        selectionMode = false
+                        selectedProviderIds = emptySet()
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } finally {
+                        isDeleting = false
                     }
-                },
-            )
-        }
+                }
+            },
+        )
     }
 }
 

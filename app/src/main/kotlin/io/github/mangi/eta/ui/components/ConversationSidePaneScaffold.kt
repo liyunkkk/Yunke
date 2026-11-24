@@ -732,22 +732,19 @@ private fun PaneFolderBar(
         )
     }
     folderToDelete?.let { folder ->
-        WindowDialog(
+        AdaptiveConfirmDialog(
             show = true,
             title = stringResource(R.string.drawer_delete_folder_title),
             summary = stringResource(R.string.drawer_delete_folder_message),
             onDismissRequest = { folderToDelete = null },
-        ) {
-            MiuixDialogActions(
-                confirmText = stringResource(R.string.action_delete),
-                destructive = true,
-                onCancel = { folderToDelete = null },
-                onConfirm = {
-                    onDeleteFolder(folder.id)
-                    folderToDelete = null
-                },
-            )
-        }
+            confirmText = stringResource(R.string.action_delete),
+            destructive = true,
+            onCancel = { folderToDelete = null },
+            onConfirm = {
+                onDeleteFolder(folder.id)
+                folderToDelete = null
+            },
+        )
     }
 }
 
@@ -759,12 +756,15 @@ private fun FolderNameDialog(
     onConfirm: (String) -> Unit,
 ) {
     var name by remember(initialName) { mutableStateOf(initialName) }
-    WindowDialog(
+    AdaptiveConfirmDialog(
         show = true,
         title = title,
         onDismissRequest = onDismiss,
+        confirmText = stringResource(R.string.action_save),
+        confirmEnabled = name.isNotBlank(),
+        onCancel = onDismiss,
+        onConfirm = { onConfirm(name) },
     ) {
-        Column {
             TextField(
                 value = name,
                 onValueChange = { name = it },
@@ -772,14 +772,6 @@ private fun FolderNameDialog(
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
-            MiuixDialogActions(
-                confirmText = stringResource(R.string.action_save),
-                confirmEnabled = name.isNotBlank(),
-                onCancel = onDismiss,
-                onConfirm = { onConfirm(name) },
-                modifier = Modifier.padding(top = 16.dp),
-            )
-        }
     }
 }
 

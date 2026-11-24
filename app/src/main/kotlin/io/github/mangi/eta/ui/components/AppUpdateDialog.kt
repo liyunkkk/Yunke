@@ -42,45 +42,30 @@ internal fun AppUpdateDialog(
         offer.versionName,
         currentVersion.ifBlank { stringResource(R.string.update_unknown_version) },
     )
-    WindowDialog(
+    AdaptiveConfirmDialog(
         show = true,
         title = stringResource(R.string.update_available_title),
         summary = summary,
         onDismissRequest = {
             if (!downloading) onDismiss()
         },
-    ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
-            if (offer.notes.isNotBlank()) {
-                Text(
-                    text = offer.notes,
-                    style = MiuixTheme.textStyles.body2,
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 160.dp)
-                        .padding(bottom = 12.dp)
-                        .verticalScroll(rememberScrollState()),
-                )
-            }
-            MiuixDialogActions(
-                confirmText = if (downloading) {
+        confirmText = if (downloading) {
                     stringResource(R.string.update_downloading)
                 } else {
                     stringResource(R.string.update_now)
                 },
-                cancelText = stringResource(R.string.update_later),
-                cancelEnabled = !downloading,
-                confirmEnabled = !downloading,
-                onCancel = {
+        cancelText = stringResource(R.string.update_later),
+        cancelEnabled = !downloading,
+        confirmEnabled = !downloading,
+        onCancel = {
                     if (!downloading) onDismiss()
                 },
-                onConfirm = {
-                    if (downloading) return@MiuixDialogActions
+        onConfirm = {
+                    if (downloading) return@AdaptiveConfirmDialog
                     if (offer.apkUrl.isNullOrBlank()) {
                         AppUpdateRepository.openReleasePage(context, offer)
                         onDismiss()
-                        return@MiuixDialogActions
+                        return@AdaptiveConfirmDialog
                     }
                     if (!AppUpdateRepository.canInstallPackages(context)) {
                         Toast.makeText(
@@ -89,7 +74,7 @@ internal fun AppUpdateDialog(
                             Toast.LENGTH_LONG,
                         ).show()
                         AppUpdateRepository.requestInstallPermission(context)
-                        return@MiuixDialogActions
+                        return@AdaptiveConfirmDialog
                     }
                     downloading = true
                     scope.launch {
@@ -113,7 +98,20 @@ internal fun AppUpdateDialog(
                         onDismiss()
                     }
                 },
-            )
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            if (offer.notes.isNotBlank()) {
+                Text(
+                    text = offer.notes,
+                    style = MiuixTheme.textStyles.body2,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 160.dp)
+                        .padding(bottom = 12.dp)
+                        .verticalScroll(rememberScrollState()),
+                )
+            }
         }
     }
 }

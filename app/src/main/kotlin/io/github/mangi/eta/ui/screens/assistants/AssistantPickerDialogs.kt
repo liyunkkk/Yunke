@@ -32,7 +32,6 @@ import io.github.mangi.eta.data.repository.AssistantRepository
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
 import io.github.mangi.eta.ui.components.AssistantAvatar
 import io.github.mangi.eta.ui.haptics.TouchHaptics
-import io.github.mangi.eta.ui.components.MiuixDialogActions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -43,6 +42,7 @@ import io.github.mangi.eta.ui.components.TextButton
 import io.github.mangi.eta.ui.components.TextField
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import io.github.mangi.eta.ui.components.WindowDialog
+import io.github.mangi.eta.ui.components.AdaptiveConfirmDialog
 
 @Composable
 internal fun AssistantPickerDialog(
@@ -272,18 +272,15 @@ internal fun AssistantDeleteDialog(
     onDismiss: () -> Unit,
     onConfirm: () -> Unit,
 ) {
-    WindowDialog(
+    AdaptiveConfirmDialog(
         show = true,
         title = stringResource(R.string.assistant_delete_title),
         summary = stringResource(R.string.assistant_delete_body, profile.name),
         onDismissRequest = onDismiss,
-    ) {
-        MiuixDialogActions(
-            confirmText = stringResource(R.string.action_delete),
-            destructive = true,
-            confirmEnabled = canDelete,
-            onCancel = onDismiss,
-            onConfirm = onConfirm,
-        )
-    }
+        confirmText = stringResource(R.string.action_delete),
+        destructive = true,
+        confirmEnabled = canDelete,
+        onCancel = onDismiss,
+        onConfirm = onConfirm,
+    )
 }
