@@ -269,9 +269,9 @@
   <string name="appearance_predictive_back">预测性返回手势</string>
   <string name="appearance_predictive_back_summary">启用预测性返回动画效果</string>
   <string name="appearance_interface_scale">界面缩放</string>
-  <string name="appearance_interface_scale_summary" formatted="false">调整全局显示比例（80%–110%）</string>
+  <string name="appearance_interface_scale_summary" formatted="false">调整全局显示比例（70%–130%）</string>
   <string name="appearance_interface_scale_dialog_title">界面缩放</string>
-  <string name="appearance_interface_scale_dialog_summary">请输入 80 至 110 之间的整数</string>
+  <string name="appearance_interface_scale_dialog_summary">请输入 70 至 130 之间的整数</string>
   <string name="appearance_interface_scale_input_label">百分比</string>
   <string name="appearance_morph_loading">圆形加载指示器</string>
   <string name="appearance_morph_loading_summary">发出消息后显示变形动画</string>

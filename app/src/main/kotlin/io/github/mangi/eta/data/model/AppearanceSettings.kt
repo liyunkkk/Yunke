@@ -2,8 +2,8 @@ package io.github.mangi.eta.data.model
 
 import kotlinx.serialization.Serializable
 
-const val MIN_INTERFACE_SCALE = 0.8f
-const val MAX_INTERFACE_SCALE = 1.1f
+const val MIN_INTERFACE_SCALE = 0.7f
+const val MAX_INTERFACE_SCALE = 1.3f
 const val DEFAULT_INTERFACE_SCALE = 1f
 
 @Serializable

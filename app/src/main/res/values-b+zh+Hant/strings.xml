@@ -263,9 +263,9 @@
   <string name="appearance_predictive_back">預測性返回手勢</string>
   <string name="appearance_predictive_back_summary">啟用預測性返回動畫效果</string>
   <string name="appearance_interface_scale">介面縮放</string>
-  <string name="appearance_interface_scale_summary" formatted="false">調整全域顯示比例（80%–110%）</string>
+  <string name="appearance_interface_scale_summary" formatted="false">調整全域顯示比例（70%–130%）</string>
   <string name="appearance_interface_scale_dialog_title">介面縮放</string>
-  <string name="appearance_interface_scale_dialog_summary">請輸入 80 至 110 之間的整數</string>
+  <string name="appearance_interface_scale_dialog_summary">請輸入 70 至 130 之間的整數</string>
   <string name="appearance_interface_scale_input_label">百分比</string>
   <string name="appearance_morph_loading">圓形載入指示器</string>
   <string name="appearance_morph_loading_summary">送出訊息後顯示變形動畫</string>

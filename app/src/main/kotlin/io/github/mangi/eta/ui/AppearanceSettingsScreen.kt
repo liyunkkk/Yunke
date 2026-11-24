@@ -5,14 +5,36 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.ExpandMore
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.font.FontWeight
+import com.itos.coui.theme.CouiPresets
+import com.itos.coui.theme.CouiTheme
+import io.github.mangi.eta.ui.app.seedColor
+import io.github.mangi.eta.ui.haptics.TouchHaptics
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -151,6 +173,9 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
         stringResource(R.string.appearance_blur_style_progressive_summary),
     )
 
+    val minScalePercent = (MIN_INTERFACE_SCALE * 100f).roundToInt()
+    val maxScalePercent = (MAX_INTERFACE_SCALE * 100f).roundToInt()
+
     if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
         CouiAppearanceSettingsContent(
             appearance = appearance,
@@ -158,18 +183,24 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
             uiStyles = uiStyles,
             uiStyleLabels = uiStyleLabels,
             themeModeLabels = themeModeLabels,
+            accentColors = accentColors,
+            accentLabels = accentLabels,
             foldLabels = foldLabels,
+            scaleDraft = scaleDraft,
+            onScaleDraftChange = { scaleDraft = it },
             onSelectUiStyle = ::selectUiStyle,
             onUpdate = ::update,
             onCommitScale = ::commitScale,
+            onOpenScaleDialog = {
+                scaleInput = scaleDraft.roundToInt().toString()
+                showScaleDialog = true
+            },
         )
-        return
-    }
-
-    MiuixScaffoldPage(
-        title = stringResource(R.string.appearance_title),
-        onBack = onBack,
-    ) {
+    } else {
+        MiuixScaffoldPage(
+            title = stringResource(R.string.appearance_title),
+            onBack = onBack,
+        ) {
         item(key = "appearance_color_title") {
             SmallTitle(text = stringResource(R.string.appearance_group_color))
         }
@@ -409,7 +440,7 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
                             valueRange = (MIN_INTERFACE_SCALE * 100f)..(MAX_INTERFACE_SCALE * 100f),
                             onValueChangeFinished = { commitScale(scaleDraft) },
                             showKeyPoints = true,
-                            keyPoints = listOf(80f, 90f, 100f, 110f),
+                            keyPoints = listOf(70f, 85f, 100f, 115f, 130f),
                             magnetThreshold = 0.01f,
                             hapticEffect = SliderDefaults.SliderHapticEffect.Step,
                         )
@@ -422,6 +453,7 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
                 )
             }
         }
+        }
     }
 
     val parsedScale = scaleInput.toIntOrNull()
@@ -431,25 +463,23 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
         summary = stringResource(R.string.appearance_interface_scale_dialog_summary),
         onDismissRequest = { showScaleDialog = false },
         confirmText = stringResource(R.string.action_confirm),
-        confirmEnabled = parsedScale != null && parsedScale in 80..110,
+        confirmEnabled = parsedScale != null && parsedScale in minScalePercent..maxScalePercent,
         onCancel = { showScaleDialog = false },
         onConfirm = {
-                    parsedScale?.let { commitScale(it.toFloat()) }
-                    showScaleDialog = false
-                },
+            parsedScale?.let { commitScale(it.toFloat()) }
+            showScaleDialog = false
+        },
     ) {
-            TextField(
-                value = scaleInput,
-                onValueChange = { value -> scaleInput = value.filter(Char::isDigit).take(3) },
-                label = stringResource(R.string.appearance_interface_scale_input_label),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
+        TextField(
+            value = scaleInput,
+            onValueChange = { value -> scaleInput = value.filter(Char::isDigit).take(3) },
+            label = stringResource(R.string.appearance_interface_scale_input_label),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
     }
 }
-
-private val InterfaceScalePresets = listOf(80, 90, 100, 110)
 
 @Composable
 private fun CouiAppearanceSettingsContent(
@@ -458,15 +488,20 @@ private fun CouiAppearanceSettingsContent(
     uiStyles: List<AppearanceUiStyle>,
     uiStyleLabels: List<String>,
     themeModeLabels: List<String>,
+    accentColors: List<AppearanceAccentColor>,
+    accentLabels: List<String>,
     foldLabels: List<String>,
+    scaleDraft: Float,
+    onScaleDraftChange: (Float) -> Unit,
     onSelectUiStyle: (AppearanceUiStyle) -> Unit,
     onUpdate: ((AppearanceSettings) -> AppearanceSettings) -> Unit,
     onCommitScale: (Float) -> Unit,
+    onOpenScaleDialog: () -> Unit,
 ) {
     val themeModes = AppearanceThemeMode.entries
     val foldLevels = AnswerFoldLevel.entries
-    val currentScale = (appearance.interfaceScale * 100f).roundToInt()
-    val scaleLabels = InterfaceScalePresets.map { "$it%" }
+    val minPercent = MIN_INTERFACE_SCALE * 100f
+    val maxPercent = MAX_INTERFACE_SCALE * 100f
     CouiScaffoldPage(
         title = stringResource(R.string.appearance_title),
         onBack = onBack,
@@ -485,6 +520,15 @@ private fun CouiAppearanceSettingsContent(
                 selectedIndex = appearance.themeMode.ordinal,
                 onSelectedIndexChange = { index ->
                     themeModes.getOrNull(index)?.let { mode -> onUpdate { it.copy(themeMode = mode) } }
+                },
+            )
+            Divider()
+            CouiAccentColorPreference(
+                selected = appearance.accentColor,
+                accentColors = accentColors,
+                accentLabels = accentLabels,
+                onSelect = { accent ->
+                    onUpdate { it.copy(accentColor = accent) }
                 },
             )
         }
@@ -528,16 +572,225 @@ private fun CouiAppearanceSettingsContent(
                 onCheckedChange = { enabled -> onUpdate { it.copy(predictiveBackEnabled = enabled) } },
             )
             Divider()
-            CouiDropdownPreference(
-                title = stringResource(R.string.appearance_interface_scale),
-                items = scaleLabels,
-                selectedIndex = InterfaceScalePresets.indexOf(currentScale).coerceAtLeast(0),
-                onSelectedIndexChange = { index ->
-                    InterfaceScalePresets.getOrNull(index)?.let { onCommitScale(it.toFloat()) }
-                },
+            CouiInterfaceScalePreference(
+                scaleDraft = scaleDraft.coerceIn(minPercent, maxPercent),
+                minPercent = minPercent,
+                maxPercent = maxPercent,
+                onScaleDraftChange = onScaleDraftChange,
+                onCommitScale = onCommitScale,
+                onOpenScaleDialog = onOpenScaleDialog,
             )
         }
 
         CouiPageBottomSpacer()
+    }
+}
+
+@Composable
+private fun CouiAccentColorPreference(
+    selected: AppearanceAccentColor,
+    accentColors: List<AppearanceAccentColor>,
+    accentLabels: List<String>,
+    onSelect: (AppearanceAccentColor) -> Unit,
+) {
+    val view = LocalView.current
+    val dark = CouiTheme.isDark
+    val selectedLabel = if (selected == AppearanceAccentColor.SYSTEM) {
+        "默认"
+    } else {
+        accentLabels.getOrElse(selected.ordinal) { "" }
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = "主题色",
+                style = MiuixTheme.textStyles.headline1,
+                color = MiuixTheme.colorScheme.onSurface,
+            )
+            Text(
+                text = selectedLabel,
+                style = MiuixTheme.textStyles.body2,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            )
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            accentColors.forEach { accent ->
+                val isSelected = accent == selected
+                val swatchColor = if (accent == AppearanceAccentColor.SYSTEM) {
+                    if (dark) CouiPresets.Dark.accent else CouiPresets.Light.accent
+                } else {
+                    accent.seedColor()
+                }
+                val checkTint = if (swatchColor.luminance() > 0.55f) Color(0xE6000000) else Color.White
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .then(
+                            if (isSelected) {
+                                Modifier.border(2.dp, swatchColor, CircleShape)
+                            } else {
+                                Modifier
+                            },
+                        )
+                        .clickable {
+                            TouchHaptics.click(view)
+                            onSelect(accent)
+                        }
+                        .padding(3.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(30.dp)
+                            .clip(CircleShape)
+                            .background(swatchColor)
+                            .border(
+                                width = 0.5.dp,
+                                color = if (dark) Color(0x33FFFFFF) else Color(0x1F000000),
+                                shape = CircleShape,
+                            ),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        if (isSelected) {
+                            Icon(
+                                imageVector = Icons.Rounded.Check,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                                tint = checkTint,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CouiInterfaceScalePreference(
+    scaleDraft: Float,
+    minPercent: Float,
+    maxPercent: Float,
+    onScaleDraftChange: (Float) -> Unit,
+    onCommitScale: (Float) -> Unit,
+    onOpenScaleDialog: () -> Unit,
+) {
+    val view = LocalView.current
+    val currentPercent = scaleDraft.roundToInt()
+    val accent = CouiTheme.colorScheme.accent
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable {
+                TouchHaptics.click(view)
+                onOpenScaleDialog()
+            }
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.appearance_interface_scale),
+                    style = MiuixTheme.textStyles.headline1,
+                    color = MiuixTheme.colorScheme.onSurface,
+                )
+                Text(
+                    text = stringResource(R.string.appearance_interface_scale_summary),
+                    style = MiuixTheme.textStyles.footnote1,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                )
+            }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (currentPercent != 100) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(MiuixTheme.colorScheme.surfaceContainerHigh)
+                            .clickable {
+                                TouchHaptics.click(view)
+                                onCommitScale(100f)
+                            }
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                    ) {
+                        Text(
+                            text = "重置",
+                            style = MiuixTheme.textStyles.footnote1,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        )
+                    }
+                }
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(accent.copy(alpha = 0.14f))
+                        .clickable {
+                            TouchHaptics.click(view)
+                            onOpenScaleDialog()
+                        }
+                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                ) {
+                    Text(
+                        text = "$currentPercent%",
+                        style = MiuixTheme.textStyles.body2,
+                        fontWeight = FontWeight.SemiBold,
+                        color = accent,
+                    )
+                }
+            }
+        }
+        Slider(
+            value = scaleDraft,
+            onValueChange = onScaleDraftChange,
+            modifier = Modifier.fillMaxWidth(),
+            valueRange = minPercent..maxPercent,
+            onValueChangeFinished = { onCommitScale(scaleDraft) },
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = "${minPercent.roundToInt()}%",
+                style = MiuixTheme.textStyles.footnote2,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            )
+            Text(
+                text = "100%",
+                style = MiuixTheme.textStyles.footnote2,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            )
+            Text(
+                text = "${maxPercent.roundToInt()}%",
+                style = MiuixTheme.textStyles.footnote2,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            )
+        }
     }
 }

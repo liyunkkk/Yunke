@@ -120,9 +120,11 @@ fun AgentAppTheme(
     MiuixTheme(controller = controller) {
         val baseMiuixColors = MiuixTheme.colorScheme
         val pureBlack = appearance.monetEnabled && appearance.pureBlackEnabled && isDark
-        // 莫奈关闭且手动选了主题色时，按钮/标签/强调文字用所选颜色（Miuix 与 COUI 都生效）；
-        // 选“跟随系统”时保持各自默认蓝。背景、卡片、文字等中性色不变。
-        val customAccent: Color? = if (!appearance.monetEnabled && appearance.accentColor != AppearanceAccentColor.SYSTEM) {
+        // COUI 下无莫奈开关，手动选择的主题色始终生效；Miuix 下在莫奈关闭时生效。
+        // 选“默认/系统取色”时保持各自默认蓝；背景、卡片、文字等中性色不变。
+        val applyManualAccent = (appearance.uiStyle == AppearanceUiStyle.COUI || !appearance.monetEnabled) &&
+            appearance.accentColor != AppearanceAccentColor.SYSTEM
+        val customAccent: Color? = if (applyManualAccent) {
             appearance.accentColor.seedColor().let { seed -> if (isDark) lerp(seed, Color.White, 0.28f) else seed }
         } else {
             null
@@ -342,15 +344,15 @@ private fun AppearancePaletteStyle.toMiuixPaletteStyle(): ThemePaletteStyle = wh
     AppearancePaletteStyle.CMF -> ThemePaletteStyle.Cmf
 }
 
-private fun AppearanceAccentColor.seedColor(): Color = when (this) {
+internal fun AppearanceAccentColor.seedColor(): Color = when (this) {
     AppearanceAccentColor.SYSTEM, AppearanceAccentColor.BLUE -> Color(0xFF3482FF)
     AppearanceAccentColor.PURPLE -> Color(0xFF6750A4)
-    AppearanceAccentColor.PINK -> Color(0xFFB0006D)
-    AppearanceAccentColor.RED -> Color(0xFFBA1A1A)
-    AppearanceAccentColor.ORANGE -> Color(0xFFB65D00)
-    AppearanceAccentColor.YELLOW -> Color(0xFF7D5700)
-    AppearanceAccentColor.GREEN -> Color(0xFF006D3B)
-    AppearanceAccentColor.TEAL -> Color(0xFF006A6A)
+    AppearanceAccentColor.PINK -> Color(0xFFD81B60)
+    AppearanceAccentColor.RED -> Color(0xFFD32F2F)
+    AppearanceAccentColor.ORANGE -> Color(0xFFE66A00)
+    AppearanceAccentColor.YELLOW -> Color(0xFFC78A00)
+    AppearanceAccentColor.GREEN -> Color(0xFF1B8A4E)
+    AppearanceAccentColor.TEAL -> Color(0xFF00838F)
 }
 
 @Composable
