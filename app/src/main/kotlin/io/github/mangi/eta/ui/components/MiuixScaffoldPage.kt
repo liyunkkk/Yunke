@@ -17,6 +17,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.ui.components.coui.CouiLazyScaffoldPage
 import io.github.mangi.eta.ui.layout.WidePageContent
 import io.github.mangi.eta.ui.layout.horizontalCutoutPadding
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
@@ -41,6 +44,20 @@ fun MiuixScaffoldPage(
     editorScrollIsolation: EditorScrollIsolation? = null,
     content: LazyListScope.() -> Unit,
 ) {
+    // COUI 风格：整页换成 COUI 二级页骨架（灰底 + 大标题弧线折叠顶栏），
+    // 页面内的 Card / SmallTitle / 各类 Preference 已按风格自动切换，这里补上页面底色与顶栏。
+    // 整页编辑器（editorScrollIsolation）依赖 Miuix 的手势隔离，暂保留原骨架。
+    if (LocalUiStyle.current == AppearanceUiStyle.COUI && editorScrollIsolation == null) {
+        CouiLazyScaffoldPage(
+            title = title,
+            onBack = onBack,
+            modifier = modifier,
+            listState = listState,
+            actions = actions,
+            content = content,
+        )
+        return
+    }
     val scrollBehavior = MiuixScrollBehavior()
     val pageScrollConnection = remember(scrollBehavior, editorScrollIsolation) {
         editorScrollIsolation?.gate(scrollBehavior.nestedScrollConnection) ?: scrollBehavior.nestedScrollConnection
