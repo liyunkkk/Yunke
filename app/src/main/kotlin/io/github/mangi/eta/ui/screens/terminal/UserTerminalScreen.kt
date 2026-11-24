@@ -56,6 +56,10 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import io.github.mangi.eta.R
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import com.itos.coui.menu.Menu as CouiMenu
+import com.itos.coui.menu.CouiMenuItem
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import androidx.compose.ui.platform.LocalView
 import io.github.mangi.eta.agent.terminal.TerminalEnvironment
@@ -345,6 +349,35 @@ private fun BlockMenu(
     onReinput: (String) -> Unit,
 ) {
     val view = LocalView.current
+    // COUI 下用 COUI 菜单（毛玻璃、COUI 动画）；其他风格保持 Miuix 列表弹层。
+    if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
+        val labels = listOf(
+            stringResource(R.string.terminal_copy_command),
+            stringResource(R.string.terminal_copy_output),
+            stringResource(R.string.terminal_reinput),
+        )
+        val outputEnabled = block.output.isNotEmpty()
+        val items = remember(labels, outputEnabled) {
+            labels.mapIndexed { index, label ->
+                CouiMenuItem(value = index, text = label, enabled = index != 1 || outputEnabled)
+            }
+        }
+        CouiMenu(
+            expanded = show,
+            onDismissRequest = onDismiss,
+            items = items,
+            onItemClick = { item ->
+                TouchHaptics.click(view)
+                onDismiss()
+                when (item.value) {
+                    0 -> clipboard.setText(AnnotatedString(block.command))
+                    1 -> clipboard.setText(AnnotatedString(ansiPlainText(block.output)))
+                    else -> onReinput(block.command)
+                }
+            },
+        )
+        return
+    }
     WindowListPopup(
         show = show,
         alignment = PopupPositionProvider.Align.Start,

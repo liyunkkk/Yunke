@@ -79,6 +79,16 @@ import top.yukonga.miuix.kmp.basic.Checkbox as MiuixCheckbox
 import top.yukonga.miuix.kmp.basic.HorizontalDivider as MiuixHorizontalDivider
 import top.yukonga.miuix.kmp.basic.IconButton as MiuixIconButton
 import top.yukonga.miuix.kmp.basic.Slider as MiuixSlider
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.stringResource
+import io.github.mangi.eta.R
+import io.github.mangi.eta.ui.haptics.TouchHaptics
+import io.github.mangi.eta.ui.components.coui.rememberCouiDialogMaterial
+import com.itos.coui.menu.rememberCouiWindowBackdrop
+import com.itos.coui.dialog.Dialog as CouiDialog
+import com.itos.coui.dialog.CouiDialogDefaults
+import com.itos.coui.dialog.CouiDialogAction
 
 /*
  * 按外观风格自动切换的通用控件。参数与 Miuix 0.9.5-beta03 原组件一致，页面只需换导入：
@@ -379,10 +389,48 @@ internal fun WindowDialog(
     maxWidth: Dp = DialogDefaults.MaxWidth,
     largeScreen: Boolean? = null,
     cornerRadius: Dp? = null,
+    couiCloseText: String? = null,
     content: @Composable () -> Unit,
 ) {
-    // COUI 下沿用同一套弹窗行为（内容和按钮由各页面自己放），只把底色、文字色和圆角换成 COUI。
-    val coui = isCouiStyle()
+    // COUI 下换成 COUI-Kit 的弹窗（毛玻璃材质、COUI 动画、底部操作区）。COUI 弹窗必须至少有一个底部操作，
+    // 这里统一放一个"关闭"，点它等同于点弹窗外关闭；正文照原样放在 COUI 弹窗的正文区。
+    if (isCouiStyle()) {
+        val dark = CouiTheme.isDark
+        val view = LocalView.current
+        val dismiss: () -> Unit = onDismissRequest ?: {}
+        CouiDialog(
+            modifier = modifier,
+            visible = show,
+            onDismissRequest = dismiss,
+            dark = dark,
+            title = title,
+            message = summary,
+            actionRows = listOf(
+                listOf(
+                    CouiDialogAction(
+                        text = couiCloseText ?: stringResource(R.string.action_close),
+                        onClick = {
+                            TouchHaptics.click(view)
+                            dismiss()
+                        },
+                    ),
+                ),
+            ),
+            material = rememberCouiDialogMaterial(dark),
+            backdrop = rememberCouiWindowBackdrop(),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = CouiDialogDefaults.contentPadding)
+                    .padding(top = 4.dp, bottom = 12.dp),
+            ) {
+                content()
+            }
+        }
+        return
+    }
+    val coui = false
     val pageColors = if (coui) CouiPageDefaults.themeColors(CouiTheme.isDark) else null
     MiuixWindowDialog(
         show = show,

@@ -47,6 +47,9 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import io.github.mangi.eta.agent.browser.ported.ui.components.MinisTextButton
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.components.coui.CouiConfirmDialog
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -194,7 +197,19 @@ fun BrowserHistorySheet(
     }
 
     if (showClearConfirm) {
-        AlertDialog(
+        if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiConfirmDialog(
+            visible = true,
+            title = stringResource(R.string.om_browser_history_clear_dialog_title),
+            message = stringResource(R.string.om_browser_history_clear_dialog_message),
+            confirmText = stringResource(R.string.om_browser_history_clear),
+            cancelText = stringResource(R.string.om_cancel),
+            destructive = true,
+            onDismissRequest = { showClearConfirm = false },
+            onConfirm = {
+                historyStore.clear()
+                showClearConfirm = false
+            },
+        ) else AlertDialog(
             onDismissRequest = { showClearConfirm = false },
             title = { Text(stringResource(R.string.om_browser_history_clear_dialog_title)) },
             text = { Text(stringResource(R.string.om_browser_history_clear_dialog_message)) },

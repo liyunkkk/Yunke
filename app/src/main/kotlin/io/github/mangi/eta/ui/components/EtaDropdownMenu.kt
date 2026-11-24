@@ -64,6 +64,8 @@ import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.ui.app.LocalUiStyle
 
 private val MenuCornerRadius = 16.dp
+// COUI 菜单：28dp 圆角、无描边、更柔和的大范围阴影，与 COUI-Kit Menu 一致。
+private val CouiMenuCornerRadius = 28.dp
 private val MenuMinWidth = 180.dp
 private val MenuMaxWidth = 280.dp
 private val MenuScreenMargin = 12.dp
@@ -129,7 +131,10 @@ internal fun EtaDropdownMenu(
     visibleState.targetState = expanded
 
     val colors = MiuixTheme.colorScheme
-    val couiMenu = if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiTheme.colorScheme.menuSurface else null
+    val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
+    val couiMenu = if (isCoui) CouiTheme.colorScheme.menuSurface else null
+    val couiContent = if (isCoui) CouiTheme.colorScheme.onSurface else null
+    val cornerRadius = if (isCoui) CouiMenuCornerRadius else MenuCornerRadius
     val density = LocalDensity.current
     val offsetXPx = with(density) { offset.x.roundToPx() }
     val offsetYPx = with(density) { offset.y.roundToPx() }
@@ -197,7 +202,7 @@ internal fun EtaDropdownMenu(
         popupPositionProvider = positionProvider,
         properties = popupProperties,
     ) {
-        CompositionLocalProvider(LocalContentColor provides colors.onSurface) {
+        CompositionLocalProvider(LocalContentColor provides (couiContent ?: colors.onSurface)) {
             Column(
                 modifier = Modifier
                     .graphicsLayer {
@@ -217,27 +222,33 @@ internal fun EtaDropdownMenu(
                             if (visibleState.targetState) fraction.value else 1f
                         },
                         preferAbove = preferAbove,
-                        cornerRadius = MenuCornerRadius,
+                        cornerRadius = cornerRadius,
                         squircleEnabled = squircleEnabled,
                     )
                     .dropShadow(
-                        shape = RoundedCornerShape(MenuCornerRadius),
+                        shape = RoundedCornerShape(cornerRadius),
                         shadow = Shadow(
-                            radius = 16.dp,
+                            radius = if (isCoui) 32.dp else 16.dp,
                             color = Color.Black,
-                            alpha = 0.18f,
+                            alpha = if (isCoui) 0.14f else 0.18f,
                         ),
                     )
                     .squircleSurface(
                         color = couiMenu ?: colors.surface,
-                        cornerRadius = MenuCornerRadius,
+                        cornerRadius = cornerRadius,
                     )
-                    .squircleBorder(
-                        width = 0.5.dp,
-                        color = colors.outline.copy(alpha = 0.45f),
-                        cornerRadius = MenuCornerRadius,
+                    .then(
+                        if (isCoui) {
+                            Modifier
+                        } else {
+                            Modifier.squircleBorder(
+                                width = 0.5.dp,
+                                color = colors.outline.copy(alpha = 0.45f),
+                                cornerRadius = MenuCornerRadius,
+                            )
+                        },
                     )
-                    .padding(vertical = 6.dp)
+                    .padding(vertical = if (isCoui) 8.dp else 6.dp)
                     .verticalScroll(rememberScrollState()),
                 content = content,
             )

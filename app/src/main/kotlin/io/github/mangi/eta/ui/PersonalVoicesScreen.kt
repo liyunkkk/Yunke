@@ -26,6 +26,9 @@ import io.github.mangi.eta.ui.haptics.TouchHaptics
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.components.coui.CouiConfirmDialog
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -154,7 +157,22 @@ private fun MimoVoicesScreen(onBack: () -> Unit) {
         }
     }
     deleting?.let { voice ->
-        AlertDialog(onDismissRequest = { deleting = null }, title = { Text("删除“${voice.name}”？") },
+        if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiConfirmDialog(
+            visible = true,
+            title = "删除“${voice.name}”？",
+            message = "删除本机参考录音及记录。若正在用于朗读，删除后需要重新选择声音。",
+            confirmText = "删除",
+            destructive = true,
+            onDismissRequest = { TouchHaptics.click(view); deleting = null },
+            onConfirm = {
+                TouchHaptics.click(view); SpeechPlayback.stop("settings"); deleting = null; busy = true
+                scope.launch {
+                    try { withContext(Dispatchers.IO) { MimoPersonalVoices.remove(voice.id) }; notice = "已删除" }
+                    catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) throw e; notice = "删除失败，请重试" }
+                    finally { busy = false }
+                }
+            },
+        ) else AlertDialog(onDismissRequest = { deleting = null }, title = { Text("删除“${voice.name}”？") },
             text = { Text("删除本机参考录音及记录。若正在用于朗读，删除后需要重新选择声音。") },
             confirmButton = { TextButton(onClick = {
                 TouchHaptics.click(view); SpeechPlayback.stop("settings"); deleting = null; busy = true

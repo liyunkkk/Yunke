@@ -40,6 +40,10 @@ import io.github.mangi.eta.ui.components.EtaFormTextField
 import io.github.mangi.eta.ui.components.EtaMaterialDropdownMenuItem
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import kotlinx.coroutines.launch
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.components.coui.CouiConfirmDialog
+import io.github.mangi.eta.ui.components.coui.CouiNoticeDialog
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -104,7 +108,20 @@ internal fun DoubaoVoiceSettings(page: String, onBack: () -> Unit) {
         }
     }
     deleteVoice?.let { voice ->
-        AlertDialog(onDismissRequest = { deleteVoice = null }, title = { Text("移除“${voice.name}”？") },
+        if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiConfirmDialog(
+            visible = true,
+            title = "移除“${voice.name}”？",
+            message = "仅删除本机记录，不删除云端音色，也不取消云端任务。若朗读正在使用它，移除后需重新选择声音。",
+            confirmText = "移除记录",
+            destructive = true,
+            onDismissRequest = { TouchHaptics.click(view); deleteVoice = null },
+            onConfirm = {
+                TouchHaptics.click(view)
+                try { PersonalVoices.removeLocal(voice); if (previewState.matches(voice.account, voice.id)) preview.stop(5); notice = "已移除本机记录" }
+                catch (_: Exception) { notice = "本机记录删除失败，请重试" }
+                deleteVoice = null
+            },
+        ) else AlertDialog(onDismissRequest = { deleteVoice = null }, title = { Text("移除“${voice.name}”？") },
             text = { Text("仅删除本机记录，不删除云端音色，也不取消云端任务。若朗读正在使用它，移除后需重新选择声音。") },
             confirmButton = { TextButton(onClick = {
                 TouchHaptics.click(view)
@@ -416,7 +433,34 @@ private fun VoiceSlotSync(apiKey: String, onBusy: (Boolean) -> Unit, onResult: (
     if (projectOptions) {
         VoiceTextField(project, { project = it; resultText = ""; failed = false; onResult(""); VoiceCatalogPreferences.save(context, ak, it) }, label = "项目名称", enabled = !working, singleLine = true)
     }
-    if (projectPicker) AlertDialog(
+    if (projectPicker) if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiNoticeDialog(
+        visible = true,
+        title = "选择项目",
+        confirmText = "关闭",
+        onDismissRequest = { TouchHaptics.click(view); projectPicker = false },
+    ) {
+        Column(Modifier.fillMaxWidth().heightIn(max = 400.dp).verticalScroll(rememberScrollState()).selectableGroup()) {
+                projects.forEach { item ->
+                    Row(Modifier.fillMaxWidth().heightIn(min = 56.dp)
+                        .selectable(selected = project == item.name, enabled = item.allowed && !working, role = Role.RadioButton, onClick = {
+                            TouchHaptics.click(view)
+                            project = item.name
+                            resultText = ""; failed = false; onResult("")
+                            VoiceCatalogPreferences.save(context, ak, item.name)
+                            projectPicker = false; projectOptions = false
+                        }).padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = project == item.name, enabled = item.allowed && !working, onClick = null)
+                        Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                            Text(item.displayName, style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (item.allowed) 1f else 0.38f))
+                            if (item.displayName != item.name) Text(item.name, style = MaterialTheme.typography.bodySmall)
+                            if (!item.allowed) Text("无此项目访问权限", style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+            }
+    } else AlertDialog(
         onDismissRequest = { projectPicker = false },
         title = { Text("选择项目") },
         text = {
@@ -513,7 +557,14 @@ private fun PersonalVoiceRow(
         }
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
     }
-    if (showError) AlertDialog(
+    if (showError) if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiNoticeDialog(
+        visible = true,
+        title = "错误详情",
+        confirmText = "关闭",
+        onDismissRequest = { TouchHaptics.click(view); showError = false },
+    ) {
+        Text(voice.error, modifier = Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState()))
+    } else AlertDialog(
         onDismissRequest = { showError = false }, title = { Text("错误详情") },
         text = { Text(voice.error, modifier = Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState())) },
         confirmButton = { TextButton(onClick = { TouchHaptics.click(view); showError = false }) { Text("关闭") } },

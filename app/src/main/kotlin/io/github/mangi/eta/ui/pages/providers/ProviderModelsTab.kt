@@ -119,6 +119,10 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import top.yukonga.miuix.kmp.utils.scrollEndHaptic
 import io.github.mangi.eta.ui.components.AdaptiveConfirmDialog
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.components.coui.CouiNoticeDialog
+import io.github.mangi.eta.ui.components.coui.CouiConfirmDialog
 
 private val modelSearchSeparators = Regex("""[^\p{L}\p{N}]+""")
 private val allReasoningEffortTiers = listOf(
@@ -1216,7 +1220,72 @@ private fun RemoteModelPickDialog(
         }
     }
     fun keyOf(model: Model) = model.modelId.trim().lowercase()
-    AlertDialog(
+    if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiConfirmDialog(
+        visible = true,
+        title = stringResource(R.string.provider_remote_pick_title),
+        confirmText = stringResource(R.string.provider_remote_add),
+        cancelText = stringResource(R.string.action_cancel),
+        onConfirm = { onConfirm(models.filter { keyOf(it) in selectedKeys }) },
+        onDismissRequest = { onDismiss() },
+    ) {
+        Column(Modifier.fillMaxWidth().height(420.dp)) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    singleLine = true,
+                    label = { MaterialText(stringResource(R.string.ui_search_model_df5586)) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(onClick = {
+                        selectedKeys = selectedKeys + visible.map(::keyOf)
+                    }) { MaterialText(stringResource(R.string.provider_remote_select_all)) }
+                    TextButton(onClick = {
+                        val visibleKeys = visible.map(::keyOf).toSet()
+                        val kept = selectedKeys - visibleKeys
+                        val flipped = visibleKeys - selectedKeys
+                        selectedKeys = kept + flipped
+                    }) { MaterialText(stringResource(R.string.provider_remote_invert)) }
+                    Spacer(Modifier.weight(1f))
+                    MaterialText(
+                        "${selectedKeys.size}/${models.size}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
+                    items(visible, key = { keyOf(it) }) { model ->
+                        val key = keyOf(model)
+                        val checked = key in selectedKeys
+                        Row(
+                            Modifier.fillMaxWidth().clickable {
+                                selectedKeys = if (checked) selectedKeys - key else selectedKeys + key
+                            }.padding(vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Checkbox(checked = checked, onCheckedChange = { on ->
+                                selectedKeys = if (on) selectedKeys + key else selectedKeys - key
+                            })
+                            Column(Modifier.weight(1f)) {
+                                MaterialText(model.displayName.ifBlank { model.modelId }, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                if (model.displayName.isNotBlank() && model.displayName != model.modelId) {
+                                    MaterialText(
+                                        model.modelId,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+    } else AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = MaterialTheme.colorScheme.surface,
         title = { MaterialText(stringResource(R.string.provider_remote_pick_title)) },

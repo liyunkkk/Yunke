@@ -20,6 +20,10 @@ import io.github.mangi.eta.agent.delegation.SubAgentParallelModel
 import io.github.mangi.eta.agent.delegation.SubAgentProfile
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.ui.haptics.TouchHaptics
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.components.coui.CouiNoticeDialog
+import io.github.mangi.eta.ui.components.coui.CouiConfirmDialog
 
 /** Limits belong to this configuration's provider/API model pool, not the global preferences. */
 @Composable
@@ -57,7 +61,25 @@ internal fun SubAgentParallelLimitRow(profile: SubAgentProfile, config: AgentMod
         }
         if (open && usable && config != null) {
             val number = value.trim().toIntOrNull()?.takeIf { it >= 0 }
-            AlertDialog(onDismissRequest = { open = false }, title = { Text("${profile.name} · 并行上限") },
+            if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiConfirmDialog(
+                visible = true,
+                title = "${profile.name} · 并行上限",
+                confirmText = "保存",
+                cancelText = "取消",
+                onConfirm = { if (currentUsable && number != null &&
+                                        editor?.saveParallelLimit(profile.id, profile.providerId, profile.modelId, config.model, number) is ConversationSubAgentPreferences.WriteResult.Saved)
+                                        open = false },
+                onDismissRequest = { open = false },
+                confirmEnabled = usable && number != null,
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("${config.providerName} · ${config.modelDisplayName.ifBlank { config.model }}")
+                    OutlinedTextField(value, { if (currentUsable) value = it }, label = { Text("0 为不限，或输入正整数") },
+                        modifier = Modifier.fillMaxWidth(), singleLine = true, isError = number == null, enabled = usable,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                    Text("本配置内相同提供商/API 模型共用此上限；0 表示不限。调低不会取消正在执行的任务。")
+                }
+            } else AlertDialog(onDismissRequest = { open = false }, title = { Text("${profile.name} · 并行上限") },
                 text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("${config.providerName} · ${config.modelDisplayName.ifBlank { config.model }}")
                     OutlinedTextField(value, { if (currentUsable) value = it }, label = { Text("0 为不限，或输入正整数") },

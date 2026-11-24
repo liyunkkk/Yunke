@@ -66,6 +66,9 @@ import io.github.mangi.eta.agent.browser.ported.logging.AppLogger
 import kotlinx.coroutines.launch
 import io.github.mangi.eta.agent.browser.ported.ui.components.MinisTextButton
 import io.github.mangi.eta.agent.browser.ported.ui.util.bringIntoViewOnFocus
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.components.coui.CouiConfirmDialog
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -416,7 +419,20 @@ fun BrowserSettingsSheet(
     }
 
     if (showClearConfirm) {
-        AlertDialog(
+        if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiConfirmDialog(
+            visible = true,
+            title = stringResource(R.string.om_browser_settings_clear_all_dialog_title),
+            message = stringResource(R.string.om_browser_settings_clear_all_dialog_message),
+            confirmText = stringResource(R.string.om_browser_settings_clear),
+            cancelText = stringResource(R.string.om_cancel),
+            destructive = true,
+            onDismissRequest = { showClearConfirm = false },
+            onConfirm = {
+                CookieManager.getInstance().removeAllCookies(null)
+                WebStorage.getInstance().deleteAllData()
+                showClearConfirm = false
+            },
+        ) else AlertDialog(
             onDismissRequest = { showClearConfirm = false },
             title = { Text(stringResource(R.string.om_browser_settings_clear_all_dialog_title)) },
             text = { Text(stringResource(R.string.om_browser_settings_clear_all_dialog_message)) },

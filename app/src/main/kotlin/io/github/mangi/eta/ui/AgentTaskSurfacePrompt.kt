@@ -44,6 +44,10 @@ import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.device.AgentTaskPrompt
 import io.github.mangi.eta.agent.device.AgentTaskSurfaceMode
 import io.github.mangi.eta.ui.haptics.TouchHaptics
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.components.coui.CouiNoticeDialog
+import io.github.mangi.eta.ui.components.coui.CouiConfirmDialog
 
 /**
  * 应用内兜底：独立弹窗 Activity 没能拉起来（例如后台启动受限）或已退到后台时，
@@ -83,7 +87,55 @@ internal fun AgentTaskSurfaceChoiceDialog(
 ) {
     val view = LocalView.current
     var selected by rememberSaveable { mutableStateOf(AgentTaskSurfaceMode.FOREGROUND) }
-    AlertDialog(
+    if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiConfirmDialog(
+        visible = true,
+        title = stringResource(R.string.agent_task_surface_prompt_title),
+        confirmText = stringResource(R.string.agent_task_surface_prompt_continue),
+        cancelText = stringResource(R.string.agent_task_surface_prompt_cancel),
+        onConfirm = { TouchHaptics.click(view)
+                        onChoose(selected) },
+        onDismissRequest = { TouchHaptics.click(view)
+                        onCancel() },
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    stringResource(R.string.agent_task_surface_prompt_message),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                ) {
+                    Column(modifier = Modifier.selectableGroup()) {
+                        SurfaceChoiceRow(
+                            icon = Icons.Rounded.PhoneAndroid,
+                            title = stringResource(R.string.agent_task_surface_foreground),
+                            summary = stringResource(R.string.agent_task_preference_mode_hint_foreground),
+                            selected = selected == AgentTaskSurfaceMode.FOREGROUND,
+                            onClick = {
+                                TouchHaptics.click(view)
+                                selected = AgentTaskSurfaceMode.FOREGROUND
+                            },
+                        )
+                        HorizontalDivider(
+                            modifier = Modifier.padding(horizontal = 16.dp),
+                            color = MaterialTheme.colorScheme.outlineVariant,
+                        )
+                        SurfaceChoiceRow(
+                            icon = Icons.Rounded.Layers,
+                            title = stringResource(R.string.agent_task_surface_background),
+                            summary = stringResource(R.string.agent_task_preference_mode_hint_background),
+                            selected = selected == AgentTaskSurfaceMode.BACKGROUND,
+                            onClick = {
+                                TouchHaptics.click(view)
+                                selected = AgentTaskSurfaceMode.BACKGROUND
+                            },
+                        )
+                    }
+                }
+            }
+    } else AlertDialog(
         onDismissRequest = onCancel,
         // 点到弹窗外不算取消，避免误触让这次操作失败；返回键仍可取消。
         properties = DialogProperties(dismissOnClickOutside = false),

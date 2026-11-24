@@ -47,6 +47,9 @@ import io.github.mangi.eta.ui.layout.horizontalCutoutPadding
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.DropdownItem
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.components.coui.CouiConfirmDialog
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -146,7 +149,18 @@ internal fun SubAgentSettingsScreen(
                 },
             )
             delete?.let { preset ->
-                AlertDialog(onDismissRequest = { delete = null }, title = { Text("删除子代理组？") },
+                if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiConfirmDialog(
+                    visible = true,
+                    title = "删除子代理组？",
+                    message = "删除“${preset.name}”不会改变已应用此组的会话配置。",
+                    confirmText = "删除",
+                    destructive = true,
+                    confirmEnabled = editable,
+                    onDismissRequest = { delete = null },
+                    onConfirm = {
+                        if (directory.change { check(repository.removePreset(preset.id)) { "子代理组不存在，请重试" } }) delete = null
+                    },
+                ) else AlertDialog(onDismissRequest = { delete = null }, title = { Text("删除子代理组？") },
                     text = { Text("删除“${preset.name}”不会改变已应用此组的会话配置。") },
                     dismissButton = { TextButton(onClick = { delete = null }) { Text("取消") } },
                     confirmButton = { TextButton(enabled = editable, onClick = {
@@ -302,7 +316,18 @@ private fun SubAgentPresetDetail(editor: ConversationSubAgentEditor, groupName: 
             )
         }
         delete?.let { profile ->
-            if (editable) AlertDialog(onDismissRequest = { delete = null }, title = { Text("删除代理？") },
+            if (editable && LocalUiStyle.current == AppearanceUiStyle.COUI) CouiConfirmDialog(
+                visible = true,
+                title = "删除代理？",
+                message = "将删除“${profile.name}”的配置，不会删除提供商或模型。",
+                confirmText = "删除",
+                destructive = true,
+                onDismissRequest = { delete = null },
+                onConfirm = {
+                    if (editor?.enabled == true && editor.remove(profile.id) is ConversationSubAgentPreferences.WriteResult.Saved)
+                        delete = null
+                },
+            ) else if (editable) AlertDialog(onDismissRequest = { delete = null }, title = { Text("删除代理？") },
                 text = { Text("将删除“${profile.name}”的配置，不会删除提供商或模型。") },
                 dismissButton = { TextButton(onClick = { delete = null }) { Text("取消") } },
                 confirmButton = { TextButton(enabled = editable, onClick = {
