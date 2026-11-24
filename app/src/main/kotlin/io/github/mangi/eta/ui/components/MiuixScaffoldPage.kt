@@ -20,6 +20,9 @@ import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.ui.app.LocalUiStyle
 import io.github.mangi.eta.ui.components.coui.CouiLazyScaffoldPage
+import com.itos.coui.layout.CouiPageDefaults
+import com.itos.coui.theme.CouiTheme
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 import io.github.mangi.eta.ui.layout.WidePageContent
 import io.github.mangi.eta.ui.layout.horizontalCutoutPadding
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
@@ -130,8 +133,16 @@ fun MiuixScaffold(
     val backdrop = rememberTopBarBackdrop()
     val topBarColor = topBarContainerColor(backdrop)
 
+    // COUI 风格下用 COUI 页面灰底，让页内 COUI 白色分组卡片显出层次；Miuix 下保持默认 surface。
+    val containerColor = if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
+        CouiPageDefaults.themeColors(CouiTheme.isDark).background
+    } else {
+        MiuixTheme.colorScheme.surface
+    }
+
     Scaffold(
         modifier = modifier.fillMaxSize(),
+        containerColor = containerColor,
         topBar = {
             TopBarBackdrop(backdrop) {
                 AdaptiveTopAppBar(
