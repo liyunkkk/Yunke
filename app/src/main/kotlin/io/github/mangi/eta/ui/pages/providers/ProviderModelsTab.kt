@@ -1222,6 +1222,7 @@ private fun RemoteModelPickDialog(
     fun keyOf(model: Model) = model.modelId.trim().lowercase()
     if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiConfirmDialog(
         visible = true,
+        message = null,
         title = stringResource(R.string.provider_remote_pick_title),
         confirmText = stringResource(R.string.provider_remote_add),
         cancelText = stringResource(R.string.action_cancel),

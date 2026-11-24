@@ -89,6 +89,7 @@ internal fun AgentTaskSurfaceChoiceDialog(
     var selected by rememberSaveable { mutableStateOf(AgentTaskSurfaceMode.FOREGROUND) }
     if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiConfirmDialog(
         visible = true,
+        message = null,
         title = stringResource(R.string.agent_task_surface_prompt_title),
         confirmText = stringResource(R.string.agent_task_surface_prompt_continue),
         cancelText = stringResource(R.string.agent_task_surface_prompt_cancel),

@@ -55,6 +55,7 @@ internal fun TtsModelPickerDialog(
     WithoutPressRipple {
     if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiNoticeDialog(
         visible = true,
+        message = null,
         title = title,
         confirmText = stringResource(R.string.action_close),
         onDismissRequest = { TouchHaptics.click(view); onDismiss() },
@@ -232,6 +233,7 @@ internal fun TtsVoicePickerDialog(
     val view = LocalView.current
     if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiNoticeDialog(
         visible = true,
+        message = null,
         title = title,
         confirmText = stringResource(R.string.action_close),
         onDismissRequest = { TouchHaptics.click(view); onDismiss() },
@@ -307,6 +309,7 @@ internal fun SpeechRadioPickerDialog(
     val view = LocalView.current
     if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiNoticeDialog(
         visible = true,
+        message = null,
         title = title,
         confirmText = stringResource(R.string.action_close),
         onDismissRequest = { TouchHaptics.click(view); onDismiss() },

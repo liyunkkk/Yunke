@@ -51,6 +51,7 @@ internal fun SubAgentStatusDialog(
     val ordered = agents.sortedWith(compareBy({ statusRank(it.status) }, { it.contextLabel() }))
     if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiNoticeDialog(
         visible = true,
+        message = null,
         title = stringResource(R.string.action_sub_agent_status),
         confirmText = stringResource(R.string.sub_agent_status_close),
         onDismissRequest = { onDismiss() },

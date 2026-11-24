@@ -63,6 +63,7 @@ internal fun SubAgentParallelLimitRow(profile: SubAgentProfile, config: AgentMod
             val number = value.trim().toIntOrNull()?.takeIf { it >= 0 }
             if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiConfirmDialog(
                 visible = true,
+                message = null,
                 title = "${profile.name} · 并行上限",
                 confirmText = "保存",
                 cancelText = "取消",

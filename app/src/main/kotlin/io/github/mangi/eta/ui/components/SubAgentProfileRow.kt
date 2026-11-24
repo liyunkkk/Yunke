@@ -169,6 +169,7 @@ internal fun SubAgentProfileRow(profile: SubAgentProfile, providers: List<Provid
         }.getOrDefault(false)
         if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiNoticeDialog(
             visible = true,
+            message = null,
             title = "默认分辨率",
             confirmText = "关闭",
             onDismissRequest = { resolutionPicker = false },

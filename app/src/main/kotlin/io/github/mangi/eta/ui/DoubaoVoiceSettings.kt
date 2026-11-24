@@ -435,6 +435,7 @@ private fun VoiceSlotSync(apiKey: String, onBusy: (Boolean) -> Unit, onResult: (
     }
     if (projectPicker) if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiNoticeDialog(
         visible = true,
+        message = null,
         title = "选择项目",
         confirmText = "关闭",
         onDismissRequest = { TouchHaptics.click(view); projectPicker = false },
@@ -559,6 +560,7 @@ private fun PersonalVoiceRow(
     }
     if (showError) if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiNoticeDialog(
         visible = true,
+        message = null,
         title = "错误详情",
         confirmText = "关闭",
         onDismissRequest = { TouchHaptics.click(view); showError = false },
