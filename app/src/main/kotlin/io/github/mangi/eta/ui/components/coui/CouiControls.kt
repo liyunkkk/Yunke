@@ -33,7 +33,9 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -104,6 +106,12 @@ import com.itos.coui.text.rememberCouiTextStyle
 import com.itos.coui.theme.CouiTheme
 import io.github.mangi.eta.R
 
+/**
+ * 标记当前正处于 COUI 弹窗/毛玻璃浮层内：输入框、卡片、按钮据此采用与毛玻璃底一致的半透明浅层色，
+ * 避免“灰底弹窗 + 暗灰输入框 + 刺眼纯白卡片 + 灰按钮”的多层色彩分裂。
+ */
+internal val LocalInsideCouiDialog = compositionLocalOf { false }
+
 enum class CouiButtonRole {
     Primary,
     Secondary,
@@ -128,12 +136,22 @@ internal fun CouiButton(
     val dark = CouiTheme.isDark
     val scheme = CouiTheme.colorSchemeFor(dark)
     val dialogColors = CouiDialogDefaults.themeColors(dark)
+    val insideDialog = LocalInsideCouiDialog.current
     val isPrimaryLike = role == CouiButtonRole.Primary || role == CouiButtonRole.DestructiveFilled
     val fillColor = when (role) {
         CouiButtonRole.Primary -> if (enabled) scheme.accent else scheme.accent.copy(alpha = 0.3f)
         CouiButtonRole.DestructiveFilled -> if (enabled) dialogColors.destructive else dialogColors.destructive.copy(alpha = 0.3f)
-        CouiButtonRole.Secondary, CouiButtonRole.Destructive -> if (enabled) {
-            if (dark) Color(0xFF353535) else Color(0xFFEBEBEB)
+        CouiButtonRole.Destructive -> if (enabled) {
+            dialogColors.destructive.copy(alpha = if (dark) 0.18f else 0.10f)
+        } else {
+            if (dark) Color(0x1AFFFFFF) else Color(0x14000000)
+        }
+        CouiButtonRole.Secondary -> if (enabled) {
+            if (insideDialog) {
+                if (dark) Color(0x33FFFFFF) else Color(0xB3FFFFFF)
+            } else {
+                if (dark) Color(0xFF353535) else Color(0xFFEBEBEB)
+            }
         } else {
             if (dark) Color(0x1AFFFFFF) else Color(0x14000000)
         }
@@ -253,10 +271,20 @@ internal fun CouiTextField(
 ) {
     val dark = CouiTheme.isDark
     val colors = CouiPageDefaults.themeColors(dark)
+    val insideDialog = LocalInsideCouiDialog.current
     var focused by remember { mutableStateOf(false) }
     val focusAlpha = remember { Animatable(0f) }
     val hintColor = if (dark) Color(0x59FFFFFF) else Color(0x4D000000)
-    val containerColor = if (dark) Color(0x1AFFFFFF) else Color(0x0D000000)
+    val containerColor = if (insideDialog) {
+        if (dark) Color(0x1CFFFFFF) else Color(0xB3FFFFFF)
+    } else {
+        if (dark) Color(0x1AFFFFFF) else Color(0x0D000000)
+    }
+    val idleBorderColor = if (insideDialog) {
+        if (dark) Color(0x1FFFFFFF) else Color(0x14000000)
+    } else {
+        Color.Transparent
+    }
     val shape = CouiShape(14.dp, 2f)
     val textStyle = rememberCouiTextStyle(CouiTextKind.Search).copy(
         color = if (enabled) colors.title else colors.disabled,
@@ -310,6 +338,12 @@ internal fun CouiTextField(
                         Modifier.border(
                             width = 1.dp,
                             color = colors.accent.copy(alpha = 0.7f * focusAlpha.value),
+                            shape = shape,
+                        )
+                    } else if (idleBorderColor != Color.Transparent) {
+                        Modifier.border(
+                            width = 0.5.dp,
+                            color = idleBorderColor,
                             shape = shape,
                         )
                     } else {
@@ -698,13 +732,15 @@ internal fun CouiConfirmDialog(
         backdrop = backdrop,
     ) {
         if (content != null) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = CouiDialogDefaults.contentPadding)
-                    .padding(top = 4.dp, bottom = 12.dp),
-                content = content,
-            )
+            CompositionLocalProvider(LocalInsideCouiDialog provides true) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = CouiDialogDefaults.contentPadding)
+                        .padding(top = 6.dp, bottom = 12.dp),
+                    content = content,
+                )
+            }
         }
     }
 }
@@ -738,13 +774,15 @@ internal fun CouiNoticeDialog(
         backdrop = backdrop,
     ) {
         if (content != null) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = CouiDialogDefaults.contentPadding)
-                    .padding(top = 4.dp, bottom = 12.dp),
-                content = content,
-            )
+            CompositionLocalProvider(LocalInsideCouiDialog provides true) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = CouiDialogDefaults.contentPadding)
+                        .padding(top = 6.dp, bottom = 12.dp),
+                    content = content,
+                )
+            }
         }
     }
 }

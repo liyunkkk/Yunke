@@ -2,6 +2,8 @@ package io.github.mangi.eta.ui.components.coui
 
 import android.os.Build
 import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
@@ -27,11 +29,15 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.dropShadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.shadow.Shadow
 import androidx.compose.ui.graphics.takeOrElse
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
@@ -44,6 +50,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import com.itos.coui.effect.CouiFloatingRenderer
 import com.itos.coui.effect.LocalCouiContourGlowEnabled
@@ -73,6 +80,9 @@ import com.itos.coui.topappbar.TopAppBarButtonGroup
 import io.github.mangi.eta.R
 import io.github.mangi.eta.ui.layout.WidePageContent
 import io.github.mangi.eta.ui.layout.rememberIsWideScreen
+
+/** 标记当前处于 COUI TopAppBar / LargeTopAppBar 效果作用域内，可安全调用 TopAppBarButton。 */
+internal val LocalInCouiTopAppBar = compositionLocalOf { false }
 
 @Composable
 internal fun rememberCouiSystemToolbarStyle(
@@ -110,6 +120,77 @@ internal fun CouiBackButton(
 }
 
 @Composable
+internal fun CouiTopAppBarSlotButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    dark: Boolean = CouiTheme.isDark,
+    colors: CouiPageColors = CouiPageDefaults.themeColors(dark),
+    contentDescription: String? = null,
+    content: @Composable () -> Unit,
+) {
+    val inCouiTopBar = LocalInCouiTopAppBar.current
+    val renderer = remember {
+        if (Build.VERSION.SDK_INT >= 34) {
+            runCatching { CouiFloatingRenderer.standalone() }.getOrNull()
+        } else {
+            null
+        }
+    }
+    if (Build.VERSION.SDK_INT >= 34 && renderer != null && inCouiTopBar) {
+        val style = rememberCouiSystemToolbarStyle(dark, colors)
+        TopAppBarButton(
+            modifier = modifier,
+            onClick = onClick,
+            enabled = enabled,
+            renderer = renderer,
+            style = style,
+        ) {
+            content()
+        }
+    } else {
+        val source = remember { MutableInteractionSource() }
+        val circleShape = CouiTopAppBarButtonDefaults.circleShape
+        val surfaceColor = if (dark) Color(0xFF2A2B2F) else Color.White
+        val borderColor = if (dark) Color(0x24FFFFFF) else Color(0x14000000)
+        Box(
+            modifier = modifier
+                .size(48.dp)
+                .clickable(source, indication = null, enabled = enabled, role = Role.Button, onClick = onClick)
+                .then(
+                    if (contentDescription != null) {
+                        Modifier.semantics { this.contentDescription = contentDescription }
+                    } else {
+                        Modifier
+                    },
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .dropShadow(
+                        shape = circleShape,
+                        shadow = Shadow(
+                            radius = 8.dp,
+                            offset = DpOffset(0.dp, 2.dp),
+                            color = Color.Black,
+                            alpha = if (dark) 0.28f else 0.08f,
+                        ),
+                    )
+                    .clip(circleShape)
+                    .background(surfaceColor, circleShape)
+                    .border(0.5.dp, borderColor, circleShape)
+                    .couiButtonFeedback(dark, source, enabled),
+                contentAlignment = Alignment.Center,
+            ) {
+                content()
+            }
+        }
+    }
+}
+
+@Composable
 internal fun CouiTopAppBarIconButton(
     icon: ImageVector,
     contentDescription: String?,
@@ -121,57 +202,27 @@ internal fun CouiTopAppBarIconButton(
     iconSize: Dp = 24.dp,
     tint: Color = Color.Unspecified,
 ) {
-    val renderer = remember {
-        if (Build.VERSION.SDK_INT >= 34) {
-            runCatching { CouiFloatingRenderer.standalone() }.getOrNull()
-        } else {
-            null
-        }
-    }
-    if (Build.VERSION.SDK_INT >= 34 && renderer != null) {
-        val style = rememberCouiSystemToolbarStyle(dark, colors)
-        TopAppBarButton(
-            modifier = modifier,
-            onClick = onClick,
-            enabled = enabled,
-            renderer = renderer,
-            style = style,
-        ) {
-            val resolvedTint = tint.takeOrElse {
+    CouiTopAppBarSlotButton(
+        onClick = onClick,
+        modifier = modifier,
+        enabled = enabled,
+        dark = dark,
+        colors = colors,
+        contentDescription = contentDescription,
+    ) {
+        val resolvedTint = tint.takeOrElse {
+            if (enabled) {
                 LocalCouiContentColor.current.takeOrElse { colors.title }
+            } else {
+                colors.disabled
             }
-            CouiIcon(
-                imageVector = icon,
-                contentDescription = contentDescription,
-                modifier = Modifier.size(iconSize),
-                tint = resolvedTint,
-            )
         }
-    } else {
-        val source = remember { MutableInteractionSource() }
-        val resolvedTint = tint.takeOrElse { if (enabled) colors.title else colors.disabled }
-        Box(
-            modifier = modifier
-                .size(48.dp)
-                .clip(CouiShape(24.dp, 2f))
-                .couiButtonFeedback(dark, source, enabled)
-                .clickable(source, indication = null, enabled = enabled, role = Role.Button, onClick = onClick)
-                .then(
-                    if (contentDescription != null) {
-                        Modifier.semantics { this.contentDescription = contentDescription }
-                    } else {
-                        Modifier
-                    },
-                ),
-            contentAlignment = Alignment.Center,
-        ) {
-            CouiIcon(
-                imageVector = icon,
-                contentDescription = null,
-                modifier = Modifier.size(iconSize),
-                tint = resolvedTint,
-            )
-        }
+        CouiIcon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            modifier = Modifier.size(iconSize),
+            tint = resolvedTint,
+        )
     }
 }
 
@@ -184,6 +235,7 @@ internal fun CouiTopAppBarTextButton(
     dark: Boolean = CouiTheme.isDark,
     colors: CouiPageColors = CouiPageDefaults.themeColors(dark),
 ) {
+    val inCouiTopBar = LocalInCouiTopAppBar.current
     val renderer = remember {
         if (Build.VERSION.SDK_INT >= 34) {
             runCatching { CouiFloatingRenderer.standalone() }.getOrNull()
@@ -191,7 +243,7 @@ internal fun CouiTopAppBarTextButton(
             null
         }
     }
-    if (Build.VERSION.SDK_INT >= 34 && renderer != null) {
+    if (Build.VERSION.SDK_INT >= 34 && renderer != null && inCouiTopBar) {
         val style = rememberCouiSystemToolbarStyle(dark, colors)
         TopAppBarButton(
             modifier = modifier,
@@ -214,15 +266,28 @@ internal fun CouiTopAppBarTextButton(
     } else {
         val source = remember { MutableInteractionSource() }
         val textStyle = rememberCouiTextStyle(CouiTextKind.ItemValue)
-        val textColor = if (enabled) colors.accent else colors.disabled
+        val textColor = if (enabled) colors.title else colors.disabled
+        val surfaceColor = if (dark) Color(0xFF2A2B2F) else Color.White
+        val borderColor = if (dark) Color(0x24FFFFFF) else Color(0x14000000)
         Box(
             modifier = modifier
                 .widthIn(min = 60.dp)
                 .heightIn(min = 40.dp)
+                .dropShadow(
+                    shape = CouiCapsuleShape,
+                    shadow = Shadow(
+                        radius = 8.dp,
+                        offset = DpOffset(0.dp, 2.dp),
+                        color = Color.Black,
+                        alpha = if (dark) 0.28f else 0.08f,
+                    ),
+                )
                 .clip(CouiCapsuleShape)
+                .background(surfaceColor, CouiCapsuleShape)
+                .border(0.5.dp, borderColor, CouiCapsuleShape)
                 .couiButtonFeedback(dark, source, enabled)
                 .clickable(source, indication = null, enabled = enabled, role = Role.Button, onClick = onClick)
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .padding(horizontal = 14.dp, vertical = 8.dp),
             contentAlignment = Alignment.Center,
         ) {
             BasicText(
@@ -267,11 +332,15 @@ internal fun CouiScaffoldPage(
     val imePadding = if (LocalWindowInfo.current.isWindowFocused) Modifier.imePadding() else Modifier
     val barColors = CouiTopAppBarDefaults.colors(titleColor = colors.title, dark = dark)
     val navigation: @Composable () -> Unit = {
-        CouiBackButton(onClick = onBack, dark = dark, colors = colors)
+        CompositionLocalProvider(LocalInCouiTopAppBar provides true) {
+            CouiBackButton(onClick = onBack, dark = dark, colors = colors)
+        }
     }
     val topBarActions: @Composable RowScope.() -> Unit = {
         TopAppBarButtonGroup {
-            actions()
+            CompositionLocalProvider(LocalInCouiTopAppBar provides true) {
+                actions()
+            }
         }
     }
     Scaffold(
@@ -365,11 +434,15 @@ internal fun CouiLazyScaffoldPage(
     val imePadding = if (LocalWindowInfo.current.isWindowFocused) Modifier.imePadding() else Modifier
     val barColors = CouiTopAppBarDefaults.colors(titleColor = colors.title, dark = dark)
     val navigation: @Composable () -> Unit = {
-        CouiBackButton(onClick = onBack, dark = dark, colors = colors)
+        CompositionLocalProvider(LocalInCouiTopAppBar provides true) {
+            CouiBackButton(onClick = onBack, dark = dark, colors = colors)
+        }
     }
     val topBarActions: @Composable RowScope.() -> Unit = {
         TopAppBarButtonGroup {
-            actions()
+            CompositionLocalProvider(LocalInCouiTopAppBar provides true) {
+                actions()
+            }
         }
     }
     Scaffold(
@@ -468,11 +541,15 @@ internal fun CouiScaffold(
     val localDensity = LocalDensity.current
     val barColors = CouiTopAppBarDefaults.colors(titleColor = colors.title, dark = dark)
     val navigation: @Composable () -> Unit = {
-        CouiBackButton(onClick = onBack, dark = dark, colors = colors)
+        CompositionLocalProvider(LocalInCouiTopAppBar provides true) {
+            CouiBackButton(onClick = onBack, dark = dark, colors = colors)
+        }
     }
     val topBarActions: @Composable RowScope.() -> Unit = {
         TopAppBarButtonGroup {
-            actions()
+            CompositionLocalProvider(LocalInCouiTopAppBar provides true) {
+                actions()
+            }
         }
     }
     Scaffold(

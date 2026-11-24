@@ -77,8 +77,9 @@ internal fun SubAgentDropdownMenu(
     offset: DpOffset = DpOffset.Zero,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    // COUI 下换成 COUI 菜单外观：28dp 圆角、COUI 菜单底色、阴影代替描边。
+    // COUI 下换成 COUI 菜单外观：28dp 圆角、COUI 菜单底色、立体投影与细腻轮廓线。
     val coui = LocalUiStyle.current == AppearanceUiStyle.COUI
+    val couiDark = if (coui) CouiTheme.isDark else false
     DropdownMenu(
         expanded = expanded,
         onDismissRequest = onDismissRequest,
@@ -88,7 +89,11 @@ internal fun SubAgentDropdownMenu(
         containerColor = if (coui) CouiTheme.colorScheme.menuSurface else MaterialTheme.colorScheme.surface,
         tonalElevation = 0.dp,
         shadowElevation = if (coui) 12.dp else 0.dp,
-        border = if (coui) null else BorderStroke(0.5.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)),
+        border = if (coui) {
+            BorderStroke(0.75.dp, if (couiDark) Color(0x28FFFFFF) else Color(0x18000000))
+        } else {
+            BorderStroke(0.5.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
+        },
     ) {
         Column(Modifier.width(IntrinsicSize.Max).widthIn(min = 96.dp, max = 220.dp), content = content)
     }

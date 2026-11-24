@@ -1113,6 +1113,9 @@ private fun ModelEditDialog(
                         },
                         enabled = !isSaving,
                     )
+                    if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
+                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+                    }
                     SwitchPreference(
                         checked = visionEnabled,
                         onCheckedChange = { enabled ->

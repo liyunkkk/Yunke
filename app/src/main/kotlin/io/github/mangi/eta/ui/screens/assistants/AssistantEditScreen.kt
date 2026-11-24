@@ -25,6 +25,9 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.EtaApp
 import io.github.mangi.eta.R
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.ui.components.coui.CouiTopAppBarTextButton
 import io.github.mangi.eta.agent.skill.SkillIndexEntry
 import io.github.mangi.eta.agent.skill.SkillRuntime
 import io.github.mangi.eta.data.repository.AgentMemoryRepository
@@ -154,17 +157,26 @@ internal fun AssistantEditScreen(
         editorScrollIsolation = editorScrollIsolation,
         onBack = onBack,
         actions = {
-            Text(
-                text = stringResource(R.string.action_save),
-                color = if (dirty && !saving && !memoryOverLimit) {
-                    MiuixTheme.colorScheme.primary
-                } else {
-                    MiuixTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-                },
-                modifier = Modifier
-                    .padding(end = 12.dp)
-                    .clickable(enabled = dirty && !saving && !memoryOverLimit, onClick = ::save),
-            )
+            if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
+                CouiTopAppBarTextButton(
+                    text = stringResource(R.string.action_save),
+                    enabled = dirty && !saving && !memoryOverLimit,
+                    onClick = ::save,
+                    modifier = Modifier.padding(end = 8.dp),
+                )
+            } else {
+                Text(
+                    text = stringResource(R.string.action_save),
+                    color = if (dirty && !saving && !memoryOverLimit) {
+                        MiuixTheme.colorScheme.primary
+                    } else {
+                        MiuixTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                    },
+                    modifier = Modifier
+                        .padding(end = 12.dp)
+                        .clickable(enabled = dirty && !saving && !memoryOverLimit, onClick = ::save),
+                )
+            }
         },
     ) {
         item(key = "hero") {

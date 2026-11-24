@@ -4,6 +4,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Indication
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Column
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -41,6 +43,10 @@ import io.github.mangi.eta.ui.components.coui.CouiButton
 import io.github.mangi.eta.ui.components.coui.CouiButtonRole
 import io.github.mangi.eta.ui.components.coui.CouiPreferenceRow
 import io.github.mangi.eta.ui.components.coui.CouiTextField
+import io.github.mangi.eta.ui.components.coui.CouiTopAppBarSlotButton
+import io.github.mangi.eta.ui.components.coui.CouiTopAppBarTextButton
+import io.github.mangi.eta.ui.components.coui.LocalInCouiTopAppBar
+import io.github.mangi.eta.ui.components.coui.LocalInsideCouiDialog
 import top.yukonga.miuix.kmp.basic.BasicComponentColors
 import top.yukonga.miuix.kmp.basic.BasicComponentDefaults
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
@@ -127,10 +133,24 @@ internal fun Card(
         )
         return
     }
-    val pageColors = CouiPageDefaults.themeColors(CouiTheme.isDark)
-    // 页面自定义了卡片底色时保留它，默认卡片才换成 COUI 卡片底色。
-    val bg = if (colors == CardDefaults.defaultColors()) pageColors.card else colors.color
-    val shape = remember(cornerRadius) { CouiShape(maxOf(cornerRadius, 20.dp), 2.2f) }
+    val dark = CouiTheme.isDark
+    val pageColors = CouiPageDefaults.themeColors(dark)
+    val insideDialog = LocalInsideCouiDialog.current
+    val isDefaultColor = colors == CardDefaults.defaultColors()
+    // 页面自定义了卡片底色时保留它；COUI 弹窗内默认卡片改用半透明玻璃容器避免纯白块与灰底弹窗割裂。
+    val bg = when {
+        !isDefaultColor -> colors.color
+        insideDialog -> if (dark) Color(0x1CFFFFFF) else Color(0xB3FFFFFF)
+        else -> pageColors.card
+    }
+    val dialogBorder = if (insideDialog && isDefaultColor) {
+        if (dark) Color(0x1FFFFFFF) else Color(0x14000000)
+    } else {
+        Color.Transparent
+    }
+    val shape = remember(cornerRadius, insideDialog) {
+        CouiShape(if (insideDialog) 18.dp else maxOf(cornerRadius, 20.dp), 2.2f)
+    }
     val clickModifier = if (onClick != null || onLongPress != null) {
         Modifier.combinedClickable(onClick = { onClick?.invoke() }, onLongClick = onLongPress)
     } else {
@@ -140,6 +160,7 @@ internal fun Card(
         modifier = modifier
             .clip(shape)
             .background(bg, shape)
+            .then(if (dialogBorder != Color.Transparent) Modifier.border(0.5.dp, dialogBorder, shape) else Modifier)
             .then(clickModifier)
             .padding(insideMargin),
         content = content,
@@ -175,6 +196,15 @@ internal fun TextButton(
             textStyle = textStyle,
             interactionSource = interactionSource,
             indication = indication,
+        )
+        return
+    }
+    if (LocalInCouiTopAppBar.current) {
+        CouiTopAppBarTextButton(
+            text = text,
+            onClick = onClick,
+            modifier = modifier,
+            enabled = enabled,
         )
         return
     }
@@ -423,13 +453,15 @@ internal fun WindowDialog(
             material = rememberCouiDialogMaterial(dark),
             backdrop = rememberCouiWindowBackdrop(),
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = CouiDialogDefaults.contentPadding)
-                    .padding(top = 4.dp, bottom = 12.dp),
-            ) {
-                content()
+            CompositionLocalProvider(LocalInsideCouiDialog provides true) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = CouiDialogDefaults.contentPadding)
+                        .padding(top = 6.dp, bottom = 12.dp),
+                ) {
+                    content()
+                }
             }
         }
         return
@@ -491,6 +523,15 @@ internal fun IconButton(
             cornerRadius = cornerRadius,
             minHeight = minHeight,
             minWidth = minWidth,
+            content = content,
+        )
+        return
+    }
+    if (LocalInCouiTopAppBar.current && !backgroundColor.isSpecified) {
+        CouiTopAppBarSlotButton(
+            onClick = onClick,
+            modifier = modifier,
+            enabled = enabled,
             content = content,
         )
         return

@@ -20,8 +20,7 @@ import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.ui.app.LocalUiStyle
 import io.github.mangi.eta.ui.components.coui.CouiLazyScaffoldPage
-import com.itos.coui.layout.CouiPageDefaults
-import com.itos.coui.theme.CouiTheme
+import io.github.mangi.eta.ui.components.coui.CouiScaffold
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import io.github.mangi.eta.ui.layout.WidePageContent
 import io.github.mangi.eta.ui.layout.horizontalCutoutPadding
@@ -129,20 +128,27 @@ fun MiuixScaffold(
         sidePadding: Dp,
     ) -> Unit,
 ) {
+    if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
+        val dummyScrollBehavior = MiuixScrollBehavior()
+        CouiScaffold(
+            title = title,
+            onBack = onBack,
+            modifier = modifier,
+            actions = actions,
+        ) { contentPadding, _, _, sidePadding ->
+            Box(modifier = Modifier.fillMaxSize()) {
+                content(contentPadding, dummyScrollBehavior, sidePadding)
+            }
+        }
+        return
+    }
     val scrollBehavior = MiuixScrollBehavior()
     val backdrop = rememberTopBarBackdrop()
     val topBarColor = topBarContainerColor(backdrop)
 
-    // COUI 风格下用 COUI 页面灰底，让页内 COUI 白色分组卡片显出层次；Miuix 下保持默认 surface。
-    val containerColor = if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
-        CouiPageDefaults.themeColors(CouiTheme.isDark).background
-    } else {
-        MiuixTheme.colorScheme.surface
-    }
-
     Scaffold(
         modifier = modifier.fillMaxSize(),
-        containerColor = containerColor,
+        containerColor = MiuixTheme.colorScheme.surface,
         topBar = {
             TopBarBackdrop(backdrop) {
                 AdaptiveTopAppBar(

@@ -29,6 +29,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import com.itos.coui.icons.CouiIcons
 import io.github.mangi.eta.agent.mcp.McpServerManager
 import io.github.mangi.eta.agent.mcp.validateMcpEndpoint
 import io.github.mangi.eta.data.model.McpAuthorizationType
@@ -75,9 +78,10 @@ internal fun McpServersScreen(
         title = stringResource(R.string.route_mcp_servers),
         onBack = onBack,
         actions = {
+            val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
             IconButton(onClick = { showAdd = true }) {
                 Icon(
-                    imageVector = Icons.Rounded.Add,
+                    imageVector = if (isCoui) CouiIcons.Outlined.Add else Icons.Rounded.Add,
                     contentDescription = stringResource(R.string.mcp_add_server),
                 )
             }

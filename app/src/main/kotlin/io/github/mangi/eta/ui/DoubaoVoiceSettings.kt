@@ -52,6 +52,7 @@ import io.github.mangi.eta.ui.components.coui.EtaRadioButton
 import io.github.mangi.eta.ui.components.coui.EtaMaterialCheckbox
 import io.github.mangi.eta.ui.components.coui.EtaFloatingActionButton
 import io.github.mangi.eta.ui.components.coui.EtaLinearProgressIndicator
+import com.itos.coui.icons.CouiIcons
 import com.itos.coui.layout.CouiPageDefaults
 import com.itos.coui.theme.CouiTheme
 
@@ -346,7 +347,7 @@ internal fun DoubaoVoiceSettings(page: String, onBack: () -> Unit) {
             actions = {
                 if (home) Box {
                     CouiTopAppBarIconButton(
-                        icon = Icons.Rounded.MoreVert,
+                        icon = CouiIcons.Outlined.More,
                         contentDescription = "声音设置",
                         onClick = { TouchHaptics.click(view); settingsMenu = true },
                     )

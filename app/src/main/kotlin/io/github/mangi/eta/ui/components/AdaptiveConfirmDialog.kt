@@ -2,19 +2,23 @@ package io.github.mangi.eta.ui.components
 
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import com.itos.coui.dialog.CouiDialogAction
+import com.itos.coui.dialog.CouiDialogDefaults
 import com.itos.coui.dialog.Dialog as CouiDialog
 import com.itos.coui.menu.rememberCouiWindowBackdrop
 import com.itos.coui.theme.CouiTheme
 import io.github.mangi.eta.R
 import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.ui.components.coui.LocalInsideCouiDialog
 import io.github.mangi.eta.ui.components.coui.couiPrimaryDialogAction
 import io.github.mangi.eta.ui.components.coui.rememberCouiDialogMaterial
 import io.github.mangi.eta.ui.haptics.TouchHaptics
@@ -73,8 +77,19 @@ internal fun AdaptiveConfirmDialog(
             ),
             material = material,
             backdrop = backdrop,
-            content = content ?: {},
-        )
+        ) {
+            if (content != null) {
+                CompositionLocalProvider(LocalInsideCouiDialog provides true) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = CouiDialogDefaults.contentPadding)
+                            .padding(top = 6.dp, bottom = 12.dp),
+                        content = content,
+                    )
+                }
+            }
+        }
         return
     }
     WindowDialog(

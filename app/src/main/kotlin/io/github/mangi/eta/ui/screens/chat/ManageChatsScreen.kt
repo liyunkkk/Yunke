@@ -27,6 +27,9 @@ import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.Search
+import com.itos.coui.icons.CouiIcons
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.app.LocalUiStyle
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
@@ -127,9 +130,10 @@ internal fun ManageChatsScreen(
         onBack = onBack,
         listModifier = Modifier.streamDiagnosticMeasure("manage.lazy.measure").streamDiagnosticPlacement("manage.lazy.place").streamDiagnosticDraw("manage.lazy.draw"),
         actions = {
+            val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
             IconButton(onClick = { showSearchHistory = true }) {
                 Icon(
-                    imageVector = Icons.Rounded.Search,
+                    imageVector = if (isCoui) CouiIcons.Outlined.Search else Icons.Rounded.Search,
                     contentDescription = stringResource(R.string.action_search_history),
                     tint = MiuixTheme.colorScheme.onSurface,
                 )

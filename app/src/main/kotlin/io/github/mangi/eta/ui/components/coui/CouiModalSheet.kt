@@ -2,6 +2,7 @@ package io.github.mangi.eta.ui.components.coui
 
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -32,6 +33,9 @@ internal fun CouiModalSheet(
         backdrop = rememberCouiWindowBackdrop(),
         showDragHandle = true,
         scrollableContent = scrollableContent,
-        content = content,
-    )
+    ) {
+        CompositionLocalProvider(LocalInsideCouiDialog provides true) {
+            content()
+        }
+    }
 }

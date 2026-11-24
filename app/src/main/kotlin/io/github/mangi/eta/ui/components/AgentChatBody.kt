@@ -2829,8 +2829,22 @@ private fun EmptyChatState(
 
             Spacer(modifier = Modifier.height(18.dp))
 
-            Box(
-                modifier = Modifier
+            val isCouiHero = LocalUiStyle.current == AppearanceUiStyle.COUI
+            val tryItModifier = if (isCouiHero) {
+                val couiDark = CouiTheme.isDark
+                val ink = MiuixTheme.colorScheme.onSurface.copy(alpha = 1f)
+                val shape = remember { CouiShape(18.dp, 2.2f) }
+                val source = remember { MutableInteractionSource() }
+                Modifier
+                    .couiButtonFeedback(couiDark, source, enabled = true)
+                    .clip(shape)
+                    .background(ink.copy(alpha = if (couiDark) 0.07f else 0.045f), shape)
+                    .border(0.5.dp, ink.copy(alpha = if (couiDark) 0.12f else 0.08f), shape)
+                    .clickable(interactionSource = source, indication = null) {
+                        onSuggestionClick(suggestions.first().prompt)
+                    }
+            } else {
+                Modifier
                     .clip(RoundedCornerShape(18.dp))
                     .background(MiuixTheme.colorScheme.surface.copy(alpha = 0.72f))
                     .border(
@@ -2839,7 +2853,9 @@ private fun EmptyChatState(
                         shape = RoundedCornerShape(18.dp),
                     )
                     .clickable { onSuggestionClick(suggestions.first().prompt) }
-                    .padding(horizontal = 20.dp, vertical = 8.dp),
+            }
+            Box(
+                modifier = tryItModifier.padding(horizontal = 20.dp, vertical = 8.dp),
             ) {
                 Text(
                     text = stringResource(R.string.siri_hero_try_it),

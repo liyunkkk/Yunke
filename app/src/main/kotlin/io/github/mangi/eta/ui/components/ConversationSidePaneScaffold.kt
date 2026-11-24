@@ -101,7 +101,10 @@ import androidx.navigationevent.NavigationEventInfo
 import androidx.navigationevent.compose.NavigationBackHandler
 import androidx.navigationevent.compose.rememberNavigationEventState
 import io.github.mangi.eta.R
+import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.data.repository.AssistantRepository
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import com.itos.coui.icons.CouiIcons
 import io.github.mangi.eta.ui.model.ConversationFolderUi
 import io.github.mangi.eta.ui.model.searchResults
 import io.github.mangi.eta.ui.model.ConversationPaneUiState
@@ -525,7 +528,7 @@ private fun PaneSearchRow(
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Icon(
-            imageVector = Icons.Rounded.Search,
+            imageVector = if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiIcons.Outlined.Search else Icons.Rounded.Search,
             contentDescription = null,
             modifier = Modifier.size(DrawerMetrics.SearchIconSize),
             tint = MiuixTheme.colorScheme.onSurface,
@@ -1146,7 +1149,7 @@ private fun PaneDock(
         )
         Spacer(modifier = Modifier.weight(1f))
         DrawerCircleButton(
-            icon = Icons.Rounded.Settings,
+            icon = if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiIcons.Outlined.Setting else Icons.Rounded.Settings,
             label = stringResource(R.string.route_settings),
             onClick = onOpenSettings,
         )
