@@ -172,6 +172,12 @@ import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import top.yukonga.miuix.kmp.utils.scrollEndHaptic
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import com.itos.coui.effect.couiButtonFeedback
+import com.itos.coui.shape.CouiShape
+import com.itos.coui.theme.CouiTheme
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.app.LocalUiStyle
 
 /**
  * 聊天主体：消息流 + 底部输入框。
@@ -2889,8 +2895,21 @@ private fun SuggestionCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Column(
-        modifier = modifier
+    // COUI 下照 Eta：COUI 圆角形状 + 浅色填充 + 细描边 + COUI 按压反馈；Miuix 下保持原样。
+    val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
+    val shapeModifier = if (isCoui) {
+        val couiDark = CouiTheme.isDark
+        val ink = MiuixTheme.colorScheme.onSurface.copy(alpha = 1f)
+        val shape = remember { CouiShape(15.dp, 2.2f) }
+        val interactionSource = remember { MutableInteractionSource() }
+        Modifier
+            .couiButtonFeedback(couiDark, interactionSource, enabled = true)
+            .clip(shape)
+            .background(ink.copy(alpha = if (couiDark) 0.055f else 0.028f), shape)
+            .border(0.5.dp, ink.copy(alpha = if (couiDark) 0.10f else 0.065f), shape)
+            .clickable(interactionSource = interactionSource, indication = null, onClick = onClick)
+    } else {
+        Modifier
             .clip(RoundedCornerShape(12.dp))
             .background(MiuixTheme.colorScheme.surface)
             .border(
@@ -2899,6 +2918,10 @@ private fun SuggestionCard(
                 shape = RoundedCornerShape(12.dp),
             )
             .clickable(onClick = onClick)
+    }
+    Column(
+        modifier = modifier
+            .then(shapeModifier)
             .padding(horizontal = 13.dp, vertical = 12.dp),
     ) {
         // Q4-A：借鉴旧版两行文建议 chip（标题行 + 内容行）。

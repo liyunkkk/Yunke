@@ -211,6 +211,9 @@ import top.yukonga.miuix.kmp.basic.TooltipBox
 import top.yukonga.miuix.kmp.squircle.squircleBorder
 import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import com.itos.coui.theme.CouiTheme
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.app.LocalUiStyle
 
 /**
  * 返回 true 前先让出一帧。用于点击展开：点击那一帧只重组标题并启动展开动画，
@@ -700,7 +703,12 @@ private fun UserMessageBubble(
             modifier = Modifier
                 .widthIn(max = 320.dp)
                 .squircleSurface(
-                    color = MiuixTheme.colorScheme.surfaceContainerHigh,
+                    // COUI 下照 Eta 用浅蓝/深蓝气泡底色；Miuix 下保持原来的容器色。
+                    color = if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
+                        if (CouiTheme.isDark) Color(0xFF202634) else Color(0xFFEEF2FA)
+                    } else {
+                        MiuixTheme.colorScheme.surfaceContainerHigh
+                    },
                     topStart = 20.dp,
                     topEnd = 20.dp,
                     bottomEnd = 6.dp,

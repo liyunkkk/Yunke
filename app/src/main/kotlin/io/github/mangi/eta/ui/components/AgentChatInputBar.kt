@@ -140,6 +140,10 @@ import top.yukonga.miuix.kmp.squircle.squircleBorder
 import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.window.WindowDialog
+import com.itos.coui.shape.CouiShape
+import com.itos.coui.theme.CouiTheme
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.app.LocalUiStyle
 
 private val SendButtonVisualSize = ChatInputActionIconSize
 private val SendIconSize = 16.dp
@@ -415,6 +419,10 @@ internal fun AgentChatInputBar(
             )
         }
 
+        // COUI 下照 Eta：实色浅灰/深灰底 + 细描边 + 柔和阴影；Miuix 下保持 Yunke 的半透明 squircle 输入框。
+        val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
+        val couiDark = CouiTheme.isDark
+        val couiInputShape = remember { CouiShape(24.dp, 2.3f) }
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -425,26 +433,51 @@ internal fun AgentChatInputBar(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .dropShadow(
-                        shape = InputContainerShape,
-                        shadow = Shadow(
-                            radius = 8.dp,
-                            color = Color.Black,
-                            alpha = 0.08f,
-                        ),
-                    )
-                    // Q2-A：半透明输入框底色，让浮窗 blurBehindRadius 透出来（本体与浮窗统一）。
-                    .squircleSurface(
-                        // 浮窗里再压一档透明度，让壁纸色透出来（纯白会像塑料板）。
-                        color = MiuixTheme.colorScheme.surfaceContainer.copy(
-                            alpha = 0.35f,
-                        ),
-                        cornerRadius = 20.dp,
-                    )
-                    .squircleBorder(
-                        width = 0.5.dp,
-                        color = MiuixTheme.colorScheme.outline.copy(alpha = 0.30f),
-                        cornerRadius = EtaInputCornerRadius,
+                    .then(
+                        if (isCoui) {
+                            Modifier
+                                .dropShadow(
+                                    shape = couiInputShape,
+                                    shadow = Shadow(
+                                        radius = 16.dp,
+                                        color = Color.Black,
+                                        alpha = if (couiDark) 0.22f else 0.045f,
+                                    ),
+                                )
+                                .clip(couiInputShape)
+                                .background(
+                                    if (couiDark) Color(0xFF1C1E22) else Color(0xFFF6F7F9),
+                                    couiInputShape,
+                                )
+                                .border(
+                                    width = 0.5.dp,
+                                    color = if (couiDark) Color(0x20FFFFFF) else Color(0x0E000000),
+                                    shape = couiInputShape,
+                                )
+                        } else {
+                            Modifier
+                                .dropShadow(
+                                    shape = InputContainerShape,
+                                    shadow = Shadow(
+                                        radius = 8.dp,
+                                        color = Color.Black,
+                                        alpha = 0.08f,
+                                    ),
+                                )
+                                // Q2-A：半透明输入框底色，让浮窗 blurBehindRadius 透出来（本体与浮窗统一）。
+                                .squircleSurface(
+                                    // 浮窗里再压一档透明度，让壁纸色透出来（纯白会像塑料板）。
+                                    color = MiuixTheme.colorScheme.surfaceContainer.copy(
+                                        alpha = 0.35f,
+                                    ),
+                                    cornerRadius = 20.dp,
+                                )
+                                .squircleBorder(
+                                    width = 0.5.dp,
+                                    color = MiuixTheme.colorScheme.outline.copy(alpha = 0.30f),
+                                    cornerRadius = EtaInputCornerRadius,
+                                )
+                        },
                     )
                     .padding(horizontal = 10.dp, vertical = 8.dp),
             ) {

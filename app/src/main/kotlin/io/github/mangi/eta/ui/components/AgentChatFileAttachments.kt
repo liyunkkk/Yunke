@@ -70,6 +70,13 @@ import top.yukonga.miuix.kmp.squircle.squircleBorder
 import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.window.WindowDialog
+import com.itos.coui.menu.CouiMenuItem
+import com.itos.coui.menu.Menu
+import com.itos.coui.menu.couiMenuAnchor
+import com.itos.coui.menu.rememberCouiMenuAnchor
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.ui.components.coui.CouiInputDialog
 
 internal val ChatInputPopupMargin = 8.dp
 internal val ChatInputPopupSafeMargin = 12.dp
@@ -303,93 +310,138 @@ internal fun AgentAttachmentPickerButton(
     var pathInput by remember { mutableStateOf("") }
 
     val keepIme = rememberKeepImeWhenOpeningMenu()
-    Box(modifier = modifier) {
-        ChatInputNonFocusableIconButton(
-            onClick = {
-                keepIme()
-                menuState.onAnchorClick()
-            },
-            contentDescription = stringResource(R.string.ui_add_attachment_dba9e8),
-        ) {
-            Icon(
-                imageVector = Icons.Rounded.Add,
-                contentDescription = null,
-                modifier = Modifier.size(ChatInputActionIconSize),
-                tint = MiuixTheme.colorScheme.onSurface,
-            )
+    // COUI 下照 Eta 用 COUI 锚定菜单和 COUI 输入弹窗；Miuix 下保持 Yunke 原来的下拉菜单和窗口弹窗。
+    val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
+    val couiAnchor = rememberCouiMenuAnchor()
+    val onSelectOption: (Int) -> Unit = { index ->
+        TouchHaptics.click(view)
+        menuState.dismiss()
+        when (index) {
+            0 -> launchers.pickImage()
+            1 -> launchers.pickVideo()
+            2 -> launchers.pickFiles()
+            3 -> launchers.pickFolder()
+            4 -> {
+                pathInput = ""
+                showPathDialog = true
+            }
         }
-        EtaDropdownMenu(
-            expanded = menuState.expanded,
-            onDismissRequest = menuState::dismiss,
-            preferAbove = true,
-            minWidth = 0.dp,
-            focusable = false,
-        ) {
-            val options = listOf(
-                Triple(stringResource(R.string.attachment_image), Icons.Outlined.Image, 0),
-                Triple(stringResource(R.string.attachment_video), Icons.Outlined.Videocam, 1),
-                Triple(stringResource(R.string.attachment_file), Icons.Rounded.Description, 2),
-                Triple(stringResource(R.string.attachment_folder), Icons.Rounded.FolderOpen, 3),
-                Triple(stringResource(R.string.attachment_enter_path), Icons.Outlined.Link, 4),
-            )
-            options.forEach { (option, icon, index) ->
-                DropdownMenuItem(
-                    modifier = Modifier.height(40.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp),
-                    text = { androidx.compose.material3.Text(option) },
-                    leadingIcon = {
-                        androidx.compose.material3.Icon(
-                            imageVector = icon,
-                            contentDescription = null,
-                            modifier = Modifier.size(22.dp),
-                        )
-                    },
-                    onClick = {
-                        TouchHaptics.click(view)
-                        menuState.dismiss()
-                        when (index) {
-                            0 -> launchers.pickImage()
-                            1 -> launchers.pickVideo()
-                            2 -> launchers.pickFiles()
-                            3 -> launchers.pickFolder()
-                            4 -> {
-                                pathInput = ""
-                                showPathDialog = true
-                            }
-                        }
-                    },
+    }
+    Box(modifier = modifier) {
+        Box(modifier = if (isCoui) Modifier.couiMenuAnchor(couiAnchor) else Modifier) {
+            ChatInputNonFocusableIconButton(
+                onClick = {
+                    keepIme()
+                    if (isCoui) couiAnchor.open { menuState.onAnchorClick() } else menuState.onAnchorClick()
+                },
+                contentDescription = stringResource(R.string.ui_add_attachment_dba9e8),
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Add,
+                    contentDescription = null,
+                    modifier = Modifier.size(ChatInputActionIconSize),
+                    tint = MiuixTheme.colorScheme.onSurface,
                 )
+            }
+        }
+        if (isCoui) {
+            val labels = listOf(
+                stringResource(R.string.attachment_image),
+                stringResource(R.string.attachment_video),
+                stringResource(R.string.attachment_file),
+                stringResource(R.string.attachment_folder),
+                stringResource(R.string.attachment_enter_path),
+            )
+            val menuItems = remember(labels) {
+                labels.mapIndexed { index, label -> CouiMenuItem(value = index, text = label) }
+            }
+            Menu(
+                expanded = menuState.expanded,
+                onDismissRequest = menuState::dismiss,
+                items = menuItems,
+                onItemClick = { item -> onSelectOption(item.value) },
+                anchor = couiAnchor,
+            )
+        } else {
+            EtaDropdownMenu(
+                expanded = menuState.expanded,
+                onDismissRequest = menuState::dismiss,
+                preferAbove = true,
+                minWidth = 0.dp,
+                focusable = false,
+            ) {
+                val options = listOf(
+                    Triple(stringResource(R.string.attachment_image), Icons.Outlined.Image, 0),
+                    Triple(stringResource(R.string.attachment_video), Icons.Outlined.Videocam, 1),
+                    Triple(stringResource(R.string.attachment_file), Icons.Rounded.Description, 2),
+                    Triple(stringResource(R.string.attachment_folder), Icons.Rounded.FolderOpen, 3),
+                    Triple(stringResource(R.string.attachment_enter_path), Icons.Outlined.Link, 4),
+                )
+                options.forEach { (option, icon, index) ->
+                    DropdownMenuItem(
+                        modifier = Modifier.height(40.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp),
+                        text = { androidx.compose.material3.Text(option) },
+                        leadingIcon = {
+                            androidx.compose.material3.Icon(
+                                imageVector = icon,
+                                contentDescription = null,
+                                modifier = Modifier.size(22.dp),
+                            )
+                        },
+                        onClick = { onSelectOption(index) },
+                    )
+                }
             }
         }
     }
 
-    WindowDialog(
-        show = showPathDialog,
-        title = stringResource(R.string.ui_input_file_path_36d474),
-        summary = stringResource(R.string.ui_supports_files_and_folders_under_internal_storage_or_520786),
-        onDismissRequest = { showPathDialog = false },
-    ) {
-        Column {
-            TextField(
-                value = pathInput,
-                onValueChange = { pathInput = it },
-                label = stringResource(R.string.ui_absolute_path_9ac6fc),
-                useLabelAsPlaceholder = true,
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                modifier = Modifier.fillMaxWidth(),
-            )
-            MiuixDialogActions(
-                confirmText = stringResource(R.string.attachment_add),
-                confirmEnabled = pathInput.trim().startsWith('/'),
-                onCancel = { showPathDialog = false },
-                onConfirm = {
-                    val path = pathInput.trim()
-                    showPathDialog = false
-                    onAttachFilePath(path)
-                },
-                modifier = Modifier.padding(top = 16.dp),
-            )
+    if (isCoui) {
+        CouiInputDialog(
+            visible = showPathDialog,
+            title = stringResource(R.string.ui_input_file_path_36d474),
+            message = stringResource(R.string.ui_supports_files_and_folders_under_internal_storage_or_520786),
+            value = pathInput,
+            onValueChange = { pathInput = it },
+            placeholder = stringResource(R.string.ui_absolute_path_9ac6fc),
+            confirmText = stringResource(R.string.attachment_add),
+            confirmEnabled = pathInput.trim().startsWith('/'),
+            onConfirm = {
+                val path = pathInput.trim()
+                showPathDialog = false
+                onAttachFilePath(path)
+            },
+            onDismissRequest = { showPathDialog = false },
+        )
+    } else {
+        WindowDialog(
+            show = showPathDialog,
+            title = stringResource(R.string.ui_input_file_path_36d474),
+            summary = stringResource(R.string.ui_supports_files_and_folders_under_internal_storage_or_520786),
+            onDismissRequest = { showPathDialog = false },
+        ) {
+            Column {
+                TextField(
+                    value = pathInput,
+                    onValueChange = { pathInput = it },
+                    label = stringResource(R.string.ui_absolute_path_9ac6fc),
+                    useLabelAsPlaceholder = true,
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                MiuixDialogActions(
+                    confirmText = stringResource(R.string.attachment_add),
+                    confirmEnabled = pathInput.trim().startsWith('/'),
+                    onCancel = { showPathDialog = false },
+                    onConfirm = {
+                        val path = pathInput.trim()
+                        showPathDialog = false
+                        onAttachFilePath(path)
+                    },
+                    modifier = Modifier.padding(top = 16.dp),
+                )
+            }
         }
     }
 }
