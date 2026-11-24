@@ -50,6 +50,8 @@ import io.github.mangi.eta.agent.browser.ported.ui.components.MinisTextButton
 import io.github.mangi.eta.ui.app.LocalUiStyle
 import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.ui.components.coui.CouiConfirmDialog
+import androidx.compose.foundation.layout.ColumnScope
+import io.github.mangi.eta.ui.components.coui.CouiModalSheet
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -67,10 +69,7 @@ fun BrowserHistorySheet(
         else mapOf("Results" to historyStore.search(searchQuery))
     }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-    ) {
+    val sheetBody: @Composable ColumnScope.() -> Unit = {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -194,6 +193,15 @@ fun BrowserHistorySheet(
                 }
             }
         }
+    }
+    if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
+        CouiModalSheet(onDismiss = onDismiss, content = sheetBody)
+    } else {
+        ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+            content = sheetBody,
+        )
     }
 
     if (showClearConfirm) {

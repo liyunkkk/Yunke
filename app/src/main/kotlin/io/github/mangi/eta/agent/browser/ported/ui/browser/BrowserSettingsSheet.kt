@@ -69,6 +69,8 @@ import io.github.mangi.eta.agent.browser.ported.ui.util.bringIntoViewOnFocus
 import io.github.mangi.eta.ui.app.LocalUiStyle
 import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.ui.components.coui.CouiConfirmDialog
+import androidx.compose.foundation.layout.ColumnScope
+import io.github.mangi.eta.ui.components.coui.CouiModalSheet
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -116,10 +118,7 @@ fun BrowserSettingsSheet(
     // Cookie filter (mirrors iOS `.searchable("Filter by domain")`).
     var cookieFilterText by remember { mutableStateOf("") }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-    ) {
+    val sheetBody: @Composable ColumnScope.() -> Unit = {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -416,6 +415,15 @@ fun BrowserSettingsSheet(
                 Text(stringResource(R.string.om_browser_settings_clear_all_cookies), color = MaterialTheme.colorScheme.error)
             }
         }
+    }
+    if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
+        CouiModalSheet(onDismiss = onDismiss, content = sheetBody)
+    } else {
+        ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+            content = sheetBody,
+        )
     }
 
     if (showClearConfirm) {
