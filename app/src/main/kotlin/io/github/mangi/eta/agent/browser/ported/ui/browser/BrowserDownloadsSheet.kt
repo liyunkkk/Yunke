@@ -50,6 +50,7 @@ import androidx.compose.foundation.layout.ColumnScope
 import io.github.mangi.eta.ui.app.LocalUiStyle
 import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.ui.components.coui.CouiModalSheet
+import io.github.mangi.eta.ui.components.coui.EtaLinearProgressIndicator
 
 /**
  * [T-android-browser-download-ux] Downloads panel — Android port of iOS
@@ -181,14 +182,14 @@ private fun DownloadRow(
                     )
                     Spacer(Modifier.height(4.dp))
                     if (entry.totalBytes > 0) {
-                        LinearProgressIndicator(
+                        EtaLinearProgressIndicator(
                             progress = {
                                 (entry.bytesDone.toFloat() / entry.totalBytes).coerceIn(0f, 1f)
                             },
                             modifier = Modifier.fillMaxWidth(),
                         )
                     } else {
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        EtaLinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                     }
                 }
                 BrowserTabPool.DownloadState.COMPLETED -> {

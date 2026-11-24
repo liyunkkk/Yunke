@@ -123,6 +123,7 @@ import io.github.mangi.eta.ui.app.LocalUiStyle
 import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.ui.components.coui.CouiNoticeDialog
 import io.github.mangi.eta.ui.components.coui.CouiConfirmDialog
+import io.github.mangi.eta.ui.components.coui.EtaMaterialCheckbox
 
 private val modelSearchSeparators = Regex("""[^\p{L}\p{N}]+""")
 private val allReasoningEffortTiers = listOf(
@@ -1230,11 +1231,11 @@ private fun RemoteModelPickDialog(
         onDismissRequest = { onDismiss() },
     ) {
         Column(Modifier.fillMaxWidth().height(420.dp)) {
-                OutlinedTextField(
+                io.github.mangi.eta.ui.components.coui.CouiTextField(
                     value = query,
                     onValueChange = { query = it },
                     singleLine = true,
-                    label = { MaterialText(stringResource(R.string.ui_search_model_df5586)) },
+                    placeholder = stringResource(R.string.ui_search_model_df5586),
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Row(
@@ -1267,7 +1268,7 @@ private fun RemoteModelPickDialog(
                             }.padding(vertical = 2.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Checkbox(checked = checked, onCheckedChange = { on ->
+                            EtaMaterialCheckbox(checked = checked, onCheckedChange = { on ->
                                 selectedKeys = if (on) selectedKeys + key else selectedKeys - key
                             })
                             Column(Modifier.weight(1f)) {
@@ -1329,7 +1330,7 @@ private fun RemoteModelPickDialog(
                             }.padding(vertical = 2.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Checkbox(checked = checked, onCheckedChange = { on ->
+                            EtaMaterialCheckbox(checked = checked, onCheckedChange = { on ->
                                 selectedKeys = if (on) selectedKeys + key else selectedKeys - key
                             })
                             Column(Modifier.weight(1f)) {

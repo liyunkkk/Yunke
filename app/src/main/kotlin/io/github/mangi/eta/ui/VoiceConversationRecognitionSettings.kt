@@ -19,6 +19,7 @@ import io.github.mangi.eta.ui.components.Card
 import io.github.mangi.eta.ui.components.ArrowPreference
 import io.github.mangi.eta.ui.components.SwitchPreference
 import io.github.mangi.eta.ui.components.AdaptiveConfirmDialog
+import io.github.mangi.eta.ui.components.coui.EtaLinearProgressIndicator
 
 /** Own ASR selections; only the downloaded offline model is shared with dictation. */
 @Composable
@@ -72,7 +73,7 @@ internal fun VoiceConversationRecognitionSettings() {
                     enabled = !pack.checking && !pack.ready,
                     onClick = { if (pack.downloading) OfflineSpeechPack.cancelDownload() else confirmDownload = true },
                 )
-                if (pack.downloading) LinearProgressIndicator(
+                if (pack.downloading) EtaLinearProgressIndicator(
                     progress = { (pack.downloadedBytes.toFloat() / SpeechModelManifest.totalBytes).coerceIn(0f, 1f) },
                     modifier = Modifier.fillMaxWidth().padding(16.dp),
                 )

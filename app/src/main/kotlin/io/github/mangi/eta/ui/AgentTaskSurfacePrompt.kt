@@ -48,6 +48,7 @@ import io.github.mangi.eta.ui.app.LocalUiStyle
 import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.ui.components.coui.CouiNoticeDialog
 import io.github.mangi.eta.ui.components.coui.CouiConfirmDialog
+import io.github.mangi.eta.ui.components.coui.EtaRadioButton
 
 /**
  * 应用内兜底：独立弹窗 Activity 没能拉起来（例如后台启动受限）或已退到后台时，
@@ -226,6 +227,6 @@ private fun SurfaceChoiceRow(
         supportingContent = {
             Text(summary, color = MaterialTheme.colorScheme.onSurfaceVariant)
         },
-        trailingContent = { RadioButton(selected = selected, onClick = null) },
+        trailingContent = { EtaRadioButton(selected = selected, onClick = null) },
     )
 }

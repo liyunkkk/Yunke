@@ -91,6 +91,8 @@ import top.yukonga.miuix.kmp.basic.Text as MiuixText
 import io.github.mangi.eta.ui.components.AdaptiveNoticeDialog
 import io.github.mangi.eta.ui.components.WindowDialog
 import io.github.mangi.eta.ui.components.AdaptiveConfirmDialog
+import io.github.mangi.eta.ui.components.coui.EtaRadioButton
+import io.github.mangi.eta.ui.components.coui.EtaMaterialSwitch
 
 
 private val CompressDialogChrome = 200.dp
@@ -231,7 +233,7 @@ private fun CompactCompressionEndpointPreference(
                         color = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.weight(1f),
                     )
-                    RadioButton(selected = checked, onClick = null, enabled = enabled)
+                    EtaRadioButton(selected = checked, onClick = null, enabled = enabled)
                 }
             }
         }
@@ -375,7 +377,7 @@ internal fun CompressConversationDialog(
                         modifier = Modifier.weight(1f).padding(end = 12.dp),
                     )
                     val customModelLabel = stringResource(R.string.ui_custom_compress_model_title)
-                    Switch(
+                    EtaMaterialSwitch(
                         checked = customModelEnabled,
                         modifier = Modifier.semantics { contentDescription = customModelLabel },
                         enabled = !isCompressing && !isLoadingModels,

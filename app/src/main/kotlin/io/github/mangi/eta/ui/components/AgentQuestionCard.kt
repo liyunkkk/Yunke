@@ -58,6 +58,7 @@ import io.github.mangi.eta.agent.question.AgentQuestionStatus
 import io.github.mangi.eta.ui.app.AgentQuestionProjection
 import io.github.mangi.eta.ui.model.AgentQuestionMessageUi
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import io.github.mangi.eta.ui.components.coui.EtaRadioButton
 
 /** Draft and submission state stay in the conversation store. Only whole-card disclosure is local; the form itself is never folded in parts. */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -201,7 +202,7 @@ private fun QuestionOptionRow(
         .heightIn(min = 48.dp).padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         // Only the entire 48dp+ row is actionable; no competing tiny radio hit target.
-        RadioButton(selected = selected, onClick = null, enabled = enabled, modifier = Modifier.size(20.dp),
+        EtaRadioButton(selected = selected, onClick = null, enabled = enabled, modifier = Modifier.size(20.dp),
             colors = RadioButtonDefaults.colors(selectedColor = colors.primary,
                 unselectedColor = colors.onSurfaceVariantActions,
                 disabledSelectedColor = colors.primary.copy(alpha = 0.38f),

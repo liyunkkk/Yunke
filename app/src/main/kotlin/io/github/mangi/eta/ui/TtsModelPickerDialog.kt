@@ -36,6 +36,7 @@ import io.github.mangi.eta.ui.app.LocalUiStyle
 import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.ui.components.coui.CouiNoticeDialog
 import io.github.mangi.eta.ui.components.coui.CouiConfirmDialog
+import io.github.mangi.eta.ui.components.coui.EtaRadioButton
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -72,7 +73,7 @@ internal fun TtsModelPickerDialog(
                             }).padding(horizontal = 4.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        if (!highlightSelection) RadioButton(selected = state.selectedModel == null, onClick = null)
+                        if (!highlightSelection) EtaRadioButton(selected = state.selectedModel == null, onClick = null)
                         Text("无", modifier = Modifier.weight(1f).padding(start = 12.dp),
                             color = if (highlightSelection && state.selectedModel == null) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface)
                     }
@@ -107,7 +108,7 @@ internal fun TtsModelPickerDialog(
                                     }).padding(horizontal = 4.dp, vertical = 6.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                if (!highlightSelection) RadioButton(selected = selected, onClick = null)
+                                if (!highlightSelection) EtaRadioButton(selected = selected, onClick = null)
                                 Text(model.displayName, style = MaterialTheme.typography.bodyMedium,
                                     color = if (highlightSelection && selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface,
                                     modifier = Modifier.weight(1f).padding(start = 12.dp))
@@ -134,7 +135,7 @@ internal fun TtsModelPickerDialog(
                             }).padding(horizontal = 4.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        if (!highlightSelection) RadioButton(selected = state.selectedModel == null, onClick = null)
+                        if (!highlightSelection) EtaRadioButton(selected = state.selectedModel == null, onClick = null)
                         Text("无", modifier = Modifier.weight(1f).padding(start = 12.dp),
                             color = if (highlightSelection && state.selectedModel == null) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface)
                     }
@@ -169,7 +170,7 @@ internal fun TtsModelPickerDialog(
                                     }).padding(horizontal = 4.dp, vertical = 6.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                if (!highlightSelection) RadioButton(selected = selected, onClick = null)
+                                if (!highlightSelection) EtaRadioButton(selected = selected, onClick = null)
                                 Text(model.displayName, style = MaterialTheme.typography.bodyMedium,
                                     color = if (highlightSelection && selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface,
                                     modifier = Modifier.weight(1f).padding(start = 12.dp))
@@ -332,7 +333,7 @@ internal fun SpeechRadioPickerDialog(
                             }).padding(horizontal = 4.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        RadioButton(selected = selected, onClick = null)
+                        EtaRadioButton(selected = selected, onClick = null)
                         Text(label, style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier.weight(1f).padding(start = 12.dp))
@@ -363,7 +364,7 @@ internal fun SpeechRadioPickerDialog(
                             }).padding(horizontal = 4.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        RadioButton(selected = selected, onClick = null)
+                        EtaRadioButton(selected = selected, onClick = null)
                         Text(label, style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier.weight(1f).padding(start = 12.dp))
@@ -406,7 +407,7 @@ private fun VoiceRow(
             .padding(horizontal = 4.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        RadioButton(selected = selected, onClick = null)
+        EtaRadioButton(selected = selected, onClick = null)
         Text(
             text = voice.name,
             style = MaterialTheme.typography.bodyLarge,

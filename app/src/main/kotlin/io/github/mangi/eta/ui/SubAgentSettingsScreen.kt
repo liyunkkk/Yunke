@@ -50,6 +50,7 @@ import top.yukonga.miuix.kmp.basic.DropdownItem
 import io.github.mangi.eta.ui.app.LocalUiStyle
 import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.ui.components.coui.CouiConfirmDialog
+import io.github.mangi.eta.ui.components.coui.EtaMaterialSwitch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -98,10 +99,20 @@ internal fun SubAgentSettingsScreen(
                 }, colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)) },
                 floatingActionButtonPosition = FabPosition.Center,
                 floatingActionButton = {
-                    FilledTonalButton(enabled = editable, onClick = {
-                        TouchHaptics.click(view); name = ""; add = true
-                    }, modifier = Modifier.heightIn(min = 48.dp).widthIn(min = 168.dp), shape = RoundedCornerShape(50)) {
-                        Text("添加子代理组", style = MaterialTheme.typography.bodyLarge)
+                    if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
+                        io.github.mangi.eta.ui.components.coui.CouiButton(
+                            text = "添加子代理组",
+                            enabled = editable,
+                            role = io.github.mangi.eta.ui.components.coui.CouiButtonRole.Primary,
+                            onClick = { TouchHaptics.click(view); name = ""; add = true },
+                            modifier = Modifier.heightIn(min = 48.dp).widthIn(min = 168.dp),
+                        )
+                    } else {
+                        FilledTonalButton(enabled = editable, onClick = {
+                            TouchHaptics.click(view); name = ""; add = true
+                        }, modifier = Modifier.heightIn(min = 48.dp).widthIn(min = 168.dp), shape = RoundedCornerShape(50)) {
+                            Text("添加子代理组", style = MaterialTheme.typography.bodyLarge)
+                        }
                     }
                 }) { padding ->
                 LazyColumn(Modifier.fillMaxSize().padding(padding).horizontalCutoutPadding(),
@@ -200,18 +211,33 @@ private fun SubAgentPresetDetail(editor: ConversationSubAgentEditor, groupName: 
             }, colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)) },
             floatingActionButtonPosition = FabPosition.Center,
             floatingActionButton = {
-                FilledTonalButton(onClick = {
-                    if (editor.enabled) SubAgentProfileDraftSession.open(editor)?.let {
-                        TouchHaptics.click(view)
-                        addedDraft = it
+                if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
+                    io.github.mangi.eta.ui.components.coui.CouiButton(
+                        text = "添加子代理",
+                        enabled = editable,
+                        role = io.github.mangi.eta.ui.components.coui.CouiButtonRole.Primary,
+                        onClick = {
+                            if (editor.enabled) SubAgentProfileDraftSession.open(editor)?.let {
+                                TouchHaptics.click(view)
+                                addedDraft = it
+                            }
+                        },
+                        modifier = Modifier.heightIn(min = 48.dp).widthIn(min = 168.dp),
+                    )
+                } else {
+                    FilledTonalButton(onClick = {
+                        if (editor.enabled) SubAgentProfileDraftSession.open(editor)?.let {
+                            TouchHaptics.click(view)
+                            addedDraft = it
+                        }
+                    },
+                        enabled = editable, modifier = Modifier.heightIn(min = 48.dp).widthIn(min = 168.dp),
+                        shape = RoundedCornerShape(50),
+                        colors = ButtonDefaults.filledTonalButtonColors(containerColor = MaterialTheme.colorScheme.primaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer),
+                        elevation = ButtonDefaults.filledTonalButtonElevation(defaultElevation = 3.dp)) {
+                        Text("添加子代理", style = MaterialTheme.typography.bodyLarge)
                     }
-                },
-                    enabled = editable, modifier = Modifier.heightIn(min = 48.dp).widthIn(min = 168.dp),
-                    shape = RoundedCornerShape(50),
-                    colors = ButtonDefaults.filledTonalButtonColors(containerColor = MaterialTheme.colorScheme.primaryContainer,
-                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer),
-                    elevation = ButtonDefaults.filledTonalButtonElevation(defaultElevation = 3.dp)) {
-                    Text("添加子代理", style = MaterialTheme.typography.bodyLarge)
                 }
             }) { padding ->
             Box(Modifier.fillMaxSize().padding(padding).horizontalCutoutPadding(), contentAlignment = Alignment.TopCenter) {
@@ -234,7 +260,7 @@ private fun SubAgentPresetDetail(editor: ConversationSubAgentEditor, groupName: 
                                     Text("轮询退避门禁", style = MaterialTheme.typography.bodyLarge)
                                     Text("同一运行中任务的连续查询过于频繁时，短暂摘除查询工具；终态任务与列表查询不受限。", style = MaterialTheme.typography.bodySmall)
                                 }
-                                Switch(checked = pollGuard, enabled = editable,
+                                EtaMaterialSwitch(checked = pollGuard, enabled = editable,
                                     onCheckedChange = { if (editor?.enabled == true) {
                                         pollGuard = it
                                         Prefs.putBoolean(Prefs.Keys.SUBAGENT_POLL_GUARD, it)
@@ -258,7 +284,7 @@ private fun SubAgentPresetDetail(editor: ConversationSubAgentEditor, groupName: 
                                         Box(Modifier.requiredSize(36.dp, 22.dp).wrapContentSize(unbounded = true)
                                             .semantics { contentDescription = "启用${profile.name}" }, contentAlignment = Alignment.Center) {
                                             CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides Dp.Unspecified) {
-                                                Switch(profile.enabled, enabled = editable, onCheckedChange = { active ->
+                                                EtaMaterialSwitch(profile.enabled, enabled = editable, onCheckedChange = { active ->
                                                     if (editor?.enabled == true) { TouchHaptics.click(view); editor.updateProfile(profile.id) { it.copy(enabled = active) } }
                                                 }, modifier = Modifier.scale(0.7f))
                                             }

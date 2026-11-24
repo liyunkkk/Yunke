@@ -22,6 +22,7 @@ import io.github.mangi.eta.ui.components.Card
 import io.github.mangi.eta.ui.components.ArrowPreference
 import io.github.mangi.eta.ui.components.SwitchPreference
 import io.github.mangi.eta.ui.components.AdaptiveConfirmDialog
+import io.github.mangi.eta.ui.components.coui.EtaLinearProgressIndicator
 
 @Composable
 internal fun SpeechSettingsScreen(onBack: () -> Unit) {
@@ -76,7 +77,7 @@ internal fun SpeechSettingsScreen(onBack: () -> Unit) {
                 if (state.downloading) {
                     val progress = (state.downloadedBytes.toFloat() / SpeechModelManifest.totalBytes).coerceIn(0f, 1f)
                     Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 16.dp)) {
-                        LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
+                        EtaLinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
                         Text("${(progress * 100).toInt()}%", style = MaterialTheme.typography.bodySmall,
                             modifier = Modifier.padding(top = 6.dp))
                     }

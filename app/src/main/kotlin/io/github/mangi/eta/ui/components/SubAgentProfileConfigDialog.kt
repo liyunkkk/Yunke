@@ -32,6 +32,7 @@ import io.github.mangi.eta.ui.haptics.TouchHaptics
 import io.github.mangi.eta.ui.model.AgentModelPickerProjector
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
+import io.github.mangi.eta.ui.components.coui.EtaMaterialSwitch
 
 /** One opening owns one editor, application, expected profile and parallel-pool snapshot.
  * Nothing here writes preferences until commitProfileDraft; abandoning a session is zero-write. */
@@ -262,7 +263,7 @@ internal fun SubAgentProfileConfigDialog(
                         singleLine = true, enabled = usable, modifier = Modifier.fillMaxWidth())
                     Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text("启用", Modifier.weight(1f))
-                        Switch(draft.enabled, enabled = usable, onCheckedChange = { active -> interact { session.edit { it.copy(enabled = active) } } })
+                        EtaMaterialSwitch(draft.enabled, enabled = usable, onCheckedChange = { active -> interact { session.edit { it.copy(enabled = active) } } })
                     }
                     SubAgentSettingRow("模型", boundConfig?.let { it.modelDisplayName.ifBlank { it.model } }
                         ?: if (draft.modelId.isBlank()) "选择模型" else "模型不可用", Icons.Rounded.ViewInAr,

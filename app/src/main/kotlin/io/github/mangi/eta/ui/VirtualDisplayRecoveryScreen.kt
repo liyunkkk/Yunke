@@ -54,6 +54,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import io.github.mangi.eta.ui.components.coui.EtaCircularProgressIndicator
 
 /**
  * Inline controls on the Agent task preference page. Reading status never changes the display.
@@ -157,7 +158,7 @@ internal fun VirtualDisplayRecoveryControls(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     if (working) {
-                        CircularProgressIndicator(
+                        EtaCircularProgressIndicator(
                             modifier = Modifier.size(16.dp),
                             strokeWidth = 2.dp,
                         )

@@ -49,6 +49,7 @@ import io.github.mangi.eta.ui.model.ConversationTokenUsageUi
 import io.github.mangi.eta.ui.model.MessageSearchHit
 import io.github.mangi.eta.ui.CompressConversationDialog
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import io.github.mangi.eta.ui.components.coui.EtaMaterialSwitch
 
 private val TopBarMenuIconSize = 24.dp
 private val CompactMenuItemModifier = Modifier.height(40.dp)
@@ -148,7 +149,7 @@ internal fun TopBarOverflowMenu(
                     )
                 },
                 trailingIcon = {
-                    Switch(
+                    EtaMaterialSwitch(
                         checked = interactiveModeEnabled,
                         onCheckedChange = { enabled ->
                             TouchHaptics.click(view)
@@ -259,7 +260,7 @@ internal fun TopBarOverflowMenu(
                     )
                 },
                 trailingIcon = {
-                    Switch(
+                    EtaMaterialSwitch(
                         checked = autoCompressEnabled,
                         onCheckedChange = null,
                         modifier = Modifier.scale(0.72f),

@@ -101,17 +101,29 @@ fun BrowserHistorySheet(
             }
 
             // Search bar
-            OutlinedTextField(
-                value = searchQuery,
-                onValueChange = { searchQuery = it },
-                placeholder = { Text(stringResource(R.string.om_browser_history_search)) },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                singleLine = true,
-                shape = RoundedCornerShape(20.dp),
-                textStyle = MaterialTheme.typography.bodySmall,
-            )
+            if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
+                io.github.mangi.eta.ui.components.coui.CouiTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    placeholder = stringResource(R.string.om_browser_history_search),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    singleLine = true,
+                )
+            } else {
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    placeholder = { Text(stringResource(R.string.om_browser_history_search)) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    singleLine = true,
+                    shape = RoundedCornerShape(20.dp),
+                    textStyle = MaterialTheme.typography.bodySmall,
+                )
+            }
 
             Spacer(Modifier.height(8.dp))
 

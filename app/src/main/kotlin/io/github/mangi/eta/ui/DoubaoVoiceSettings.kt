@@ -44,6 +44,10 @@ import io.github.mangi.eta.ui.app.LocalUiStyle
 import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.ui.components.coui.CouiConfirmDialog
 import io.github.mangi.eta.ui.components.coui.CouiNoticeDialog
+import io.github.mangi.eta.ui.components.coui.EtaRadioButton
+import io.github.mangi.eta.ui.components.coui.EtaMaterialCheckbox
+import io.github.mangi.eta.ui.components.coui.EtaFloatingActionButton
+import io.github.mangi.eta.ui.components.coui.EtaLinearProgressIndicator
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -168,7 +172,7 @@ internal fun DoubaoVoiceSettings(page: String, onBack: () -> Unit) {
         },
         floatingActionButton = {
             if (home) Box {
-                FloatingActionButton(onClick = { TouchHaptics.click(view); if (config.cloneKey.isBlank()) showAccount = true else addMenu = true }) {
+                EtaFloatingActionButton(onClick = { TouchHaptics.click(view); if (config.cloneKey.isBlank()) showAccount = true else addMenu = true }) {
                     Icon(Icons.Rounded.Add, contentDescription = "添加声音")
                 }
                 EtaMaterialDropdownMenu(expanded = addMenu, onDismissRequest = { addMenu = false }) {
@@ -196,9 +200,9 @@ internal fun DoubaoVoiceSettings(page: String, onBack: () -> Unit) {
                         } else {
                             if (page == "asr") {
                                 Row {
-                                    RadioButton(!config.cloudAsr, { TouchHaptics.click(view); DoubaoVoiceConfig.save(context, config.copy(cloudAsr = false)) })
+                                    EtaRadioButton(!config.cloudAsr, { TouchHaptics.click(view); DoubaoVoiceConfig.save(context, config.copy(cloudAsr = false)) })
                                     Text("本机识别", Modifier.padding(top = 12.dp))
-                                    RadioButton(config.cloudAsr, { TouchHaptics.click(view); DoubaoVoiceConfig.save(context, config.copy(cloudAsr = true)) })
+                                    EtaRadioButton(config.cloudAsr, { TouchHaptics.click(view); DoubaoVoiceConfig.save(context, config.copy(cloudAsr = true)) })
                                     Text("豆包识别", Modifier.padding(top = 12.dp))
                                 }
                                 if (!config.cloudAsr) Text("无需账户。上一页下载语音包后，即可离线识别。")
@@ -211,7 +215,7 @@ internal fun DoubaoVoiceSettings(page: String, onBack: () -> Unit) {
                                         Text("仅在控制台开通了不同服务时更改。")
                                         DoubaoAsrProtocol.resources.forEach { resource ->
                                             Row {
-                                                RadioButton(selected = resource == config.resource, onClick = { TouchHaptics.click(view); DoubaoVoiceConfig.save(context, config.copy(resource = resource)) })
+                                                EtaRadioButton(selected = resource == config.resource, onClick = { TouchHaptics.click(view); DoubaoVoiceConfig.save(context, config.copy(resource = resource)) })
                                                 Text(when (resource) {
                                                     "volc.seedasr.sauc.duration" -> "识别 2.0 · 按时长"
                                                     "volc.seedasr.sauc.concurrent" -> "识别 2.0 · 按并发"
@@ -228,7 +232,7 @@ internal fun DoubaoVoiceSettings(page: String, onBack: () -> Unit) {
                             if (page == "voices") {
                                 if (mode == "create") {
                                     Text("${step + 1} / 3 · " + listOf("选择名额", "选择录音", "确认制作")[step], style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-                                    LinearProgressIndicator(progress = { (step + 1) / 3f }, modifier = Modifier.fillMaxWidth())
+                                    EtaLinearProgressIndicator(progress = { (step + 1) / 3f }, modifier = Modifier.fillMaxWidth())
                                 }
                                 if (mode != null && step == 0) {
                                     Text(if (mode == "import") "选择已有声音或填写音色 ID，仅查询导入，不会重新训练。" else "选择一个已有名额，免费赠送的也可以使用。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -240,7 +244,7 @@ internal fun DoubaoVoiceSettings(page: String, onBack: () -> Unit) {
                                                 ListItem(
                                                     modifier = Modifier.selectable(selected = postpaid == value, role = Role.RadioButton, onClick = { TouchHaptics.click(view); postpaid = value; consent = false }),
                                                     headlineContent = { Text(label) },
-                                                    leadingContent = { RadioButton(selected = postpaid == value, onClick = null) },
+                                                    leadingContent = { EtaRadioButton(selected = postpaid == value, onClick = null) },
                                                 )
                                             }
                                         }
@@ -300,7 +304,7 @@ internal fun DoubaoVoiceSettings(page: String, onBack: () -> Unit) {
                                         modifier = Modifier.fillMaxWidth().toggleable(value = consent, enabled = !busy, role = Role.Checkbox, onValueChange = { TouchHaptics.click(view); consent = it }).padding(vertical = 8.dp),
                                         verticalAlignment = Alignment.CenterVertically,
                                     ) {
-                                        Checkbox(checked = consent, onCheckedChange = null, enabled = !busy)
+                                        EtaMaterialCheckbox(checked = consent, onCheckedChange = null, enabled = !busy)
                                         Text("我有权使用该录音，并确认以上操作", Modifier.weight(1f).padding(start = 12.dp))
                                     }
                                     VoiceAction(text = if (busy) "正在提交…" else "确认上传并制作", primary = true, enabled = consent && !busy, onClick = {
@@ -450,7 +454,7 @@ private fun VoiceSlotSync(apiKey: String, onBusy: (Boolean) -> Unit, onResult: (
                             VoiceCatalogPreferences.save(context, ak, item.name)
                             projectPicker = false; projectOptions = false
                         }).padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        RadioButton(selected = project == item.name, enabled = item.allowed && !working, onClick = null)
+                        EtaRadioButton(selected = project == item.name, enabled = item.allowed && !working, onClick = null)
                         Column(Modifier.weight(1f).padding(start = 12.dp)) {
                             Text(item.displayName, style = MaterialTheme.typography.bodyLarge,
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (item.allowed) 1f else 0.38f))
@@ -475,7 +479,7 @@ private fun VoiceSlotSync(apiKey: String, onBusy: (Boolean) -> Unit, onResult: (
                             VoiceCatalogPreferences.save(context, ak, item.name)
                             projectPicker = false; projectOptions = false
                         }).padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        RadioButton(selected = project == item.name, enabled = item.allowed && !working, onClick = null)
+                        EtaRadioButton(selected = project == item.name, enabled = item.allowed && !working, onClick = null)
                         Column(Modifier.weight(1f).padding(start = 12.dp)) {
                             Text(item.displayName, style = MaterialTheme.typography.bodyLarge,
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (item.allowed) 1f else 0.38f))
@@ -595,7 +599,7 @@ private fun VoiceSlotRow(
         modifier = Modifier.selectable(selected = selected, enabled = enabled, role = Role.RadioButton, onClick = { TouchHaptics.click(view); onClick() }),
         headlineContent = { Text(title) },
         supportingContent = { Text("$status · $quota") },
-        leadingContent = { RadioButton(selected = selected, enabled = enabled, onClick = null) },
+        leadingContent = { EtaRadioButton(selected = selected, enabled = enabled, onClick = null) },
         colors = ListItemDefaults.colors(
             containerColor = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface,
             headlineColor = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 1f else 0.38f),

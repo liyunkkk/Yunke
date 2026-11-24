@@ -17,9 +17,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.data.model.WebHttpMethod
 import io.github.mangi.eta.data.model.WebToolBackend
+import io.github.mangi.eta.ui.app.LocalUiStyle
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
+import io.github.mangi.eta.ui.components.coui.CouiTextField
 
 /** Independent page: deliberately has no shared strings or navigation dependencies. */
 @Composable
@@ -121,6 +124,19 @@ private fun MethodPicker(selected: WebHttpMethod, onChange: (WebHttpMethod) -> U
 
 @Composable
 private fun WebField(label: String, value: String, secret: Boolean = false, multiline: Boolean = false, onChange: (String) -> Unit) {
+    if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
+        CouiTextField(
+            value = value,
+            onValueChange = onChange,
+            label = label,
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = !multiline,
+            minLines = if (multiline) 3 else 1,
+            maxLines = if (multiline) Int.MAX_VALUE else 1,
+            visualTransformation = if (secret) PasswordVisualTransformation() else VisualTransformation.None,
+        )
+        return
+    }
     OutlinedTextField(
         value = value,
         onValueChange = onChange,

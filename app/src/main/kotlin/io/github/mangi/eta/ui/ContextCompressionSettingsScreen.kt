@@ -49,6 +49,7 @@ import kotlinx.coroutines.withContext
 import io.github.mangi.eta.ui.components.Card
 import io.github.mangi.eta.ui.components.SmallTitle
 import io.github.mangi.eta.ui.components.SwitchPreference
+import io.github.mangi.eta.ui.components.coui.EtaMaterialSwitch
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -129,7 +130,7 @@ internal fun ContextCompressionSettingsScreen(context: Context, onBack: () -> Un
                             modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
                         )
                     }
-                    Switch(
+                    EtaMaterialSwitch(
                         checked = enabled,
                         enabled = autoCompressPreference.isWritable,
                         onCheckedChange = { value ->
