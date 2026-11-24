@@ -6,6 +6,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.Dp
+import androidx.compose.foundation.layout.Row
+import androidx.compose.ui.Alignment
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.ui.components.coui.CouiPreference
+import io.github.mangi.eta.ui.components.coui.CouiSwitchPreference
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.BasicComponentColors
@@ -33,6 +39,27 @@ internal fun ArrowPreference(
     enabled: Boolean = true,
 ) {
     val view = LocalView.current
+    // COUI 风格下自动换成 COUI 设置行（带 bottomAction 的少数行没有 COUI 对应样式，仍走 Miuix）。
+    if (LocalUiStyle.current == AppearanceUiStyle.COUI && bottomAction == null) {
+        CouiPreference(
+            modifier = modifier,
+            title = title,
+            summary = summary,
+            enabled = enabled,
+            onClick = onClick?.let { click ->
+                {
+                    TouchHaptics.click(view)
+                    click()
+                }
+            },
+            icon = startAction,
+            showChevron = onClick != null,
+            trailing = {
+                Row(verticalAlignment = Alignment.CenterVertically) { endActions() }
+            },
+        )
+        return
+    }
     MiuixArrowPreference(
         title = title,
         modifier = modifier,
@@ -69,6 +96,19 @@ internal fun SwitchPreference(
     enabled: Boolean = true,
 ) {
     val view = LocalView.current
+    // COUI 风格下自动换成 COUI 开关行。
+    if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
+        CouiSwitchPreference(
+            modifier = modifier,
+            title = title,
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            summary = summary,
+            enabled = enabled,
+            icon = startAction,
+        )
+        return
+    }
     MiuixSwitchPreference(
         title = title,
         checked = checked,

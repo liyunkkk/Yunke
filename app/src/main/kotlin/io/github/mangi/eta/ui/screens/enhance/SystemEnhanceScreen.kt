@@ -24,7 +24,7 @@ import io.github.mangi.eta.ui.components.PreferenceIcon
 import io.github.mangi.eta.ui.model.AgentSystemEnhanceAction
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.Card
-import top.yukonga.miuix.kmp.basic.SmallTitle
+import io.github.mangi.eta.ui.components.SmallTitle
 import top.yukonga.miuix.kmp.basic.TextButton
 
 @Composable

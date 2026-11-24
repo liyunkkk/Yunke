@@ -29,9 +29,9 @@ import io.github.mangi.eta.ui.model.PermissionHealthAction
 import io.github.mangi.eta.ui.model.PermissionHealthItemUi
 import io.github.mangi.eta.ui.model.PermissionHealthUiState
 import top.yukonga.miuix.kmp.basic.Card
-import top.yukonga.miuix.kmp.basic.SmallTitle
+import io.github.mangi.eta.ui.components.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.preference.ArrowPreference
+import io.github.mangi.eta.ui.components.ArrowPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @Composable

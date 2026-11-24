@@ -52,8 +52,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.Card
-import top.yukonga.miuix.kmp.basic.SmallTitle
-import top.yukonga.miuix.kmp.preference.ArrowPreference
+import io.github.mangi.eta.ui.components.SmallTitle
+import io.github.mangi.eta.ui.components.ArrowPreference
 import top.yukonga.miuix.kmp.window.WindowDialog
 
 @OptIn(ExperimentalFoundationApi::class)
