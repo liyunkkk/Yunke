@@ -46,7 +46,7 @@ import kotlinx.coroutines.withContext
 import io.github.mangi.eta.ui.components.BasicComponent
 import io.github.mangi.eta.ui.components.Card
 import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.IconButton
+import io.github.mangi.eta.ui.components.IconButton
 import io.github.mangi.eta.ui.components.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import io.github.mangi.eta.ui.components.TextButton

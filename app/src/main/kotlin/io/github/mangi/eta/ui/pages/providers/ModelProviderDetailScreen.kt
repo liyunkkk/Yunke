@@ -77,9 +77,9 @@ import io.github.mangi.eta.ui.components.BasicComponent
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import io.github.mangi.eta.ui.components.Card
 import top.yukonga.miuix.kmp.basic.DropdownItem
-import top.yukonga.miuix.kmp.basic.HorizontalDivider
+import io.github.mangi.eta.ui.components.HorizontalDivider
 import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.IconButton
+import io.github.mangi.eta.ui.components.IconButton
 import top.yukonga.miuix.kmp.basic.ScrollBehavior
 import top.yukonga.miuix.kmp.basic.TabRow
 import top.yukonga.miuix.kmp.basic.Text

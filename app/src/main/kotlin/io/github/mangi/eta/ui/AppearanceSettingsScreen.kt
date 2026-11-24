@@ -54,7 +54,7 @@ import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import io.github.mangi.eta.ui.components.TextButton
 import io.github.mangi.eta.ui.components.Card
 import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.Slider
+import io.github.mangi.eta.ui.components.Slider
 import io.github.mangi.eta.ui.components.Switch
 import top.yukonga.miuix.kmp.basic.SliderDefaults
 import io.github.mangi.eta.ui.components.SmallTitle

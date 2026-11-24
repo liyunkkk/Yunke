@@ -71,7 +71,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import io.github.mangi.eta.ui.components.Card
-import top.yukonga.miuix.kmp.basic.Checkbox
+import io.github.mangi.eta.ui.components.Checkbox
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.InputField
 import io.github.mangi.eta.ui.components.SmallTitle

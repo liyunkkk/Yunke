@@ -60,6 +60,25 @@ import top.yukonga.miuix.kmp.layout.DialogDefaults
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.PressFeedbackType
 import top.yukonga.miuix.kmp.window.WindowDialog as MiuixWindowDialog
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.sizeIn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.state.ToggleableState
+import com.itos.coui.checkbox.Checkbox as CouiCheckbox
+import com.itos.coui.effect.couiButtonFeedback
+import com.itos.coui.layout.Divider as CouiDivider
+import com.itos.coui.slider.Slider as CouiSlider
+import top.yukonga.miuix.kmp.basic.CheckboxColors
+import top.yukonga.miuix.kmp.basic.CheckboxDefaults
+import top.yukonga.miuix.kmp.basic.DividerDefaults
+import top.yukonga.miuix.kmp.basic.IconButtonDefaults
+import top.yukonga.miuix.kmp.basic.SliderColors
+import top.yukonga.miuix.kmp.basic.SliderDefaults
+import top.yukonga.miuix.kmp.basic.Checkbox as MiuixCheckbox
+import top.yukonga.miuix.kmp.basic.HorizontalDivider as MiuixHorizontalDivider
+import top.yukonga.miuix.kmp.basic.IconButton as MiuixIconButton
+import top.yukonga.miuix.kmp.basic.Slider as MiuixSlider
 
 /*
  * 按外观风格自动切换的通用控件。参数与 Miuix 0.9.5-beta03 原组件一致，页面只需换导入：
@@ -395,5 +414,136 @@ internal fun WindowDialog(
         largeScreen = largeScreen,
         cornerRadius = cornerRadius ?: if (coui) 28.dp else null,
         content = content,
+    )
+}
+
+@Composable
+internal fun IconButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    holdDownState: Boolean = false,
+    backgroundColor: Color = Color.Unspecified,
+    cornerRadius: Dp = IconButtonDefaults.CornerRadius,
+    minHeight: Dp = IconButtonDefaults.MinHeight,
+    minWidth: Dp = IconButtonDefaults.MinWidth,
+    content: @Composable () -> Unit,
+) {
+    if (!isCouiStyle()) {
+        MiuixIconButton(
+            onClick = onClick,
+            modifier = modifier,
+            enabled = enabled,
+            holdDownState = holdDownState,
+            backgroundColor = backgroundColor,
+            cornerRadius = cornerRadius,
+            minHeight = minHeight,
+            minWidth = minWidth,
+            content = content,
+        )
+        return
+    }
+    // COUI：同尺寸、同圆角，换成 COUI 按压反馈（缩放 + 遮罩），去掉 Miuix 的按压底色。
+    val dark = CouiTheme.isDark
+    val source = remember { MutableInteractionSource() }
+    val shape = RoundedCornerShape(cornerRadius)
+    Box(
+        modifier = modifier
+            .sizeIn(minWidth = minWidth, minHeight = minHeight)
+            .clip(shape)
+            .then(if (backgroundColor.isSpecified) Modifier.background(backgroundColor, shape) else Modifier)
+            .couiButtonFeedback(dark, source, enabled = enabled)
+            .clickable(interactionSource = source, indication = null, enabled = enabled, role = Role.Button, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        content()
+    }
+}
+
+@Composable
+internal fun HorizontalDivider(
+    modifier: Modifier = Modifier,
+    thickness: Dp = DividerDefaults.Thickness,
+    color: Color = DividerDefaults.DividerColor,
+) {
+    if (!isCouiStyle()) {
+        MiuixHorizontalDivider(modifier = modifier, thickness = thickness, color = color)
+        return
+    }
+    // COUI 分割线：缩进交给调用方的 modifier，颜色用 COUI outlineVariant。
+    CouiDivider(modifier = modifier, startIndent = 0.dp, endIndent = 0.dp)
+}
+
+@Composable
+internal fun Slider(
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    valueRange: ClosedFloatingPointRange<Float> = 0f..1f,
+    steps: Int = 0,
+    onValueChangeFinished: (() -> Unit)? = null,
+    reverseDirection: Boolean = false,
+    height: Dp = SliderDefaults.MinHeight,
+    colors: SliderColors = SliderDefaults.sliderColors(),
+    hapticEffect: SliderDefaults.SliderHapticEffect = SliderDefaults.DefaultHapticEffect,
+    showKeyPoints: Boolean = false,
+    keyPoints: List<Float>? = null,
+    magnetThreshold: Float = 0.02f,
+) {
+    if (!isCouiStyle() || reverseDirection) {
+        MiuixSlider(
+            value = value,
+            onValueChange = onValueChange,
+            modifier = modifier,
+            enabled = enabled,
+            valueRange = valueRange,
+            steps = steps,
+            onValueChangeFinished = onValueChangeFinished,
+            reverseDirection = reverseDirection,
+            height = height,
+            colors = colors,
+            hapticEffect = hapticEffect,
+            showKeyPoints = showKeyPoints,
+            keyPoints = keyPoints,
+            magnetThreshold = magnetThreshold,
+        )
+        return
+    }
+    CouiSlider(
+        modifier = modifier,
+        value = value,
+        onValueChange = onValueChange,
+        valueRange = valueRange,
+        steps = steps,
+        showTickMarks = showKeyPoints && steps > 0,
+        enabled = enabled,
+        onValueChangeFinished = { onValueChangeFinished?.invoke() },
+    )
+}
+
+@Composable
+internal fun Checkbox(
+    state: ToggleableState,
+    onClick: (() -> Unit)?,
+    modifier: Modifier = Modifier,
+    colors: CheckboxColors = CheckboxDefaults.checkboxColors(),
+    enabled: Boolean = true,
+) {
+    if (!isCouiStyle()) {
+        MiuixCheckbox(state = state, onClick = onClick, modifier = modifier, colors = colors, enabled = enabled)
+        return
+    }
+    // COUI 复选框只负责绘制，点击由这里挂上。
+    CouiCheckbox(
+        modifier = modifier.then(
+            if (onClick != null) {
+                Modifier.clickable(enabled = enabled, role = Role.Checkbox, onClick = onClick)
+            } else {
+                Modifier
+            },
+        ),
+        checked = state == ToggleableState.On,
+        enabled = enabled,
     )
 }

@@ -44,7 +44,7 @@ import kotlin.math.roundToInt
 import io.github.mangi.eta.ui.components.BasicComponent
 import io.github.mangi.eta.ui.components.Card
 import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.Slider
+import io.github.mangi.eta.ui.components.Slider
 import top.yukonga.miuix.kmp.basic.SliderDefaults
 import io.github.mangi.eta.ui.components.Switch
 import top.yukonga.miuix.kmp.basic.Text

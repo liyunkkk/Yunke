@@ -9,7 +9,6 @@ import androidx.compose.ui.res.stringResource
 import io.github.mangi.eta.R
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.IconButton
 
 /**
  * 二级页面统一返回按钮，保持图标、语义、RTL 方向与点击区域一致。

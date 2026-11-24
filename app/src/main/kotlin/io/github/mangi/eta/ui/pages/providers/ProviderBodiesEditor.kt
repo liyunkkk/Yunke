@@ -22,9 +22,9 @@ import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import io.github.mangi.eta.ui.components.BasicComponent
 import top.yukonga.miuix.kmp.basic.BasicComponentDefaults
-import top.yukonga.miuix.kmp.basic.HorizontalDivider
+import io.github.mangi.eta.ui.components.HorizontalDivider
 import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.IconButton
+import io.github.mangi.eta.ui.components.IconButton
 import top.yukonga.miuix.kmp.basic.Text
 import io.github.mangi.eta.ui.components.TextField
 import top.yukonga.miuix.kmp.theme.MiuixTheme

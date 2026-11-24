@@ -54,7 +54,7 @@ import io.github.mangi.eta.ui.components.rememberChatImageBitmap
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import io.github.mangi.eta.ui.components.Card
 import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.IconButton
+import io.github.mangi.eta.ui.components.IconButton
 import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
 import io.github.mangi.eta.ui.components.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
