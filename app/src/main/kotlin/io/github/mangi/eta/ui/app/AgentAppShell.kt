@@ -36,17 +36,14 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.itos.coui.layout.CouiPageDefaults
-import com.itos.coui.layout.Scaffold as CouiRootScaffold
 import com.itos.coui.theme.CouiTheme
-import com.itos.coui.theme.LocalCouiTextStyle
-import com.itos.coui.topappbar.CouiTopAppBarDefaults
-import com.itos.coui.topappbar.LargeTopAppBar as CouiLargeTopAppBar
-import com.itos.coui.topappbar.TopAppBar as CouiCompactTopAppBar
-import com.itos.coui.topappbar.TopAppBarButtonGroup
 import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.ui.components.coui.CouiBackButton
+import io.github.mangi.eta.ui.components.coui.CouiFastLargeTopAppBar
+import io.github.mangi.eta.ui.components.coui.CouiFastScaffold
+import io.github.mangi.eta.ui.components.coui.CouiFastTopAppBar
 import io.github.mangi.eta.ui.components.coui.CouiTopAppBarIconButton
-import io.github.mangi.eta.ui.components.coui.LocalInCouiTopAppBar
+import io.github.mangi.eta.ui.components.coui.rememberCouiFastCollapsingState
 import io.github.mangi.eta.ui.layout.rememberIsWideScreen
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -176,22 +173,20 @@ internal fun AgentAppShell(
             val couiPageColors = CouiPageDefaults.themeColors(couiDark)
             val isHome = currentRoute is AppRoute.Home
             val useCompact = isHome || rememberIsWideScreen()
-            val couiBehavior = if (useCompact || currentRoute is AppRoute.Settings) {
+            val collapsingState = if (useCompact || currentRoute is AppRoute.Settings) {
                 null
             } else {
-                CouiTopAppBarDefaults.exitUntilCollapsedScrollBehavior()
+                rememberCouiFastCollapsingState()
             }
-            val localDensity = LocalDensity.current
-            val barColors = CouiTopAppBarDefaults.colors(titleColor = couiPageColors.title, dark = couiDark)
             val balanceStates by ProviderBalanceStore.states.collectAsState()
             val selectedBalanceState = selectedProviderId?.let(balanceStates::get)
             val routeTitle = titleForRoute(currentRoute, currentConversationTitle)
             val containerColor = if (isHome) CouiTheme.colorScheme.surface else couiPageColors.background
-            CouiRootScaffold(
+            CouiFastScaffold(
                 modifier = Modifier
                     .fillMaxSize()
                     .graphicsLayer {}
-                    .then(if (couiBehavior != null) Modifier.nestedScroll(couiBehavior.nestedScrollConnection) else Modifier),
+                    .then(if (collapsingState != null) Modifier.nestedScroll(collapsingState.nestedScrollConnection) else Modifier),
                 containerColor = containerColor,
                 windowInsets = WindowInsets.safeDrawing.only(
                     WindowInsetsSides.Top + WindowInsetsSides.Horizontal,
@@ -199,99 +194,78 @@ internal fun AgentAppShell(
                 topBar = {
                     if (currentRoute !is AppRoute.Settings) {
                         val navIcon: @Composable () -> Unit = {
-                            CompositionLocalProvider(LocalInCouiTopAppBar provides true) {
-                                if (isHome) {
-                                    CouiTopAppBarIconButton(
-                                        icon = MenuLines,
-                                        contentDescription = stringResource(R.string.action_conversation_history),
-                                        onClick = {
-                                            TouchHaptics.click(view)
-                                            onOpenConversationPane()
-                                        },
-                                        iconSize = 22.dp,
-                                        dark = couiDark,
-                                        colors = couiPageColors,
-                                    )
-                                } else {
-                                    CouiBackButton(
-                                        onClick = onBack,
-                                        dark = couiDark,
-                                        colors = couiPageColors,
-                                    )
-                                }
+                            if (isHome) {
+                                CouiTopAppBarIconButton(
+                                    icon = MenuLines,
+                                    contentDescription = stringResource(R.string.action_conversation_history),
+                                    onClick = {
+                                        TouchHaptics.click(view)
+                                        onOpenConversationPane()
+                                    },
+                                    iconSize = 22.dp,
+                                    dark = couiDark,
+                                    colors = couiPageColors,
+                                )
+                            } else {
+                                CouiBackButton(
+                                    onClick = onBack,
+                                    dark = couiDark,
+                                    colors = couiPageColors,
+                                )
                             }
                         }
                         val barActions: @Composable RowScope.() -> Unit = {
                             if (isHome) {
-                                TopAppBarButtonGroup {
-                                    CompositionLocalProvider(LocalInCouiTopAppBar provides true) {
-                                        if (hasBalanceIndicatorContent(selectedBalanceState)) {
-                                            key(selectedProviderId) {
-                                                ProviderBalanceIndicator(
-                                                    state = selectedBalanceState,
-                                                    modifier = Modifier.padding(end = 6.dp),
-                                                    animateChanges = true,
-                                                )
-                                            }
-                                        }
-                                        TopBarOverflowMenu(
-                                            onNewConversation = onNewConversation,
-                                            onOpenTerminal = onOpenTerminal,
-                                            onOpenBrowser = onOpenBrowser,
-                                            onOpenWorkspace = onOpenWorkspace,
-                                            autoCompressEnabled = autoCompressEnabled,
-                                            isCompressingContext = isCompressingContext,
-                                            onToggleAutoCompress = onToggleAutoCompress,
-                                            onCompressConversation = onCompressConversation,
-                                            onSearchHistory = onSearchHistory,
-                                            onOpenHistoryHit = onOpenHistoryHit,
-                                            tokenUsage = tokenUsage,
-                                            subAgentStatuses = subAgentStatuses,
+                                if (hasBalanceIndicatorContent(selectedBalanceState)) {
+                                    key(selectedProviderId) {
+                                        ProviderBalanceIndicator(
+                                            state = selectedBalanceState,
+                                            modifier = Modifier.padding(end = 6.dp),
+                                            animateChanges = true,
                                         )
                                     }
                                 }
+                                TopBarOverflowMenu(
+                                    onNewConversation = onNewConversation,
+                                    onOpenTerminal = onOpenTerminal,
+                                    onOpenBrowser = onOpenBrowser,
+                                    onOpenWorkspace = onOpenWorkspace,
+                                    autoCompressEnabled = autoCompressEnabled,
+                                    isCompressingContext = isCompressingContext,
+                                    onToggleAutoCompress = onToggleAutoCompress,
+                                    onCompressConversation = onCompressConversation,
+                                    onSearchHistory = onSearchHistory,
+                                    onOpenHistoryHit = onOpenHistoryHit,
+                                    tokenUsage = tokenUsage,
+                                    subAgentStatuses = subAgentStatuses,
+                                )
                             }
                         }
                         if (useCompact) {
-                            CouiCompactTopAppBar(
-                                title = {
-                                    BasicText(
-                                        text = routeTitle,
-                                        style = LocalCouiTextStyle.current,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                },
+                            CouiFastTopAppBar(
+                                title = routeTitle,
                                 navigationIcon = navIcon,
                                 actions = barActions,
                                 dark = couiDark,
-                                colors = barColors,
+                                titleColor = couiPageColors.title,
+                                backgroundColor = containerColor,
                             )
                         } else {
-                            CouiLargeTopAppBar(
-                                title = {
-                                    BasicText(
-                                        text = routeTitle,
-                                        style = LocalCouiTextStyle.current,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                },
+                            CouiFastLargeTopAppBar(
+                                title = routeTitle,
                                 navigationIcon = navIcon,
                                 actions = barActions,
-                                scrollBehavior = couiBehavior,
+                                collapsingState = collapsingState,
                                 dark = couiDark,
-                                colors = barColors,
+                                titleColor = couiPageColors.title,
+                                backgroundColor = containerColor,
                             )
                         }
                     }
                 },
             ) { innerPadding ->
-                val adjustedPadding = remember(couiBehavior, innerPadding, localDensity) {
-                    couiBehavior?.state?.contentPadding(innerPadding, localDensity) ?: innerPadding
-                }
                 Box(modifier = Modifier.fillMaxSize()) {
-                    content(adjustedPadding)
+                    content(innerPadding)
                 }
             }
         } else {

@@ -220,16 +220,6 @@ internal fun ModelProviderListScreen(
                         )
 
                         ArrowPreference(
-                            title = "新增 Gemini / Vertex AI",
-                            summary = "Google AI Studio Interactions 或 Google Cloud Vertex AI 官方接口",
-                            startAction = { ProviderBrandIcon(ProviderSourceTypes.GEMINI) },
-                            onClick = {
-                                TouchHaptics.click(view)
-                                onNavigate(AppRoute.ModelProviderNew(NewProviderType.Gemini))
-                            },
-                        )
-
-                        ArrowPreference(
                             title = stringResource(R.string.ui_new_antigravity),
                             summary = stringResource(R.string.ui_new_antigravity_summary),
                             startAction = {

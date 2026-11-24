@@ -251,19 +251,14 @@ fun AgentAppTheme(
                 LocalAppearanceSettings provides appearance,
                 LocalUiStyle provides appearance.uiStyle,
                 LocalCouiDarkTheme provides isDark,
-                LocalCouiContourGlowEnabled provides (blurSupported && !systemOverlay),
+                // 关闭常驻 AGSL 轮廓光着色器，避免滚动与页面切换时在按钮层频繁提交 RuntimeShader。
+                LocalCouiContourGlowEnabled provides false,
             ) {
                 if (appearance.uiStyle == AppearanceUiStyle.COUI) {
+                    // 不在根窗口常驻 ProvideCouiMenuBackdrop（会挂全窗 ViewTreeObserver.OnPreDrawListener
+                    // 并在每帧重录整窗 GraphicsLayer）；弹窗与菜单在 backdrop == null 时自动走 COUI 原生纯色层。
                     CouiTheme(darkTheme = isDark, colorScheme = couiNative) {
-                        if (blurSupported && !systemOverlay && provideGlassHost) {
-                            ProvideCouiMenuBackdrop(isolateContent = false) { windowSource ->
-                                Box(Modifier.fillMaxSize().then(windowSource)) {
-                                    scopedContent()
-                                }
-                            }
-                        } else {
-                            scopedContent()
-                        }
+                        scopedContent()
                     }
                 } else if (provideGlassHost) {
                     val surfaceColor = themedMiuixColors.surface

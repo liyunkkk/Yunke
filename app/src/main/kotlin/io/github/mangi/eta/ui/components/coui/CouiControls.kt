@@ -482,7 +482,7 @@ internal fun CouiSearchBarBox(
 }
 
 /**
- * COUI ChipTabRow 封装：API 34+ 且渲染器可用时使用 COUI 原生 ChipTabRow，否则使用 COUI 胶囊标签回退。
+ * COUI 胶囊标签行：采用 COUI 胶囊形态与按压弹性反馈，不创建离屏 backdrop 或多个 AGSL 渲染器，确保切页与滑动满帧。
  */
 @Composable
 internal fun <T : Any> CouiChipTabs(
@@ -495,78 +495,43 @@ internal fun <T : Any> CouiChipTabs(
 ) {
     val dark = CouiTheme.isDark
     val colors = CouiPageDefaults.themeColors(dark)
-    val renderers = remember(items.map { it.first }) {
-        if (Build.VERSION.SDK_INT >= 34 && items.isNotEmpty()) {
-            runCatching { items.map { CouiFloatingRenderer.standalone() } }.getOrNull()
-        } else {
-            null
-        }
-    }
-    if (Build.VERSION.SDK_INT >= 34 && renderers != null) {
-        val backdrop = rememberCouiBackdrop()
-        val chipItems = remember(items) {
-            items.map { (key, label) -> CouiChipTabItem(key = key, label = label) }
-        }
-        Box(modifier = modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .selectableGroup()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        items.forEach { (key, label) ->
+            val selected = key == selectedKey
+            val source = remember { MutableInteractionSource() }
             Box(
-                Modifier
-                    .matchParentSize()
-                    .couiBackdrop(backdrop)
-                    .background(backgroundColor),
-            )
-            ChipTabRow(
-                modifier = Modifier.fillMaxWidth(),
-                items = chipItems,
-                selectedKey = selectedKey,
-                onSelectedKeyChange = { key ->
-                    @Suppress("UNCHECKED_CAST")
-                    onSelectedKeyChange(key as T)
-                },
-                backdrop = backdrop,
-                dark = dark,
-                enabled = enabled,
-                renderers = renderers,
-            )
-        }
-    } else {
-        Row(
-            modifier = modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState())
-                .selectableGroup()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            items.forEach { (key, label) ->
-                val selected = key == selectedKey
-                val source = remember { MutableInteractionSource() }
-                Box(
-                    modifier = Modifier
-                        .heightIn(min = 32.dp)
-                        .clip(CouiCapsuleShape)
-                        .background(
-                            if (selected) colors.accent else colors.card,
-                            CouiCapsuleShape,
-                        )
-                        .couiButtonFeedback(dark, source, enabled)
-                        .selectable(
-                            selected = selected,
-                            interactionSource = source,
-                            indication = null,
-                            enabled = enabled,
-                            role = Role.Tab,
-                            onClick = { onSelectedKeyChange(key) },
-                        )
-                        .padding(horizontal = 16.dp, vertical = 6.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        text = label,
-                        kind = CouiTextKind.ItemValue,
-                        color = if (selected) Color.White else colors.title,
-                        maxLines = 1,
+                modifier = Modifier
+                    .heightIn(min = 32.dp)
+                    .clip(CouiCapsuleShape)
+                    .background(
+                        if (selected) colors.accent else colors.card,
+                        CouiCapsuleShape,
                     )
-                }
+                    .couiButtonFeedback(dark, source, enabled)
+                    .selectable(
+                        selected = selected,
+                        interactionSource = source,
+                        indication = null,
+                        enabled = enabled,
+                        role = Role.Tab,
+                        onClick = { onSelectedKeyChange(key) },
+                    )
+                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = label,
+                    kind = CouiTextKind.ItemValue,
+                    color = if (selected) Color.White else colors.title,
+                    maxLines = 1,
+                )
             }
         }
     }

@@ -85,6 +85,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
@@ -435,10 +436,11 @@ internal fun AgentChatInputBar(
             isCompressingContext
         val containerCorner by animateDpAsState(
             targetValue = if (isExpandedComposer) 24.dp else 28.dp,
-            animationSpec = tween(durationMillis = 180),
+            animationSpec = tween(durationMillis = 160),
             label = "composer_corner",
         )
-        val couiInputShape = remember(containerCorner) { CouiShape(containerCorner, 2.3f) }
+        // COUI 下使用固定超椭圆形状 + 硬件阴影，避免展开/收起动画每帧重建超椭圆路径与 18dp 模糊阴影蒙版。
+        val couiInputShape = remember { CouiShape(26.dp, 2.3f) }
         val softCircleTint = if (isCoui) {
             if (couiDark) Color(0x18FFFFFF) else Color(0x0D000000)
         } else {
@@ -466,18 +468,17 @@ internal fun AgentChatInputBar(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .animateContentSize(animationSpec = tween(durationMillis = 180))
+                    .graphicsLayer {}
+                    .animateContentSize(animationSpec = tween(durationMillis = 160))
                     .then(
                         if (isCoui) {
+                            val shadowTint = Color.Black.copy(alpha = if (couiDark) 0.36f else 0.14f)
                             Modifier
-                                .dropShadow(
+                                .shadow(
+                                    elevation = if (couiDark) 6.dp else 4.dp,
                                     shape = couiInputShape,
-                                    shadow = Shadow(
-                                        radius = 18.dp,
-                                        offset = DpOffset(0.dp, 4.dp),
-                                        color = Color.Black,
-                                        alpha = if (couiDark) 0.28f else 0.08f,
-                                    ),
+                                    ambientColor = shadowTint,
+                                    spotColor = shadowTint,
                                 )
                                 .clip(couiInputShape)
                                 .background(

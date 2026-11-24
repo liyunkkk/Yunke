@@ -187,7 +187,7 @@ internal fun AgentModelPickerButton(
 }
 
 @Composable
-private fun ModelPickerPopupContent(
+internal fun ModelPickerPopupContent(
     state: AgentModelPickerUiState,
     query: String,
     onQueryChange: (String) -> Unit,
@@ -549,7 +549,7 @@ internal fun AgentContextUsageButton(
 }
 
 @Composable
-private fun ModelBrandMark(
+internal fun ModelBrandMark(
     modelId: String?,
     sourceType: String?,
     size: Dp,

@@ -698,30 +698,47 @@ private fun UserMessageBubble(
             .padding(horizontal = 20.dp, vertical = 7.dp),
         horizontalAlignment = Alignment.End,
     ) {
+        val isCouiBubble = LocalUiStyle.current == AppearanceUiStyle.COUI
+        val isDarkBubble = com.itos.coui.theme.LocalCouiDarkTheme.current
+        val bubblePrimary = MiuixTheme.colorScheme.primary
+        val hasCustomAccent = LocalAppearanceSettings.current.accentColor != io.github.mangi.eta.data.model.AppearanceAccentColor.SYSTEM
+        val bubbleFillColor = when {
+            isCouiBubble -> androidx.compose.ui.graphics.lerp(
+                if (isDarkBubble) Color(0xFF1E2024) else Color.White,
+                bubblePrimary,
+                if (isDarkBubble) 0.22f else 0.13f,
+            )
+            hasCustomAccent -> androidx.compose.ui.graphics.lerp(
+                MiuixTheme.colorScheme.surfaceContainerHigh,
+                bubblePrimary,
+                if (isDarkBubble) 0.18f else 0.11f,
+            )
+            else -> MiuixTheme.colorScheme.surfaceContainerHigh
+        }
         Column(
             modifier = Modifier
                 .widthIn(max = 320.dp)
                 .squircleSurface(
-                    // COUI 下照 Eta 用浅蓝/深蓝气泡底色；Miuix 下保持原来的容器色。
-                    color = if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
-                        if (CouiTheme.isDark) Color(0xFF202634) else Color(0xFFEEF2FA)
-                    } else {
-                        MiuixTheme.colorScheme.surfaceContainerHigh
-                    },
+                    // 气泡底色同步跟随主题强调色，浅/深色模式下与文字保持清晰对比度。
+                    color = bubbleFillColor,
                     topStart = 20.dp,
                     topEnd = 20.dp,
                     bottomEnd = 6.dp,
                     bottomStart = 20.dp,
                 )
                 .then(
-                    if (isEditing) {
-                        Modifier.squircleBorder(
+                    when {
+                        isEditing -> Modifier.squircleBorder(
                             width = 1.dp,
-                            color = MiuixTheme.colorScheme.primary,
+                            color = bubblePrimary,
                             cornerRadius = 20.dp,
                         )
-                    } else {
-                        Modifier
+                        isCouiBubble -> Modifier.squircleBorder(
+                            width = 0.5.dp,
+                            color = bubblePrimary.copy(alpha = if (isDarkBubble) 0.22f else 0.14f),
+                            cornerRadius = 20.dp,
+                        )
+                        else -> Modifier
                     }
                 )
                 .padding(horizontal = 16.dp, vertical = 11.dp),

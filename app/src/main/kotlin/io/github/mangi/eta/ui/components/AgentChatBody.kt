@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -49,9 +50,12 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.layout.LazyLayoutCacheWindow
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.DocumentScanner
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.RocketLaunch
 import androidx.compose.material.icons.rounded.Terminal
@@ -110,13 +114,20 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.res.vectorResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
+import io.github.mangi.eta.data.repository.AssistantRepository
+import io.github.mangi.eta.ui.haptics.TouchHaptics
+import io.github.mangi.eta.ui.model.defaultExpandedModelProviderIds
+import io.github.mangi.eta.ui.screens.assistants.AssistantPickerDialog
 import io.github.mangi.eta.agent.browser.AgentBrowserSession
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.voice.VoiceChatSnapshot
@@ -659,15 +670,14 @@ internal fun AgentChatScaffold(
         beforeResponseOnly = appearance.morphLoadingBeforeResponseOnly,
     )
 
-    // 语音态（voice mode）：顶部 AI 回复卡片与底部控制胶囊共用一份玻璃取样层；
-    // backdrop 记录的是整个聊天表面（消息 + 输入框），textureBlur 才能取到毛玻璃底色。
-    val voiceGlassBackdrop = rememberVoiceGlassBackdrop()
     // 「消息」按钮收起的浮层；再次进入语音态自动复位。
     var voiceOverlayCollapsed by remember { mutableStateOf(false) }
     LaunchedEffect(voiceState.active) {
         if (voiceState.active) voiceOverlayCollapsed = false
     }
     val voiceOverlayActive = (voiceState.active || voiceState.error != null) && !voiceOverlayCollapsed
+    // 仅语音浮层可见时才挂全屏玻璃取样层，避免普通聊天滚动/输入/侧边栏动画每帧多录一层离屏。
+    val voiceGlassBackdrop = if (voiceOverlayActive) rememberVoiceGlassBackdrop() else null
     Box(modifier = modifier.fillMaxSize()) {
     Scaffold(
         modifier = Modifier
@@ -745,6 +755,14 @@ internal fun AgentChatScaffold(
         if (!hasMessages) {
             EmptyChatState(
                 showSuggestions = showEmptySuggestions,
+                modelPickerState = modelPickerState,
+                assistantId = assistantId,
+                reasoningEffort = reasoningEffort,
+                availableReasoningEfforts = availableReasoningEfforts,
+                onModelSelected = onModelSelected,
+                onAssistantSelected = onAssistantSelected,
+                onEditAssistant = onEditAssistant,
+                onReasoningEffortChange = onReasoningEffortChange,
                 onSuggestionClick = onSuggestionClick,
                 modifier = Modifier
                     .fillMaxSize()
@@ -2773,134 +2791,401 @@ private fun LazyListState.isConversationAtBottom(): Boolean {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun EmptyChatState(
     showSuggestions: Boolean,
+    modelPickerState: AgentModelPickerUiState,
+    assistantId: String,
+    reasoningEffort: ReasoningEffort,
+    availableReasoningEfforts: List<ReasoningEffort>,
+    onModelSelected: (String, String) -> Unit,
+    onAssistantSelected: (String) -> Unit,
+    onEditAssistant: (String) -> Unit,
+    onReasoningEffortChange: (ReasoningEffort) -> Unit,
     onSuggestionClick: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
+    val couiDark = CouiTheme.isDark
+    val view = LocalView.current
+    val primary = MiuixTheme.colorScheme.primary
+
+    val profiles by AssistantRepository.profiles.collectAsState()
+    val repositoryActiveId by AssistantRepository.activeId.collectAsState()
+    val activeAssistantId = assistantId.ifBlank { repositoryActiveId }
+    val activeAssistant = remember(profiles, activeAssistantId) {
+        profiles.firstOrNull { it.id == activeAssistantId } ?: profiles.firstOrNull()
+    }
+
+    var showModelMenu by remember { mutableStateOf(false) }
+    var modelQuery by remember { mutableStateOf("") }
+    var expandedProviderIds by remember { mutableStateOf(emptySet<String>()) }
+    var showAssistantPicker by remember { mutableStateOf(false) }
+    var showThinkingPicker by remember { mutableStateOf(false) }
+
+    val selectedModel = modelPickerState.selectedModel
+    val modelPickerAvailable = modelPickerState.providerGroups.isNotEmpty()
+    val modelLabel = selectedModel?.displayName ?: stringResource(R.string.model_not_selected)
+    val assistantLabel = activeAssistant?.name?.ifBlank { null } ?: stringResource(R.string.assistant_selector)
+
     val suggestions = listOf(
         SuggestionItem(
             title = stringResource(R.string.ui_analyze_current_screen_ebf08f),
             icon = Icons.Rounded.DocumentScanner,
+            tint = primary,
             prompt = stringResource(R.string.suggestion_analyze_screen_prompt),
         ),
         SuggestionItem(
             title = stringResource(R.string.ui_open_wechat_6b2c28),
             icon = Icons.Rounded.RocketLaunch,
+            tint = if (couiDark) Color(0xFF34D399) else Color(0xFF16A34A),
             prompt = stringResource(R.string.suggestion_open_wechat_prompt),
         ),
         SuggestionItem(
             title = stringResource(R.string.ui_browse_the_web_da7afb),
             icon = Icons.Rounded.Language,
+            tint = if (couiDark) Color(0xFF818CF8) else Color(0xFF6366F1),
             prompt = stringResource(R.string.suggestion_browse_web_prompt),
         ),
         SuggestionItem(
             title = stringResource(R.string.ui_check_memory_pressure_2d9600),
             icon = Icons.Rounded.Terminal,
+            tint = if (couiDark) Color(0xFFFBBF24) else Color(0xFFD97706),
             prompt = stringResource(R.string.suggestion_memory_pressure_prompt),
         ),
     )
 
-    Box(modifier = modifier.fillMaxSize()) {
-        // Q4-A：借鉴旧版空态的中间布局（居中 Hero：主标题 + 副标题 + Try it 胶囊），
-        // 仅对齐布局形态，不引入旧版 Siri 主题体系，视觉仍沿用现版表面样式。
+    Box(
+        modifier = modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center,
+    ) {
         Column(
             modifier = Modifier
-                .align(Alignment.Center)
-                .padding(bottom = 120.dp),
+                .fillMaxWidth()
+                .widthIn(max = 520.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
+            // Hero：柔色主题徽章 + 主标题 + 简洁副标题
+            val badgeShape = remember(isCoui) {
+                if (isCoui) CouiShape(16.dp, 2.2f) else RoundedCornerShape(16.dp)
+            }
+            Box(
+                modifier = Modifier
+                    .size(52.dp)
+                    .clip(badgeShape)
+                    .background(primary.copy(alpha = if (couiDark) 0.20f else 0.11f), badgeShape)
+                    .border(0.5.dp, primary.copy(alpha = if (couiDark) 0.30f else 0.20f), badgeShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.AutoAwesome,
+                    contentDescription = null,
+                    tint = primary,
+                    modifier = Modifier.size(26.dp),
+                )
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
             Text(
                 text = stringResource(R.string.ui_how_can_i_help_you_e75391),
-                style = MiuixTheme.textStyles.title2,
+                style = MiuixTheme.textStyles.title2.copy(fontWeight = FontWeight.SemiBold),
                 color = MiuixTheme.colorScheme.onSurface,
+                textAlign = TextAlign.Center,
             )
 
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(6.dp))
 
             Text(
                 text = stringResource(R.string.siri_hero_subtitle),
                 style = MiuixTheme.textStyles.body2,
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 textAlign = TextAlign.Center,
-                modifier = Modifier.widthIn(max = 320.dp),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 310.dp),
             )
 
-            Spacer(modifier = Modifier.height(18.dp))
+            Spacer(modifier = Modifier.height(16.dp))
 
-            val isCouiHero = LocalUiStyle.current == AppearanceUiStyle.COUI
-            val tryItModifier = if (isCouiHero) {
-                val couiDark = CouiTheme.isDark
-                val ink = MiuixTheme.colorScheme.onSurface.copy(alpha = 1f)
-                val shape = remember { CouiShape(18.dp, 2.2f) }
-                val source = remember { MutableInteractionSource() }
-                Modifier
-                    .couiButtonFeedback(couiDark, source, enabled = true)
-                    .clip(shape)
-                    .background(ink.copy(alpha = if (couiDark) 0.07f else 0.045f), shape)
-                    .border(0.5.dp, ink.copy(alpha = if (couiDark) 0.12f else 0.08f), shape)
-                    .clickable(interactionSource = source, indication = null) {
-                        onSuggestionClick(suggestions.first().prompt)
-                    }
-            } else {
-                Modifier
-                    .clip(RoundedCornerShape(18.dp))
-                    .background(MiuixTheme.colorScheme.surface.copy(alpha = 0.72f))
-                    .border(
-                        width = 0.5.dp,
-                        color = MiuixTheme.colorScheme.outline.copy(alpha = 0.5f),
-                        shape = RoundedCornerShape(18.dp),
+            // 快捷配置胶囊行（Yunke 自身能力：切换模型 / 切换助手 / 切换思考强度）
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                // 模型选择胶囊
+                Box {
+                    StartPageQuickPill(
+                        isCoui = isCoui,
+                        couiDark = couiDark,
+                        active = selectedModel != null,
+                        enabled = modelPickerAvailable,
+                        onClick = {
+                            TouchHaptics.click(view)
+                            expandedProviderIds = defaultExpandedModelProviderIds(selectedModel)
+                            modelQuery = ""
+                            showModelMenu = true
+                        },
+                        leading = {
+                            ModelBrandMark(
+                                modelId = selectedModel?.modelId,
+                                sourceType = selectedModel?.providerSourceType,
+                                size = 16.dp,
+                            )
+                        },
+                        label = modelLabel,
+                        maxLabelWidth = 150.dp,
                     )
-                    .clickable { onSuggestionClick(suggestions.first().prompt) }
-            }
-            Box(
-                modifier = tryItModifier.padding(horizontal = 20.dp, vertical = 8.dp),
-            ) {
-                Text(
-                    text = stringResource(R.string.siri_hero_try_it),
-                    style = MiuixTheme.textStyles.body1,
-                    color = MiuixTheme.colorScheme.onSurface,
-                )
-            }
-        }
+                    EtaDropdownMenu(
+                        expanded = showModelMenu && modelPickerAvailable,
+                        onDismissRequest = { showModelMenu = false },
+                        preferAbove = false,
+                        focusable = true,
+                        minWidth = 220.dp,
+                        maxWidth = 240.dp,
+                        maxHeight = 320.dp,
+                    ) {
+                        ModelPickerPopupContent(
+                            state = modelPickerState,
+                            query = modelQuery,
+                            onQueryChange = { modelQuery = it },
+                            expandedProviderIds = expandedProviderIds,
+                            onProviderExpandedChange = { providerId, expanded ->
+                                expandedProviderIds = if (expanded) setOf(providerId) else emptySet()
+                            },
+                            onModelSelected = { providerId, modelId ->
+                                showModelMenu = false
+                                if (!modelPickerState.isChanging) {
+                                    onModelSelected(providerId, modelId)
+                                }
+                            },
+                        )
+                    }
+                }
 
-        AnimatedVisibility(
-            visible = showSuggestions,
-            modifier = Modifier.align(Alignment.BottomCenter),
-            enter = fadeIn(
-                animationSpec = tween(durationMillis = 220)
-            ) + slideInVertically(
-                animationSpec = spring(
-                    dampingRatio = Spring.DampingRatioNoBouncy,
-                    stiffness = Spring.StiffnessMediumLow,
-                ),
-                initialOffsetY = { it / 3 },
-            ),
-            exit = fadeOut(
-                animationSpec = tween(durationMillis = 130)
-            ) + slideOutVertically(
-                animationSpec = tween(durationMillis = 180),
-                targetOffsetY = { it / 4 },
-            ),
-        ) {
-            // Q4-A：底部建议改为横排滚动 chips（宽 150dp），对齐旧版布局。
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 14.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                suggestions.forEach { item ->
-                    SuggestionCard(
-                        item = item,
-                        onClick = { onSuggestionClick(item.prompt) },
-                        modifier = Modifier.width(150.dp),
+                // 助手选择胶囊
+                StartPageQuickPill(
+                    isCoui = isCoui,
+                    couiDark = couiDark,
+                    active = false,
+                    enabled = profiles.isNotEmpty(),
+                    onClick = {
+                        TouchHaptics.click(view)
+                        showAssistantPicker = true
+                    },
+                    leading = {
+                        AssistantAvatar(
+                            assistant = activeAssistant,
+                            size = 16.dp,
+                        )
+                    },
+                    label = assistantLabel,
+                    maxLabelWidth = 112.dp,
+                )
+
+                // 思考强度胶囊
+                if (availableReasoningEfforts.isNotEmpty()) {
+                    val thinkingActive = reasoningEffort != ReasoningEffort.OFF
+                    StartPageQuickPill(
+                        isCoui = isCoui,
+                        couiDark = couiDark,
+                        active = thinkingActive,
+                        enabled = true,
+                        onClick = {
+                            TouchHaptics.click(view)
+                            showThinkingPicker = true
+                        },
+                        leading = {
+                            Icon(
+                                imageVector = ImageVector.vectorResource(R.drawable.ic_atom),
+                                contentDescription = null,
+                                tint = if (thinkingActive) primary else MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                modifier = Modifier.size(15.dp),
+                            )
+                        },
+                        label = reasoningEffort.displayName,
+                        maxLabelWidth = 96.dp,
                     )
                 }
             }
+
+            // 2×2 快捷建议卡片网格（Yunke 原生高频指令）
+            AnimatedVisibility(
+                visible = showSuggestions,
+                enter = fadeIn(
+                    animationSpec = tween(durationMillis = 200),
+                ) + expandVertically(
+                    animationSpec = tween(durationMillis = 200),
+                ),
+                exit = fadeOut(
+                    animationSpec = tween(durationMillis = 120),
+                ) + shrinkVertically(
+                    animationSpec = tween(durationMillis = 160),
+                ),
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 22.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    suggestions.chunked(2).forEach { rowItems ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            rowItems.forEach { item ->
+                                SuggestionCard(
+                                    item = item,
+                                    onClick = {
+                                        TouchHaptics.click(view)
+                                        onSuggestionClick(item.prompt)
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                            if (rowItems.size == 1) {
+                                Spacer(modifier = Modifier.weight(1f))
+                            }
+                        }
+                    }
+
+                    // 底部轻提示胶囊：保留「试一试」一键发起
+                    val tipShape = remember(isCoui) {
+                        if (isCoui) CouiShape(14.dp, 2.2f) else RoundedCornerShape(14.dp)
+                    }
+                    val tipSource = remember { MutableInteractionSource() }
+                    Row(
+                        modifier = Modifier
+                            .padding(top = 6.dp)
+                            .then(
+                                if (isCoui) {
+                                    Modifier.couiButtonFeedback(couiDark, tipSource, enabled = true)
+                                } else {
+                                    Modifier
+                                },
+                            )
+                            .clip(tipShape)
+                            .background(
+                                if (isCoui) {
+                                    if (couiDark) Color(0xFF1C1E22) else Color(0xFFF6F7F9)
+                                } else {
+                                    MiuixTheme.colorScheme.surfaceContainer.copy(alpha = 0.6f)
+                                },
+                                tipShape,
+                            )
+                            .clickable(interactionSource = tipSource, indication = null) {
+                                TouchHaptics.click(view)
+                                onSuggestionClick(suggestions.first().prompt)
+                            }
+                            .padding(horizontal = 14.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.AutoAwesome,
+                            contentDescription = null,
+                            tint = primary,
+                            modifier = Modifier.size(13.dp),
+                        )
+                        Text(
+                            text = "${stringResource(R.string.siri_hero_try_it)} · ${suggestions.first().title}",
+                            style = MiuixTheme.textStyles.footnote1,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
         }
+    }
+
+    AssistantPickerDialog(
+        show = showAssistantPicker,
+        onDismiss = { showAssistantPicker = false },
+        onSelect = { id ->
+            showAssistantPicker = false
+            onAssistantSelected(id)
+        },
+        onEdit = { id ->
+            showAssistantPicker = false
+            onEditAssistant(id)
+        },
+        selectedAssistantId = activeAssistantId,
+    )
+
+    ThinkingEffortPickerDialog(
+        show = showThinkingPicker && availableReasoningEfforts.isNotEmpty(),
+        effort = reasoningEffort,
+        options = availableReasoningEfforts,
+        onDismiss = { showThinkingPicker = false },
+        onEffortChange = { effort ->
+            showThinkingPicker = false
+            onReasoningEffortChange(effort)
+        },
+    )
+}
+
+@Composable
+private fun StartPageQuickPill(
+    isCoui: Boolean,
+    couiDark: Boolean,
+    active: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    leading: @Composable () -> Unit,
+    label: String,
+    maxLabelWidth: Dp,
+) {
+    val primary = MiuixTheme.colorScheme.primary
+    val shape = remember(isCoui) {
+        if (isCoui) CouiShape(16.dp, 2.2f) else RoundedCornerShape(16.dp)
+    }
+    val source = remember { MutableInteractionSource() }
+    val bgColor = when {
+        isCoui && active -> primary.copy(alpha = if (couiDark) 0.16f else 0.09f)
+        isCoui -> if (couiDark) Color(0xFF1E2024) else Color(0xFFF5F6F8)
+        active -> MiuixTheme.colorScheme.primaryContainer
+        else -> MiuixTheme.colorScheme.surfaceContainer
+    }
+    val borderColor = when {
+        isCoui && active -> primary.copy(alpha = if (couiDark) 0.30f else 0.22f)
+        isCoui -> if (couiDark) Color(0x1FFFFFFF) else Color(0x12000000)
+        else -> MiuixTheme.colorScheme.outline.copy(alpha = 0.35f)
+    }
+    Row(
+        modifier = Modifier
+            .then(
+                if (isCoui) Modifier.couiButtonFeedback(couiDark, source, enabled = enabled) else Modifier,
+            )
+            .clip(shape)
+            .background(bgColor, shape)
+            .border(0.5.dp, borderColor, shape)
+            .clickable(interactionSource = source, indication = null, enabled = enabled, onClick = onClick)
+            .padding(horizontal = 11.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        leading()
+        Text(
+            text = label,
+            style = MiuixTheme.textStyles.footnote1.copy(fontWeight = FontWeight.Medium),
+            color = if (active) primary else MiuixTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.widthIn(max = maxLabelWidth),
+        )
+        Icon(
+            imageVector = Icons.Rounded.KeyboardArrowDown,
+            contentDescription = null,
+            tint = if (active) primary.copy(alpha = 0.78f) else MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            modifier = Modifier.size(15.dp),
+        )
     }
 }
 
@@ -2910,48 +3195,65 @@ private fun SuggestionCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    // COUI 下照 Eta：COUI 圆角形状 + 浅色填充 + 细描边 + COUI 按压反馈；Miuix 下保持原样。
     val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
-    val shapeModifier = if (isCoui) {
-        val couiDark = CouiTheme.isDark
-        val ink = MiuixTheme.colorScheme.onSurface.copy(alpha = 1f)
-        val shape = remember { CouiShape(15.dp, 2.2f) }
-        val interactionSource = remember { MutableInteractionSource() }
-        Modifier
-            .couiButtonFeedback(couiDark, interactionSource, enabled = true)
-            .clip(shape)
-            .background(ink.copy(alpha = if (couiDark) 0.055f else 0.028f), shape)
-            .border(0.5.dp, ink.copy(alpha = if (couiDark) 0.10f else 0.065f), shape)
-            .clickable(interactionSource = interactionSource, indication = null, onClick = onClick)
+    val couiDark = CouiTheme.isDark
+    val cardShape = remember(isCoui) {
+        if (isCoui) CouiShape(18.dp, 2.2f) else RoundedCornerShape(16.dp)
+    }
+    val iconShape = remember(isCoui) {
+        if (isCoui) CouiShape(10.dp, 2.2f) else RoundedCornerShape(10.dp)
+    }
+    val interactionSource = remember { MutableInteractionSource() }
+    val cardFill = if (isCoui) {
+        if (couiDark) Color(0xFF1C1E22) else Color(0xFFF6F7F9)
     } else {
-        Modifier
-            .clip(RoundedCornerShape(12.dp))
-            .background(MiuixTheme.colorScheme.surface)
-            .border(
-                width = 0.5.dp,
-                color = MiuixTheme.colorScheme.outline.copy(alpha = 0.5f),
-                shape = RoundedCornerShape(12.dp),
-            )
-            .clickable(onClick = onClick)
+        MiuixTheme.colorScheme.surfaceContainer.copy(alpha = 0.75f)
+    }
+    val cardBorder = if (isCoui) {
+        if (couiDark) Color(0x1FFFFFFF) else Color(0x10000000)
+    } else {
+        MiuixTheme.colorScheme.outline.copy(alpha = 0.35f)
     }
     Column(
         modifier = modifier
-            .then(shapeModifier)
-            .padding(horizontal = 13.dp, vertical = 12.dp),
+            .then(
+                if (isCoui) Modifier.couiButtonFeedback(couiDark, interactionSource, enabled = true) else Modifier,
+            )
+            .clip(cardShape)
+            .background(cardFill, cardShape)
+            .border(0.5.dp, cardBorder, cardShape)
+            .clickable(interactionSource = interactionSource, indication = null, onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 13.dp),
     ) {
-        // Q4-A：借鉴旧版两行文建议 chip（标题行 + 内容行）。
+        Box(
+            modifier = Modifier
+                .size(32.dp)
+                .clip(iconShape)
+                .background(item.tint.copy(alpha = if (couiDark) 0.20f else 0.12f), iconShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = item.icon,
+                contentDescription = null,
+                tint = item.tint,
+                modifier = Modifier.size(18.dp),
+            )
+        }
+        Spacer(modifier = Modifier.height(10.dp))
         Text(
             text = item.title,
-            style = MiuixTheme.textStyles.body2,
+            style = MiuixTheme.textStyles.body2.copy(fontWeight = FontWeight.Medium),
             color = MiuixTheme.colorScheme.onSurface,
             maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
         Spacer(modifier = Modifier.height(3.dp))
         Text(
             text = item.prompt,
             style = MiuixTheme.textStyles.footnote1,
             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-            maxLines = 1,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }
@@ -2959,6 +3261,7 @@ private fun SuggestionCard(
 private data class SuggestionItem(
     val title: String,
     val icon: ImageVector,
+    val tint: Color,
     val prompt: String,
 )
 
