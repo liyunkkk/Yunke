@@ -178,8 +178,12 @@ internal fun TextButton(
         )
         return
     }
-    // 主色按钮 → COUI 主按钮；其余 → COUI 次按钮。
-    val role = if (colors.color == MiuixTheme.colorScheme.primary) CouiButtonRole.Primary else CouiButtonRole.Secondary
+    // 主色按钮 → COUI 主按钮；错误色（删除类）→ COUI 危险按钮；其余 → COUI 次按钮。
+    val role = when (colors.color) {
+        MiuixTheme.colorScheme.primary -> CouiButtonRole.Primary
+        MiuixTheme.colorScheme.error -> CouiButtonRole.Destructive
+        else -> CouiButtonRole.Secondary
+    }
     CouiButton(
         text = text,
         onClick = onClick,
