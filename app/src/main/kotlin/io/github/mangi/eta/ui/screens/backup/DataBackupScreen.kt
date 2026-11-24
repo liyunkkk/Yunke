@@ -211,7 +211,7 @@ internal fun DataBackupScreen(
                 pendingImportUri = null
             },
             onConfirm = {
-                val uri = pendingImportUri ?: return@MiuixDialogActions
+                val uri = pendingImportUri ?: return@AdaptiveConfirmDialog
                 showImportDialog = false
                 scope.launch {
                     importing = true

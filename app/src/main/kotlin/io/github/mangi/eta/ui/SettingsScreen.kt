@@ -562,7 +562,7 @@ internal fun SettingsScreen(
                 confirmEnabled = !clearingLogs,
                 onCancel = { showClearLogsDialog = false },
                 onConfirm = {
-                    if (clearingLogs) return@MiuixDialogActions
+                    if (clearingLogs) return@AdaptiveConfirmDialog
                     clearingLogs = true
                     coroutineScope.launch {
                         try {

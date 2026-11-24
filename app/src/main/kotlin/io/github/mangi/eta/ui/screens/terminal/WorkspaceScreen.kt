@@ -300,7 +300,7 @@ internal fun WorkspaceScreen(onBack: () -> Unit) {
             confirmEnabled = !busy,
             onCancel = { if (!busy) pendingDelete = null },
             onConfirm = {
-                if (busy) return@MiuixDialogActions
+                if (busy) return@AdaptiveConfirmDialog
                 val deleting = target
                 pendingDelete = null
                 scope.launch {

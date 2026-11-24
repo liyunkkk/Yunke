@@ -37,6 +37,7 @@ internal fun AdaptiveConfirmDialog(
     cancelEnabled: Boolean = true,
     confirmEnabled: Boolean = true,
     destructive: Boolean = false,
+    confirmHaptic: Boolean = true,
     modifier: Modifier = Modifier,
     content: (@Composable ColumnScope.() -> Unit)? = null,
 ) {
@@ -55,7 +56,7 @@ internal fun AdaptiveConfirmDialog(
             confirmAction = couiPrimaryDialogAction(
                 text = confirmText,
                 onClick = {
-                    TouchHaptics.click(view)
+                    if (confirmHaptic) TouchHaptics.click(view)
                     onConfirm()
                 },
                 enabled = confirmEnabled,
@@ -93,6 +94,7 @@ internal fun AdaptiveConfirmDialog(
             cancelEnabled = cancelEnabled,
             confirmEnabled = confirmEnabled,
             destructive = destructive,
+            confirmHaptic = confirmHaptic,
         )
     }
 }

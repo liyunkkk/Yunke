@@ -39,7 +39,7 @@ import io.github.mangi.eta.ui.components.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import top.yukonga.miuix.kmp.utils.scrollEndHaptic
-import io.github.mangi.eta.ui.components.WindowDialog
+import io.github.mangi.eta.ui.components.AdaptiveNoticeDialog
 import java.text.NumberFormat
 import io.github.mangi.eta.ui.components.AdaptiveConfirmDialog
 
@@ -193,18 +193,14 @@ internal fun AgentMemoryScreen(
     }
 
     state.notice?.let { notice ->
-        WindowDialog(
+        AdaptiveNoticeDialog(
             show = true,
             title = stringResource(R.string.ui_memory_b55ff5),
             summary = notice,
-            onDismissRequest = { onAction(AgentMemoryAction.DismissNotice) },
-        ) {
-            TextButton(
-                text = stringResource(R.string.ui_knew_cb63c6),
-                onClick = { onAction(AgentMemoryAction.DismissNotice) },
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
+            buttonText = stringResource(R.string.ui_knew_cb63c6),
+            onDismiss = { onAction(AgentMemoryAction.DismissNotice) },
+            primary = false,
+        )
     }
 }
 

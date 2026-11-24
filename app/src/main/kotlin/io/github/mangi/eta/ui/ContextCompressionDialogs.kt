@@ -87,9 +87,8 @@ import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.CircularProgressIndicator
 import io.github.mangi.eta.ui.components.HorizontalDivider
 import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Text as MiuixText
-import io.github.mangi.eta.ui.components.TextButton
+import io.github.mangi.eta.ui.components.AdaptiveNoticeDialog
 import io.github.mangi.eta.ui.components.WindowDialog
 import io.github.mangi.eta.ui.components.AdaptiveConfirmDialog
 
@@ -511,19 +510,13 @@ internal fun CompressModelMissingWindowDialog(
     onDismiss: () -> Unit,
 ) {
     if (!show) return
-    WindowDialog(
+    AdaptiveNoticeDialog(
         show = true,
         title = stringResource(R.string.compress_model_missing_window_title),
         summary = stringResource(R.string.compress_model_missing_window_summary),
-        onDismissRequest = onDismiss,
-    ) {
-        TextButton(
-            text = stringResource(R.string.ui_knew_cb63c6),
-            onClick = onDismiss,
-            modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.textButtonColorsPrimary(),
-        )
-    }
+        buttonText = stringResource(R.string.ui_knew_cb63c6),
+        onDismiss = onDismiss,
+    )
 }
 
 @Composable

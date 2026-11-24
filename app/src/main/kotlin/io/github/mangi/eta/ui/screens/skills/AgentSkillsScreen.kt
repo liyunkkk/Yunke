@@ -3,7 +3,6 @@ package io.github.mangi.eta.ui.screens.skills
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
@@ -26,12 +25,11 @@ import io.github.mangi.eta.ui.model.AgentSkillsUiState
 import io.github.mangi.eta.ui.model.SkillItemUi
 import io.github.mangi.eta.ui.model.canDeleteUserSkill
 import io.github.mangi.eta.ui.components.BasicComponent
-import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import io.github.mangi.eta.ui.components.Card
 import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
 import io.github.mangi.eta.ui.components.SmallTitle
 import io.github.mangi.eta.ui.components.TextButton
-import io.github.mangi.eta.ui.components.WindowDialog
+import io.github.mangi.eta.ui.components.AdaptiveNoticeDialog
 import io.github.mangi.eta.ui.components.AdaptiveConfirmDialog
 
 private val CardHorizontalPadding = 12.dp
@@ -215,22 +213,13 @@ fun AgentSkillsScreen(
     }
 
     state.notice?.let { notice ->
-        WindowDialog(
+        AdaptiveNoticeDialog(
             show = true,
             title = notice.title,
             summary = notice.message,
-            onDismissRequest = { onAction(AgentSkillsAction.DismissNotice) },
-        ) {
-            TextButton(
-                text = stringResource(R.string.ui_knew_cb63c6),
-                onClick = { onAction(AgentSkillsAction.DismissNotice) },
-                modifier = Modifier.fillMaxWidth(),
-                colors = if (notice.isError) {
-                    ButtonDefaults.textButtonColors()
-                } else {
-                    ButtonDefaults.textButtonColorsPrimary()
-                },
-            )
-        }
+            buttonText = stringResource(R.string.ui_knew_cb63c6),
+            onDismiss = { onAction(AgentSkillsAction.DismissNotice) },
+            primary = !notice.isError,
+        )
     }
 }

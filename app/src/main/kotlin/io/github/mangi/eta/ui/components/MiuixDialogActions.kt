@@ -36,6 +36,7 @@ fun MiuixDialogActions(
     cancelEnabled: Boolean = true,
     confirmEnabled: Boolean = true,
     destructive: Boolean = false,
+    confirmHaptic: Boolean = true,
 ) {
     val view = LocalView.current
     Row(
@@ -54,7 +55,7 @@ fun MiuixDialogActions(
         TextButton(
             text = confirmText,
             onClick = {
-                TouchHaptics.click(view)
+                if (confirmHaptic) TouchHaptics.click(view)
                 onConfirm()
             },
             enabled = confirmEnabled,

@@ -4,14 +4,12 @@ import android.content.Context
 import android.view.Gravity
 import android.widget.LinearLayout
 import android.widget.NumberPicker
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -27,10 +25,9 @@ import java.time.Month
 import java.time.YearMonth
 import java.time.format.TextStyle
 import java.util.Locale
-import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import io.github.mangi.eta.ui.components.TextButton
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import io.github.mangi.eta.ui.components.WindowDialog
+import io.github.mangi.eta.ui.components.AdaptiveConfirmDialog
 
 @Composable
 internal fun UsageDateTimePickerDialog(
@@ -47,10 +44,13 @@ internal fun UsageDateTimePickerDialog(
     var picked by remember(initial) { mutableStateOf(initial) }
     val textColor = MiuixTheme.colorScheme.onSurface.toArgb()
     val view = LocalView.current
-    WindowDialog(
+    AdaptiveConfirmDialog(
         show = true,
         title = title,
         onDismissRequest = onDismiss,
+        confirmText = stringResource(R.string.stats_model_filter_set),
+        onCancel = onDismiss,
+        onConfirm = { onConfirm(UsageTimeBound.from(picked)) },
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             AndroidView(
@@ -62,38 +62,16 @@ internal fun UsageDateTimePickerDialog(
                     picker.setTextColor(textColor)
                 },
             )
-            Row(
+            TextButton(
+                text = stringResource(R.string.action_clear),
+                onClick = {
+                    TouchHaptics.click(view)
+                    onClear()
+                },
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                TextButton(
-                    text = stringResource(R.string.action_clear),
-                    onClick = {
-                        TouchHaptics.click(view)
-                        onClear()
-                    },
-                    modifier = Modifier.weight(1f),
-                )
-                TextButton(
-                    text = stringResource(R.string.action_cancel),
-                    onClick = {
-                        TouchHaptics.click(view)
-                        onDismiss()
-                    },
-                    modifier = Modifier.weight(1f),
-                )
-                TextButton(
-                    text = stringResource(R.string.stats_model_filter_set),
-                    onClick = {
-                        TouchHaptics.click(view)
-                        onConfirm(UsageTimeBound.from(picked))
-                    },
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.textButtonColorsPrimary(),
-                )
-            }
+            )
         }
     }
 }

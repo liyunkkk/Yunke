@@ -32,9 +32,9 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import io.github.mangi.eta.ui.components.Card
 import top.yukonga.miuix.kmp.basic.Text
-import io.github.mangi.eta.ui.components.TextButton
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import io.github.mangi.eta.ui.components.WindowDialog
+import io.github.mangi.eta.ui.components.AdaptiveNoticeDialog
 
 /**
  * 副屏只读镜像页：显示画面、运行状态与最近操作轨迹。
@@ -75,10 +75,13 @@ internal fun VirtualDisplayViewerDialog(onDismiss: () -> Unit) {
     }
 
     val running = status?.optBoolean("running") == true
-    WindowDialog(
+    AdaptiveNoticeDialog(
         show = true,
         title = stringResource(R.string.vd_viewer_title),
-        onDismissRequest = onDismiss,
+        summary = null,
+        buttonText = stringResource(R.string.vd_viewer_close),
+        onDismiss = onDismiss,
+        primary = false,
     ) {
         Column(
             modifier = Modifier.fillMaxWidth(),
@@ -144,11 +147,6 @@ internal fun VirtualDisplayViewerDialog(onDismiss: () -> Unit) {
                     }
                 }
             }
-            TextButton(
-                text = stringResource(R.string.vd_viewer_close),
-                onClick = onDismiss,
-                modifier = Modifier.align(Alignment.End),
-            )
         }
     }
 }

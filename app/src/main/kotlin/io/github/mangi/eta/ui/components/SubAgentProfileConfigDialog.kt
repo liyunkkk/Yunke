@@ -32,8 +32,6 @@ import io.github.mangi.eta.ui.haptics.TouchHaptics
 import io.github.mangi.eta.ui.model.AgentModelPickerProjector
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
-import top.yukonga.miuix.kmp.basic.ButtonDefaults as MiuixButtonDefaults
-import top.yukonga.miuix.kmp.basic.TextButton as MiuixTextButton
 
 /** One opening owns one editor, application, expected profile and parallel-pool snapshot.
  * Nothing here writes preferences until commitProfileDraft; abandoning a session is zero-write. */
@@ -217,8 +215,48 @@ internal fun SubAgentProfileConfigDialog(
             // This form is also opened from a Compose Dialog. OverlayDialog registers
             // content in a Scaffold host, which can be absent or behind that parent window.
             // WindowDialog keeps the same Miuix layout/style in its own modal window.
-            WindowDialog(show = true, title = if (session.expectedProfile == null) "添加子代理" else "子代理配置",
-                onDismissRequest = userDismiss) {
+            val confirmDraft: () -> Unit = {
+                if (ready && !session.submitting && session.canCommit(latestEditor, latestEnabled)) {
+                    // Snapshot every argument before suspension; callbacks never retarget another opening.
+                    val capturedDraft = session.draft.copy(name = session.name.trim())
+                    val capturedTicket = session.openToken
+                    val capturedExpected = session.expectedProfile
+                    val capturedApplication = session.expectedApplicationToken
+                    val capturedParallel = session.parallelChange()
+                    session.submitting = true
+                    session.error = null
+                    scope.launch {
+                        try {
+                            val result = session.editor.commitProfileDraft(capturedDraft, capturedExpected,
+                                capturedApplication, capturedParallel, canCommit = {
+                                    session.canCommit(latestEditor, latestEnabled, capturedTicket)
+                                })
+                            if (result is ConversationSubAgentPreferences.WriteResult.Saved &&
+                                session.isCurrent(latestEditor, latestEnabled)) {
+                                TouchHaptics.click(view)
+                                dismiss()
+                            } else if (session.isCurrent(latestEditor, latestEnabled)) {
+                                session.error = "未保存：配置或模型已变更，请检查后重试；草稿已保留。"
+                            }
+                        } catch (cancelled: CancellationException) { throw cancelled }
+                          catch (_: Exception) { session.error = "保存失败，草稿已保留，请重试。" }
+                        finally { session.submitting = false }
+                    }
+                }
+            }
+            AdaptiveConfirmDialog(
+                show = true,
+                title = if (session.expectedProfile == null) "添加子代理" else "子代理配置",
+                onDismissRequest = userDismiss,
+                confirmText = "确认",
+                cancelText = "取消",
+                confirmEnabled = ready,
+                cancelEnabled = !session.submitting,
+                onCancel = userDismiss,
+                onConfirm = confirmDraft,
+                // 保存被拒或异步失效时不能震动；保存成功后由 confirmDraft 自己震动。
+                confirmHaptic = false,
+            ) {
                 Column(Modifier.fillMaxWidth().profileDialogScrollableBody().verticalScroll(rememberScrollState())) {
                     EtaFormTextField(session.name, { if (usable) session.name = it.take(80) }, hint = "名称",
                         singleLine = true, enabled = usable, modifier = Modifier.fillMaxWidth())
@@ -262,35 +300,6 @@ internal fun SubAgentProfileConfigDialog(
                         TextButton(enabled = !session.submitting, onClick = onRetry) { Text("重试恢复配置（保留草稿）") }
                     }
                 }
-                SubAgentDraftDialogActions(ready, !session.submitting, userDismiss, onConfirm = {
-                    if (ready && !session.submitting && session.canCommit(latestEditor, latestEnabled)) {
-                        // Snapshot every argument before suspension; callbacks never retarget another opening.
-                        val capturedDraft = session.draft.copy(name = session.name.trim())
-                        val capturedTicket = session.openToken
-                        val capturedExpected = session.expectedProfile
-                        val capturedApplication = session.expectedApplicationToken
-                        val capturedParallel = session.parallelChange()
-                        session.submitting = true
-                        session.error = null
-                        scope.launch {
-                            try {
-                                val result = session.editor.commitProfileDraft(capturedDraft, capturedExpected,
-                                    capturedApplication, capturedParallel, canCommit = {
-                                        session.canCommit(latestEditor, latestEnabled, capturedTicket)
-                                    })
-                                if (result is ConversationSubAgentPreferences.WriteResult.Saved &&
-                                    session.isCurrent(latestEditor, latestEnabled)) {
-                                    TouchHaptics.click(view)
-                                    dismiss()
-                                } else if (session.isCurrent(latestEditor, latestEnabled)) {
-                                    session.error = "未保存：配置或模型已变更，请检查后重试；草稿已保留。"
-                                }
-                            } catch (cancelled: CancellationException) { throw cancelled }
-                              catch (_: Exception) { session.error = "保存失败，草稿已保留，请重试。" }
-                            finally { session.submitting = false }
-                        }
-                    }
-                })
             }
             if (usable && modelPicker) {
                 val all = AgentModelPickerProjector.project(providers, draft.providerId, draft.modelId)
@@ -336,18 +345,5 @@ internal fun SubAgentProfileConfigDialog(
                 }
             }
         }
-    }
-}
-
-/** Same equal-width, 8dp-spaced light-left/solid-right layout as MiuixDialogActions.
- * Unlike the global helper it must NOT vibrate on a rejected/asynchronously invalidated commit. */
-@Composable
-private fun SubAgentDraftDialogActions(confirmEnabled: Boolean, cancelEnabled: Boolean, onCancel: () -> Unit, onConfirm: () -> Unit) {
-    val view = LocalView.current
-    Row(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        MiuixTextButton(text = "取消", modifier = Modifier.weight(1f), enabled = cancelEnabled,
-            onClick = { TouchHaptics.click(view); onCancel() })
-        MiuixTextButton(text = "确认", modifier = Modifier.weight(1f), enabled = confirmEnabled,
-            colors = MiuixButtonDefaults.textButtonColorsPrimary(), onClick = onConfirm)
     }
 }
