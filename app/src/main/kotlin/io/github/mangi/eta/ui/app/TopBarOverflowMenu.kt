@@ -21,8 +21,8 @@ import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import io.github.mangi.eta.ui.components.coui.EtaMaterialSwitch as Switch
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -48,6 +48,9 @@ import io.github.mangi.eta.agent.delegation.SubAgentContextStats
 import io.github.mangi.eta.ui.model.ConversationTokenUsageUi
 import io.github.mangi.eta.ui.model.MessageSearchHit
 import io.github.mangi.eta.ui.CompressConversationDialog
+import com.itos.coui.icons.CouiIcons
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.components.coui.CouiTopAppBarIconButton
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 private val TopBarMenuIconSize = 24.dp
@@ -83,24 +86,35 @@ internal fun TopBarOverflowMenu(
     var showSubAgentStatusDialog by remember { mutableStateOf(false) }
 
     androidx.compose.foundation.layout.Box {
-        Box(
-            modifier = Modifier
-                .size(48.dp)
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    role = Role.Button,
-                    onClick = {
-                        TouchHaptics.click(view)
-                        menuState.onAnchorClick()
-                    },
-                ),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                imageVector = Icons.Filled.MoreVert,
+        if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
+            CouiTopAppBarIconButton(
+                icon = CouiIcons.Outlined.More,
                 contentDescription = stringResource(R.string.action_more),
+                onClick = {
+                    TouchHaptics.click(view)
+                    menuState.onAnchorClick()
+                },
             )
+        } else {
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        role = Role.Button,
+                        onClick = {
+                            TouchHaptics.click(view)
+                            menuState.onAnchorClick()
+                        },
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.MoreVert,
+                    contentDescription = stringResource(R.string.action_more),
+                )
+            }
         }
 
         EtaDropdownMenu(

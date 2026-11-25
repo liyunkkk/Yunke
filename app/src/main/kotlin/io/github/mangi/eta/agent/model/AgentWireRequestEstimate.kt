@@ -1,5 +1,6 @@
 package io.github.mangi.eta.agent.model
 
+import io.github.mangi.eta.data.model.GeminiEndpointMode
 import io.github.mangi.eta.data.model.OpenAiEndpointMode
 import io.github.mangi.eta.data.model.ProviderTypes
 import org.json.JSONArray
@@ -37,6 +38,10 @@ internal object AgentWireRequestEstimate {
     }
 
     fun endpoint(config: AgentModelClient.ModelConfig): EndpointKind = when {
+        config.providerType == ProviderTypes.GEMINI &&
+            GeminiEndpointMode.normalize(config.geminiEndpointMode) == GeminiEndpointMode.VERTEX_AI ->
+            EndpointKind.VERTEX_GENERATE_CONTENT
+        config.providerType == ProviderTypes.GEMINI -> EndpointKind.GEMINI_INTERACTIONS
         config.providerType == ProviderTypes.ANTHROPIC -> EndpointKind.ANTHROPIC_MESSAGES
         config.openAiEndpointMode == OpenAiEndpointMode.RESPONSES -> EndpointKind.RESPONSES
         else -> EndpointKind.CHAT_COMPLETIONS
@@ -50,6 +55,8 @@ internal object AgentWireRequestEstimate {
             EndpointKind.CHAT_COMPLETIONS -> OpenAiChatCompletionsProvider.buildRequestJson(config, messages, tools)
             EndpointKind.RESPONSES -> ResponsesRequestBuilder.build(config, messages, tools)
             EndpointKind.ANTHROPIC_MESSAGES -> AnthropicMessagesProvider.buildRequestJson(config, messages, tools)
+            EndpointKind.GEMINI_INTERACTIONS -> GeminiInteractionsRequest.build(config, messages, tools)
+            EndpointKind.VERTEX_GENERATE_CONTENT -> VertexGenerateContentRequest.build(config, messages, tools)
         }
 
     fun measure(body: JSONObject, endpoint: EndpointKind): Shape = Counter(endpoint).measure(body)
@@ -129,6 +136,56 @@ internal object AgentWireRequestEstimate {
                     each(body.optJSONArray("messages"), ::message)
                 }
                 EndpointKind.CHAT_COMPLETIONS -> each(body.optJSONArray("messages"), ::message)
+                EndpointKind.GEMINI_INTERACTIONS -> {
+                    content(body.opt("system_instruction"), instructions)
+                    each(body.optJSONArray("input")) { turn ->
+                        messages++
+                        framing += 3
+                        each(turn.optJSONArray("steps")) { step ->
+                            when (step.optString("type")) {
+                                "user_input", "model_output" -> content(step.opt("content"), text)
+                                "thought" -> {
+                                    opaque++
+                                    content(step.opt("summary"), reasoning)
+                                    encrypted += step.optString("signature").length
+                                }
+                                "function_call" -> { calls.add(step.opt("name")); calls.add(step.opt("arguments")) }
+                                "function_result" -> { results.add(step.opt("call_id")); content(step.opt("result"), results) }
+                                "google_search", "google_search_result" -> hosted++
+                                else -> unknown++
+                            }
+                        }
+                    }
+                }
+                EndpointKind.VERTEX_GENERATE_CONTENT -> {
+                    each(body.optJSONObject("systemInstruction")?.optJSONArray("parts")) { part ->
+                        content(part.opt("text"), instructions)
+                    }
+                    each(body.optJSONArray("contents")) { turn ->
+                        messages++
+                        framing += 3
+                        val role = turn.optString("role")
+                        each(turn.optJSONArray("parts")) { part ->
+                            when {
+                                part.has("text") -> content(part.opt("text"), if (role == "model") text else text)
+                                part.has("functionCall") -> {
+                                    val call = part.optJSONObject("functionCall") ?: JSONObject()
+                                    calls.add(call.opt("name")); calls.add(call.opt("args"))
+                                }
+                                part.has("functionResponse") -> {
+                                    val response = part.optJSONObject("functionResponse") ?: JSONObject()
+                                    results.add(response.opt("name")); content(response.opt("response"), results)
+                                }
+                                part.has("inlineData") -> image(part.optJSONObject("inlineData") ?: JSONObject(), false)
+                                else -> unknown++
+                            }
+                        }
+                    }
+                    val config = body.optJSONObject("generationConfig")
+                    format.add(config?.opt("responseMimeType"))
+                    format.add(config?.opt("responseSchema"))
+                    reasoning.add(config?.opt("thinkingConfig"))
+                }
             }
             return Shape(endpoint, instructions.component(), text.component(), reasoning.component(),
                 calls.component(), results.component(), tools.component(), format.component(), media.component(),
@@ -176,6 +233,8 @@ internal object AgentWireRequestEstimate {
             val url = part.optJSONObject(key)?.optString("url") ?: part.optString(key)
             val source = part.optJSONObject("source")
             val encoded = source?.takeIf { it.optString("type") == "base64" }?.optString("data")
+                // Gemini Interactions uses top-level data; Vertex passes unwrapped inlineData.
+                ?: part.optString("data").takeIf { part.has("data") }
             val marker = url.indexOf("base64,", ignoreCase = true)
             val chars = when { encoded != null -> encoded.length.toLong(); marker >= 0 -> (url.length - marker - 7).toLong(); else -> 0L }
             media.chars += chars

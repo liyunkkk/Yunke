@@ -36,6 +36,10 @@ import io.github.mangi.eta.ui.components.contextLabel
 import io.github.mangi.eta.ui.components.contextStatusLabel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.components.coui.CouiNoticeDialog
+import io.github.mangi.eta.ui.components.coui.CouiConfirmDialog
 
 @Composable
 internal fun SubAgentStatusDialog(
@@ -45,7 +49,67 @@ internal fun SubAgentStatusDialog(
 ) {
     if (!show) return
     val ordered = agents.sortedWith(compareBy({ statusRank(it.status) }, { it.contextLabel() }))
-    AlertDialog(
+    if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiNoticeDialog(
+        visible = true,
+        message = null,
+        title = stringResource(R.string.action_sub_agent_status),
+        confirmText = stringResource(R.string.sub_agent_status_close),
+        onDismissRequest = { onDismiss() },
+    ) {
+        if (ordered.isEmpty()) {
+                Text(
+                    text = stringResource(R.string.sub_agent_status_empty),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 420.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    if (ordered.isNotEmpty()) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+                        ordered.forEach { agent ->
+                            Surface(
+                                shape = MaterialTheme.shapes.medium,
+                                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = agent.contextLabel(),
+                                            style = MaterialTheme.typography.bodyLarge,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        Text(
+                                            text = agent.modelName.ifBlank { agent.model },
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                    Text(
+                                        text = agent.contextStatusLabel(),
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.padding(start = 12.dp),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+    } else AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.action_sub_agent_status)) },
         text = {

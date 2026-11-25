@@ -47,6 +47,11 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import io.github.mangi.eta.agent.browser.ported.ui.components.MinisTextButton
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.components.coui.CouiConfirmDialog
+import androidx.compose.foundation.layout.ColumnScope
+import io.github.mangi.eta.ui.components.coui.CouiModalSheet
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -64,10 +69,7 @@ fun BrowserHistorySheet(
         else mapOf("Results" to historyStore.search(searchQuery))
     }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-    ) {
+    val sheetBody: @Composable ColumnScope.() -> Unit = {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -99,17 +101,29 @@ fun BrowserHistorySheet(
             }
 
             // Search bar
-            OutlinedTextField(
-                value = searchQuery,
-                onValueChange = { searchQuery = it },
-                placeholder = { Text(stringResource(R.string.om_browser_history_search)) },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                singleLine = true,
-                shape = RoundedCornerShape(20.dp),
-                textStyle = MaterialTheme.typography.bodySmall,
-            )
+            if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
+                io.github.mangi.eta.ui.components.coui.CouiTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    placeholder = stringResource(R.string.om_browser_history_search),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    singleLine = true,
+                )
+            } else {
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    placeholder = { Text(stringResource(R.string.om_browser_history_search)) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    singleLine = true,
+                    shape = RoundedCornerShape(20.dp),
+                    textStyle = MaterialTheme.typography.bodySmall,
+                )
+            }
 
             Spacer(Modifier.height(8.dp))
 
@@ -192,9 +206,30 @@ fun BrowserHistorySheet(
             }
         }
     }
+    if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
+        CouiModalSheet(onDismiss = onDismiss, content = sheetBody)
+    } else {
+        ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+            content = sheetBody,
+        )
+    }
 
     if (showClearConfirm) {
-        AlertDialog(
+        if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiConfirmDialog(
+            visible = true,
+            title = stringResource(R.string.om_browser_history_clear_dialog_title),
+            message = stringResource(R.string.om_browser_history_clear_dialog_message),
+            confirmText = stringResource(R.string.om_browser_history_clear),
+            cancelText = stringResource(R.string.om_cancel),
+            destructive = true,
+            onDismissRequest = { showClearConfirm = false },
+            onConfirm = {
+                historyStore.clear()
+                showClearConfirm = false
+            },
+        ) else AlertDialog(
             onDismissRequest = { showClearConfirm = false },
             title = { Text(stringResource(R.string.om_browser_history_clear_dialog_title)) },
             text = { Text(stringResource(R.string.om_browser_history_clear_dialog_message)) },

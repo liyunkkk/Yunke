@@ -24,6 +24,8 @@ internal object RequestOverheadCalibration {
             is io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting -> provider.endpointMode
             is io.github.mangi.eta.data.model.CustomProviderSetting -> provider.endpointMode
             is io.github.mangi.eta.data.model.AnthropicProviderSetting -> provider.anthropicVersion
+            is io.github.mangi.eta.data.model.GeminiProviderSetting ->
+                "${provider.endpointMode}:${provider.vertexProject}:${provider.vertexLocation}"
         }
         val fields = listOf(provider.id, provider.baseUrl, provider.sourceType, endpoint,
             provider.systemPrompt, provider.authMode, provider.responsesStripReasoningStatus,

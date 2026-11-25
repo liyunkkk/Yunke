@@ -15,6 +15,10 @@ class AgentToolRequirementsTest {
         val tools = catalog(root = true, virtualDisplay = true)
         assertEquals(AgentToolRequirements.toolNames, tools.names())
         assertEquals(tools.length(), tools.names().size)
+        assertTrue("generate_image" in tools.names())
+        assertEquals(RootRequirement.NONE, AgentToolRequirements.rootRequirement("generate_image"))
+        assertFalse(AgentToolCatalog.build(terminalTools = false, browserTools = false)
+            .names().contains("generate_image"))
         assertFalse(tools.toString().contains("rootRequirement"))
     }
 
@@ -84,7 +88,7 @@ class AgentToolRequirementsTest {
     private fun catalog(root: Boolean, virtualDisplay: Boolean = false) = AgentToolCatalog.build(
         terminalTools = true, browserTools = true, deviceDirectTools = true,
         deviceSensitiveReadTools = true, deviceSensitiveActionTools = true,
-        skillGitHubDiscovery = true, skillGitHubInstall = true, memoryTools = true,
+        skillGitHubDiscovery = true, skillGitHubInstall = true, memoryTools = true, imageGenTools = true,
         capabilities = AgentToolCapabilities(rootAvailable = root, virtualDisplay = virtualDisplay),
     )
 

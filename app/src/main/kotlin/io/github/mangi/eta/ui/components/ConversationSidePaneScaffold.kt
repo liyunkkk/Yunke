@@ -42,10 +42,18 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Apps
+import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.HealthAndSafety
 import androidx.compose.material.icons.rounded.CreateNewFolder
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.Layers
+import androidx.compose.material.icons.rounded.MoreHoriz
+import androidx.compose.material.icons.rounded.UnfoldMore
 import androidx.compose.material.icons.automirrored.rounded.Chat
 import androidx.compose.material.icons.rounded.BarChart
 import androidx.compose.material.icons.rounded.Delete
@@ -56,6 +64,7 @@ import androidx.compose.material.icons.rounded.Extension
 import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.rounded.PushPin
+import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.DrawerState
@@ -100,7 +109,13 @@ import androidx.navigationevent.NavigationEventInfo
 import androidx.navigationevent.compose.NavigationBackHandler
 import androidx.navigationevent.compose.rememberNavigationEventState
 import io.github.mangi.eta.R
+import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.data.repository.AssistantRepository
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import com.itos.coui.icons.CouiIcons
+import com.itos.coui.layout.CouiPageDefaults
+import com.itos.coui.theme.CouiTheme
+import androidx.compose.material3.HorizontalDivider
 import io.github.mangi.eta.ui.model.ConversationFolderUi
 import io.github.mangi.eta.ui.model.searchResults
 import io.github.mangi.eta.ui.model.ConversationPaneUiState
@@ -113,11 +128,9 @@ import androidx.compose.ui.unit.DpOffset
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Surface
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import top.yukonga.miuix.kmp.utils.scrollEndHaptic
-import top.yukonga.miuix.kmp.window.WindowDialog
 
 private val DrawerMenuItemModifier = Modifier.height(40.dp)
 private val DrawerMenuItemPadding = PaddingValues(horizontal = 12.dp)
@@ -184,6 +197,7 @@ fun ConversationSidePaneScaffold(
     onOpenUsageStats: () -> Unit,
     onOpenSkills: () -> Unit,
     onOpenPermissions: () -> Unit,
+    onOpenScheduledTasks: () -> Unit = {},
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit,
 ) {
@@ -316,6 +330,7 @@ fun ConversationSidePaneScaffold(
                     onOpenUsageStats = { launchAfterDrawerClosed(onOpenUsageStats) },
                     onOpenSkills = { launchAfterDrawerClosed(onOpenSkills) },
                     onOpenPermissions = { launchAfterDrawerClosed(onOpenPermissions) },
+                    onOpenScheduledTasks = { launchAfterDrawerClosed(onOpenScheduledTasks) },
                     modifier = Modifier.fillMaxHeight(),
                 )
             },
@@ -355,6 +370,7 @@ private fun ConversationPanePanel(
     onOpenUsageStats: () -> Unit,
     onOpenSkills: () -> Unit,
     onOpenPermissions: () -> Unit,
+    onOpenScheduledTasks: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val query = state.searchQuery.trim()
@@ -368,6 +384,13 @@ private fun ConversationPanePanel(
     val activeAssistant = remember(profiles, activeId) {
         profiles.firstOrNull { it.id == activeId } ?: profiles.firstOrNull()
     }
+    val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
+    val couiDark = if (isCoui) CouiTheme.isDark else false
+    val paneBg = if (isCoui) {
+        CouiPageDefaults.themeColors(couiDark).background
+    } else {
+        MiuixTheme.colorScheme.surface
+    }
     Surface(
         modifier = modifier
             .width(width)
@@ -377,7 +400,7 @@ private fun ConversationPanePanel(
                 shape = drawerShape
             },
         shape = drawerShape,
-        color = MiuixTheme.colorScheme.surface,
+        color = paneBg,
         contentColor = MiuixTheme.colorScheme.onSurface,
         shadowElevation = 0.dp,
     ) {
@@ -389,18 +412,18 @@ private fun ConversationPanePanel(
                 .consumeWindowInsets(WindowInsets.ime)
                 .padding(horizontal = DrawerMetrics.PaneHorizontalPadding),
         ) {
-            Spacer(modifier = Modifier.height(DrawerMetrics.TopInset))
+            Spacer(modifier = Modifier.height(10.dp))
+            PaneDrawerActions(
+                onNewConversation = onNewConversation,
+                onOpenManageChats = onOpenManageChats,
+            )
+            Spacer(modifier = Modifier.height(12.dp))
             PaneSearchRow(
                 query = state.searchQuery,
                 onSearchChange = onSearchChange,
                 enableSearchFocus = enableSearchFocus,
             )
-            Spacer(modifier = Modifier.height(DrawerMetrics.AfterSearch))
-            PaneDrawerActions(
-                onNewConversation = onNewConversation,
-                onOpenManageChats = onOpenManageChats,
-            )
-            Spacer(modifier = Modifier.height(DrawerMetrics.AfterSearch))
+            Spacer(modifier = Modifier.height(12.dp))
             PaneFolderBar(
                 folders = state.folders,
                 selectedFolderId = state.selectedFolderId,
@@ -408,8 +431,9 @@ private fun ConversationPanePanel(
                 onCreateFolder = onCreateFolder,
                 onRenameFolder = onRenameFolder,
                 onDeleteFolder = onDeleteFolder,
+                onOpenManageChats = onOpenManageChats,
             )
-            Spacer(modifier = Modifier.height(DrawerMetrics.AfterChips))
+            Spacer(modifier = Modifier.height(8.dp))
             LazyColumn(
                 modifier = Modifier
                     .weight(1f)
@@ -451,24 +475,27 @@ private fun ConversationPanePanel(
                     }
                 }
             }
-            PaneAssistantBar(
-                name = activeAssistant?.name?.ifBlank { stringResource(R.string.app_name) }
+            HorizontalDivider(
+                thickness = 0.5.dp,
+                color = MiuixTheme.colorScheme.outline.copy(alpha = 0.25f),
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            PaneFooterBar(
+                assistantName = activeAssistant?.name?.ifBlank { stringResource(R.string.app_name) }
                     ?: stringResource(R.string.app_name),
-                onClick = onOpenAssistants,
                 avatar = {
                     AssistantAvatar(
                         assistant = activeAssistant,
-                        size = 32.dp,
+                        size = 36.dp,
                     )
                 },
-            )
-            Spacer(modifier = Modifier.height(DrawerMetrics.DockTopGap))
-            PaneDock(
+                onOpenAssistants = onOpenAssistants,
                 onOpenPermissions = onOpenPermissions,
                 onOpenSettings = onOpenSettings,
                 onOpenModelProviders = onOpenModelProviders,
                 onOpenUsageStats = onOpenUsageStats,
                 onOpenSkills = onOpenSkills,
+                onOpenScheduledTasks = onOpenScheduledTasks,
             )
             Spacer(modifier = Modifier.height(DrawerMetrics.BottomInset))
         }
@@ -505,11 +532,25 @@ private fun PaneSearchRow(
             showChatInputIme(searchFocusRequester, keyboard, view)
         }
     }
+    val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
+    val couiDark = if (isCoui) CouiTheme.isDark else false
+    val searchBg = if (isCoui) {
+        CouiPageDefaults.themeColors(couiDark).card
+    } else {
+        MiuixTheme.colorScheme.surfaceContainerHigh
+    }
+    val searchBorder = if (isCoui) {
+        if (couiDark) Color(0x1EFFFFFF) else Color(0x0F000000)
+    } else {
+        Color.Transparent
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(DrawerMetrics.SearchCornerRadius))
-            .background(MiuixTheme.colorScheme.surfaceContainerHigh)
+            .heightIn(min = 42.dp)
+            .clip(CircleShape)
+            .background(searchBg)
+            .then(if (searchBorder != Color.Transparent) Modifier.border(0.5.dp, searchBorder, CircleShape) else Modifier)
             .clickable(
                 enabled = searchFocusEnabled && !searchActive,
                 interactionSource = remember { MutableInteractionSource() },
@@ -517,15 +558,15 @@ private fun PaneSearchRow(
             ) {
                 searchActive = true
             }
-            .padding(horizontal = 12.dp, vertical = DrawerMetrics.SearchVerticalPadding),
+            .padding(horizontal = 14.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Icon(
-            imageVector = Icons.Rounded.Search,
+            imageVector = if (isCoui) CouiIcons.Outlined.Search else Icons.Rounded.Search,
             contentDescription = null,
             modifier = Modifier.size(DrawerMetrics.SearchIconSize),
-            tint = MiuixTheme.colorScheme.onSurface,
+            tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
         )
         Box(modifier = Modifier.weight(1f)) {
             if (query.isEmpty()) {
@@ -550,6 +591,19 @@ private fun PaneSearchRow(
                 cursorBrush = SolidColor(MiuixTheme.colorScheme.primary),
             )
         }
+        if (query.isNotEmpty()) {
+            Icon(
+                imageVector = Icons.Rounded.Close,
+                contentDescription = null,
+                modifier = Modifier
+                    .size(16.dp)
+                    .clickable {
+                        TouchHaptics.click(view)
+                        onSearchChange("")
+                    },
+                tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            )
+        }
     }
 }
 
@@ -558,59 +612,104 @@ private fun PaneDrawerActions(
     onNewConversation: () -> Unit,
     onOpenManageChats: () -> Unit,
 ) {
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(DrawerMetrics.ChipGap),
-    ) {
-        DrawerActionRow(
-            label = stringResource(R.string.drawer_new_conversation),
-            icon = Icons.AutoMirrored.Rounded.Chat,
-            onClick = onNewConversation,
-        )
-        DrawerActionRow(
-            label = stringResource(R.string.drawer_manage_chats),
-            icon = Icons.Rounded.History,
-            onClick = onOpenManageChats,
-        )
-    }
-}
-
-@Composable
-private fun DrawerActionRow(
-    label: String,
-    icon: ImageVector,
-    onClick: () -> Unit,
-) {
     val view = LocalView.current
+    val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
+    val couiDark = if (isCoui) CouiTheme.isDark else false
+    val circleBg = if (isCoui) {
+        CouiPageDefaults.themeColors(couiDark).card
+    } else {
+        MiuixTheme.colorScheme.surfaceContainerHigh
+    }
+    val circleBorder = if (isCoui) {
+        if (couiDark) Color(0x1EFFFFFF) else Color(0x0F000000)
+    } else {
+        Color.Transparent
+    }
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(DrawerMetrics.SearchCornerRadius))
-            .background(MiuixTheme.colorScheme.surfaceContainerHigh)
-            .pointerInput(onClick) {
-                detectTapGestures(onTap = {
-                    TouchHaptics.click(view)
-                    onClick()
-                })
-            }
-            .padding(horizontal = 12.dp, vertical = DrawerMetrics.SearchVerticalPadding),
+        modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            modifier = Modifier.size(18.dp),
-            tint = MiuixTheme.colorScheme.onSurface,
-        )
-        Text(
-            text = label,
-            color = MiuixTheme.colorScheme.onSurface,
-            style = MiuixTheme.textStyles.body2,
-            fontWeight = FontWeight.Medium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+        Row(
+            modifier = Modifier.weight(1f),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(30.dp)
+                    .clip(CircleShape)
+                    .background(MiuixTheme.colorScheme.primary.copy(alpha = 0.14f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.AutoAwesome,
+                    contentDescription = null,
+                    modifier = Modifier.size(17.dp),
+                    tint = MiuixTheme.colorScheme.primary,
+                )
+            }
+            Text(
+                text = stringResource(R.string.app_name),
+                color = MiuixTheme.colorScheme.onSurface,
+                style = MiuixTheme.textStyles.headline1,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        // 管理聊天圆形按钮
+        Box(
+            modifier = Modifier
+                .size(38.dp)
+                .clip(CircleShape)
+                .background(circleBg)
+                .then(if (circleBorder != Color.Transparent) Modifier.border(0.5.dp, circleBorder, CircleShape) else Modifier)
+                .pointerInput(onOpenManageChats) {
+                    detectTapGestures(onTap = {
+                        TouchHaptics.click(view)
+                        onOpenManageChats()
+                    })
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.Layers,
+                contentDescription = stringResource(R.string.drawer_manage_chats),
+                modifier = Modifier.size(18.dp),
+                tint = MiuixTheme.colorScheme.onSurface,
+            )
+        }
+        // 主题色新对话胶囊主按钮
+        Row(
+            modifier = Modifier
+                .height(38.dp)
+                .clip(CircleShape)
+                .background(MiuixTheme.colorScheme.primary)
+                .pointerInput(onNewConversation) {
+                    detectTapGestures(onTap = {
+                        TouchHaptics.click(view)
+                        onNewConversation()
+                    })
+                }
+                .padding(horizontal = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.Edit,
+                contentDescription = null,
+                modifier = Modifier.size(15.dp),
+                tint = MiuixTheme.colorScheme.onPrimary,
+            )
+            Text(
+                text = stringResource(R.string.drawer_new_conversation),
+                color = MiuixTheme.colorScheme.onPrimary,
+                style = MiuixTheme.textStyles.body2,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+            )
+        }
     }
 }
 
@@ -622,87 +721,324 @@ private fun PaneFolderBar(
     onCreateFolder: (String) -> Unit,
     onRenameFolder: (String, String) -> Unit,
     onDeleteFolder: (String) -> Unit,
+    onOpenManageChats: () -> Unit = {},
 ) {
+    val view = LocalView.current
     var createFolder by remember { mutableStateOf(false) }
     var folderToRename by remember { mutableStateOf<ConversationFolderUi?>(null) }
     var folderToDelete by remember { mutableStateOf<ConversationFolderUi?>(null) }
+    var showFolderDropdown by remember { mutableStateOf(false) }
+    var showMoreMenu by remember { mutableStateOf(false) }
 
-    LazyRow(
+    val selectedFolder = remember(folders, selectedFolderId) {
+        folders.firstOrNull { it.id == selectedFolderId }
+    }
+    val allLabel = stringResource(R.string.drawer_chats_chip)
+
+    Column(
         modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(DrawerMetrics.ChipGap),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        item(key = "unfiled") {
-            DrawerChip(
-                label = stringResource(R.string.drawer_chats_chip),
-                selected = selectedFolderId == null,
-                icon = null,
-                onClick = { onSelectFolder(null) },
-            )
-        }
-        items(folders, key = { it.id }) { folder ->
-            var showMenu by remember(folder.id) { mutableStateOf(false) }
-            Box {
-                DrawerChip(
-                    label = folder.name,
-                    selected = selectedFolderId == folder.id,
-                    icon = Icons.Rounded.Folder,
-                    onClick = { onSelectFolder(folder.id) },
-                    onLongClick = { showMenu = true },
-                )
-                EtaDropdownMenu(
-                    expanded = showMenu,
-                    onDismissRequest = { showMenu = false },
-                    offset = DpOffset(x = 0.dp, y = 8.dp),
+        // 文件夹下拉行 + 右侧更多菜单（类似 DSH Go 的「📁 DSH worker ⌄   ···」）
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(modifier = Modifier.weight(1f)) {
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable {
+                            TouchHaptics.click(view)
+                            showFolderDropdown = true
+                        }
+                        .padding(horizontal = 4.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    DropdownMenuItem(
-                        modifier = DrawerMenuItemModifier,
-                        contentPadding = DrawerMenuItemPadding,
-                        text = { Text(stringResource(R.string.action_rename)) },
-                        leadingIcon = {
-                            Icon(
-                                imageVector = Icons.Rounded.Edit,
-                                contentDescription = null,
-                                modifier = Modifier.size(DrawerMetrics.ActionIconSize),
-                            )
-                        },
-                        onClick = {
-                            showMenu = false
-                            folderToRename = folder
-                        },
+                    Icon(
+                        imageVector = Icons.Rounded.Folder,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                     )
+                    Text(
+                        text = selectedFolder?.name ?: allLabel,
+                        color = MiuixTheme.colorScheme.onSurface,
+                        style = MiuixTheme.textStyles.body2,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Icon(
+                        imageVector = Icons.Rounded.ExpandMore,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    )
+                }
+                EtaDropdownMenu(
+                    expanded = showFolderDropdown,
+                    onDismissRequest = { showFolderDropdown = false },
+                    offset = DpOffset(x = 0.dp, y = 6.dp),
+                ) {
                     DropdownMenuItem(
                         modifier = DrawerMenuItemModifier,
                         contentPadding = DrawerMenuItemPadding,
                         text = {
                             Text(
-                                text = stringResource(R.string.action_delete),
-                                color = MiuixTheme.colorScheme.error,
+                                text = allLabel,
+                                fontWeight = if (selectedFolderId == null) FontWeight.SemiBold else FontWeight.Normal,
                             )
                         },
+                        trailingIcon = if (selectedFolderId == null) {
+                            {
+                                Icon(
+                                    imageVector = Icons.Rounded.Check,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = MiuixTheme.colorScheme.primary,
+                                )
+                            }
+                        } else null,
+                        onClick = {
+                            showFolderDropdown = false
+                            onSelectFolder(null)
+                        },
+                    )
+                    folders.forEach { folder ->
+                        val isSelected = selectedFolderId == folder.id
+                        DropdownMenuItem(
+                            modifier = DrawerMenuItemModifier,
+                            contentPadding = DrawerMenuItemPadding,
+                            text = {
+                                Text(
+                                    text = folder.name,
+                                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Rounded.Folder,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            },
+                            trailingIcon = if (isSelected) {
+                                {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Check,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp),
+                                        tint = MiuixTheme.colorScheme.primary,
+                                    )
+                                }
+                            } else null,
+                            onClick = {
+                                showFolderDropdown = false
+                                onSelectFolder(folder.id)
+                            },
+                        )
+                    }
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 4.dp),
+                        thickness = 0.5.dp,
+                        color = MiuixTheme.colorScheme.outline.copy(alpha = 0.25f),
+                    )
+                    DropdownMenuItem(
+                        modifier = DrawerMenuItemModifier,
+                        contentPadding = DrawerMenuItemPadding,
+                        text = { Text(stringResource(R.string.drawer_new_folder)) },
                         leadingIcon = {
                             Icon(
-                                imageVector = Icons.Rounded.Delete,
+                                imageVector = Icons.Rounded.CreateNewFolder,
                                 contentDescription = null,
-                                modifier = Modifier.size(DrawerMetrics.ActionIconSize),
-                                tint = MiuixTheme.colorScheme.error,
+                                modifier = Modifier.size(16.dp),
                             )
                         },
                         onClick = {
-                            showMenu = false
-                            folderToDelete = folder
+                            showFolderDropdown = false
+                            createFolder = true
                         },
                     )
                 }
             }
+
+            Box {
+                Box(
+                    modifier = Modifier
+                        .size(30.dp)
+                        .clip(CircleShape)
+                        .clickable {
+                            TouchHaptics.click(view)
+                            showMoreMenu = true
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.MoreHoriz,
+                        contentDescription = stringResource(R.string.action_more),
+                        modifier = Modifier.size(18.dp),
+                        tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    )
+                }
+                EtaDropdownMenu(
+                    expanded = showMoreMenu,
+                    onDismissRequest = { showMoreMenu = false },
+                    alignEnd = true,
+                    offset = DpOffset(x = 0.dp, y = 6.dp),
+                ) {
+                    DropdownMenuItem(
+                        modifier = DrawerMenuItemModifier,
+                        contentPadding = DrawerMenuItemPadding,
+                        text = { Text(stringResource(R.string.drawer_new_folder)) },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Rounded.CreateNewFolder,
+                                contentDescription = null,
+                                modifier = Modifier.size(DrawerMetrics.ActionIconSize),
+                            )
+                        },
+                        onClick = {
+                            showMoreMenu = false
+                            createFolder = true
+                        },
+                    )
+                    if (selectedFolder != null) {
+                        DropdownMenuItem(
+                            modifier = DrawerMenuItemModifier,
+                            contentPadding = DrawerMenuItemPadding,
+                            text = { Text(stringResource(R.string.action_rename)) },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Rounded.Edit,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(DrawerMetrics.ActionIconSize),
+                                )
+                            },
+                            onClick = {
+                                showMoreMenu = false
+                                folderToRename = selectedFolder
+                            },
+                        )
+                        DropdownMenuItem(
+                            modifier = DrawerMenuItemModifier,
+                            contentPadding = DrawerMenuItemPadding,
+                            text = {
+                                Text(
+                                    text = stringResource(R.string.action_delete),
+                                    color = MiuixTheme.colorScheme.error,
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Rounded.Delete,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(DrawerMetrics.ActionIconSize),
+                                    tint = MiuixTheme.colorScheme.error,
+                                )
+                            },
+                            onClick = {
+                                showMoreMenu = false
+                                folderToDelete = selectedFolder
+                            },
+                        )
+                    } else {
+                        DropdownMenuItem(
+                            modifier = DrawerMenuItemModifier,
+                            contentPadding = DrawerMenuItemPadding,
+                            text = { Text(stringResource(R.string.drawer_manage_chats)) },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Rounded.History,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(DrawerMetrics.ActionIconSize),
+                                )
+                            },
+                            onClick = {
+                                showMoreMenu = false
+                                onOpenManageChats()
+                            },
+                        )
+                    }
+                }
+            }
         }
-        item(key = "new-folder") {
-            DrawerChip(
-                label = stringResource(R.string.drawer_new_folder),
-                selected = false,
-                icon = Icons.Rounded.CreateNewFolder,
-                onClick = { createFolder = true },
-            )
+
+        // 存在文件夹时展示单行紧凑胶囊快切条（长按仍可重命名/删除）
+        if (folders.isNotEmpty()) {
+            LazyRow(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(DrawerMetrics.ChipGap),
+            ) {
+                item(key = "unfiled") {
+                    DrawerChip(
+                        label = allLabel,
+                        selected = selectedFolderId == null,
+                        icon = null,
+                        onClick = { onSelectFolder(null) },
+                    )
+                }
+                items(folders, key = { it.id }) { folder ->
+                    var showMenu by remember(folder.id) { mutableStateOf(false) }
+                    Box {
+                        DrawerChip(
+                            label = folder.name,
+                            selected = selectedFolderId == folder.id,
+                            icon = null,
+                            onClick = { onSelectFolder(folder.id) },
+                            onLongClick = { showMenu = true },
+                        )
+                        EtaDropdownMenu(
+                            expanded = showMenu,
+                            onDismissRequest = { showMenu = false },
+                            offset = DpOffset(x = 0.dp, y = 8.dp),
+                        ) {
+                            DropdownMenuItem(
+                                modifier = DrawerMenuItemModifier,
+                                contentPadding = DrawerMenuItemPadding,
+                                text = { Text(stringResource(R.string.action_rename)) },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Edit,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(DrawerMetrics.ActionIconSize),
+                                    )
+                                },
+                                onClick = {
+                                    showMenu = false
+                                    folderToRename = folder
+                                },
+                            )
+                            DropdownMenuItem(
+                                modifier = DrawerMenuItemModifier,
+                                contentPadding = DrawerMenuItemPadding,
+                                text = {
+                                    Text(
+                                        text = stringResource(R.string.action_delete),
+                                        color = MiuixTheme.colorScheme.error,
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Delete,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(DrawerMetrics.ActionIconSize),
+                                        tint = MiuixTheme.colorScheme.error,
+                                    )
+                                },
+                                onClick = {
+                                    showMenu = false
+                                    folderToDelete = folder
+                                },
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -729,22 +1065,19 @@ private fun PaneFolderBar(
         )
     }
     folderToDelete?.let { folder ->
-        WindowDialog(
+        AdaptiveConfirmDialog(
             show = true,
             title = stringResource(R.string.drawer_delete_folder_title),
             summary = stringResource(R.string.drawer_delete_folder_message),
             onDismissRequest = { folderToDelete = null },
-        ) {
-            MiuixDialogActions(
-                confirmText = stringResource(R.string.action_delete),
-                destructive = true,
-                onCancel = { folderToDelete = null },
-                onConfirm = {
-                    onDeleteFolder(folder.id)
-                    folderToDelete = null
-                },
-            )
-        }
+            confirmText = stringResource(R.string.action_delete),
+            destructive = true,
+            onCancel = { folderToDelete = null },
+            onConfirm = {
+                onDeleteFolder(folder.id)
+                folderToDelete = null
+            },
+        )
     }
 }
 
@@ -756,12 +1089,15 @@ private fun FolderNameDialog(
     onConfirm: (String) -> Unit,
 ) {
     var name by remember(initialName) { mutableStateOf(initialName) }
-    WindowDialog(
+    AdaptiveConfirmDialog(
         show = true,
         title = title,
         onDismissRequest = onDismiss,
+        confirmText = stringResource(R.string.action_save),
+        confirmEnabled = name.isNotBlank(),
+        onCancel = onDismiss,
+        onConfirm = { onConfirm(name) },
     ) {
-        Column {
             TextField(
                 value = name,
                 onValueChange = { name = it },
@@ -769,14 +1105,6 @@ private fun FolderNameDialog(
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
-            MiuixDialogActions(
-                confirmText = stringResource(R.string.action_save),
-                confirmEnabled = name.isNotBlank(),
-                onCancel = onDismiss,
-                onConfirm = { onConfirm(name) },
-                modifier = Modifier.padding(top = 16.dp),
-            )
-        }
     }
 }
 
@@ -788,22 +1116,30 @@ private fun DrawerChip(
     onClick: () -> Unit,
     onLongClick: (() -> Unit)? = null,
 ) {
-    val background = if (selected) {
-        MiuixTheme.colorScheme.primary
-    } else {
-        MiuixTheme.colorScheme.surfaceContainerHigh
+    val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
+    val couiDark = if (isCoui) CouiTheme.isDark else false
+    val background = when {
+        selected -> MiuixTheme.colorScheme.primary
+        isCoui -> CouiPageDefaults.themeColors(couiDark).card
+        else -> MiuixTheme.colorScheme.surfaceContainerHigh
     }
     val contentColor = if (selected) {
         MiuixTheme.colorScheme.onPrimary
     } else {
-        MiuixTheme.colorScheme.onSurface
+        MiuixTheme.colorScheme.onSurfaceVariantSummary
+    }
+    val chipBorder = if (!selected && isCoui) {
+        if (couiDark) Color(0x1EFFFFFF) else Color(0x0F000000)
+    } else {
+        Color.Transparent
     }
     val view = LocalView.current
     Row(
         modifier = Modifier
-            .heightIn(min = 36.dp)
+            .heightIn(min = 32.dp)
             .clip(CircleShape)
             .background(background)
+            .then(if (chipBorder != Color.Transparent) Modifier.border(0.5.dp, chipBorder, CircleShape) else Modifier)
             .pointerInput(onClick, onLongClick) {
                 detectTapGestures(
                     onTap = {
@@ -818,7 +1154,7 @@ private fun DrawerChip(
                     },
                 )
             }
-            .padding(horizontal = 12.dp, vertical = 6.dp),
+            .padding(horizontal = 14.dp, vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
@@ -847,9 +1183,9 @@ private fun ConversationSectionHeader(
 ) {
     Text(
         text = group.localizedLabel(),
-        color = MiuixTheme.colorScheme.primary,
+        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
         style = MiuixTheme.textStyles.footnote1,
-        fontWeight = FontWeight.SemiBold,
+        fontWeight = FontWeight.Medium,
         modifier = Modifier
             .fillMaxWidth()
             .padding(
@@ -875,6 +1211,22 @@ private fun ConversationTextRow(
 ) {
     var showActionMenu by remember { mutableStateOf(false) }
     val view = LocalView.current
+    val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
+    val couiDark = if (isCoui) CouiTheme.isDark else false
+    val selectedBg = if (isCoui) {
+        androidx.compose.ui.graphics.lerp(
+            CouiPageDefaults.themeColors(couiDark).card,
+            MiuixTheme.colorScheme.primary,
+            if (couiDark) 0.22f else 0.11f,
+        )
+    } else {
+        MiuixTheme.colorScheme.primaryContainer
+    }
+    val selectedBorder = if (selected && isCoui) {
+        MiuixTheme.colorScheme.primary.copy(alpha = if (couiDark) 0.24f else 0.16f)
+    } else {
+        Color.Transparent
+    }
 
     Box(modifier = Modifier.fillMaxWidth()) {
         Row(
@@ -882,11 +1234,16 @@ private fun ConversationTextRow(
                 .fillMaxWidth()
                 .heightIn(min = DrawerMetrics.RowMinHeight)
                 .clip(RoundedCornerShape(DrawerMetrics.RowCornerRadius))
-                .background(
-                    if (selected) {
-                        MiuixTheme.colorScheme.surfaceContainerHigh
+                .background(if (selected) selectedBg else Color.Transparent)
+                .then(
+                    if (selectedBorder != Color.Transparent) {
+                        Modifier.border(
+                            0.5.dp,
+                            selectedBorder,
+                            RoundedCornerShape(DrawerMetrics.RowCornerRadius),
+                        )
                     } else {
-                        Color.Transparent
+                        Modifier
                     },
                 )
                 .combinedClickable(
@@ -908,7 +1265,7 @@ private fun ConversationTextRow(
         ) {
             Text(
                 text = conversation.title.ifBlank { conversation.preview },
-                color = MiuixTheme.colorScheme.onSurface,
+                color = if (selected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurface,
                 style = MiuixTheme.textStyles.body1,
                 fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
                 maxLines = 1,
@@ -1073,103 +1430,222 @@ private fun EmptyConversations(isSearching: Boolean) {
 }
 
 @Composable
-private fun PaneAssistantBar(
-    name: String,
-    onClick: () -> Unit,
+private fun PaneFooterBar(
+    assistantName: String,
     avatar: @Composable () -> Unit,
-) {
-    val view = LocalView.current
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = DrawerMetrics.AssistantBarHeight)
-            .clip(RoundedCornerShape(16.dp))
-            .clickable {
-                TouchHaptics.click(view)
-                onClick()
-            }
-            .padding(horizontal = 8.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = name,
-            color = MiuixTheme.colorScheme.onSurface,
-            style = MiuixTheme.textStyles.body1,
-            fontWeight = FontWeight.Medium,
-            textAlign = TextAlign.End,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier
-                .weight(1f)
-                .padding(end = 10.dp),
-        )
-        avatar()
-    }
-}
-
-@Composable
-private fun PaneDock(
+    onOpenAssistants: () -> Unit,
     onOpenPermissions: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenModelProviders: () -> Unit,
     onOpenUsageStats: () -> Unit,
     onOpenSkills: () -> Unit,
+    onOpenScheduledTasks: () -> Unit = {},
 ) {
+    val view = LocalView.current
+    var showShortcutsMenu by remember { mutableStateOf(false) }
+    val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
+    val couiDark = if (isCoui) CouiTheme.isDark else false
+    val circleBg = if (isCoui) {
+        CouiPageDefaults.themeColors(couiDark).card
+    } else {
+        MiuixTheme.colorScheme.primaryContainer
+    }
+    val circleBorder = if (isCoui) {
+        if (couiDark) Color(0x1EFFFFFF) else Color(0x0F000000)
+    } else {
+        Color.Transparent
+    }
+
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        DrawerCircleButton(
-            icon = Icons.Rounded.HealthAndSafety,
-            label = stringResource(R.string.ui_permission_health_3048bb),
-            onClick = onOpenPermissions,
-        )
-        Spacer(modifier = Modifier.width(10.dp))
-        DrawerCircleButton(
-            icon = Icons.Rounded.Memory,
-            label = stringResource(R.string.conversation_dock_models),
-            onClick = onOpenModelProviders,
-        )
-        Spacer(modifier = Modifier.width(10.dp))
-        DrawerCircleButton(
-            icon = Icons.Rounded.Extension,
-            label = stringResource(R.string.route_skills),
-            onClick = onOpenSkills,
-        )
-        Spacer(modifier = Modifier.width(10.dp))
-        DrawerCircleButton(
-            icon = Icons.Rounded.BarChart,
-            label = stringResource(R.string.stats_page_title),
-            onClick = onOpenUsageStats,
-        )
-        Spacer(modifier = Modifier.weight(1f))
-        DrawerCircleButton(
-            icon = Icons.Rounded.Settings,
+        // 左侧：当前助手卡片（头像居左 + 名称 + 上下切换提示，参考 DSH Go 底部状态区）
+        Row(
+            modifier = Modifier
+                .weight(1f)
+                .heightIn(min = 46.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .clickable {
+                    TouchHaptics.click(view)
+                    onOpenAssistants()
+                }
+                .padding(horizontal = 4.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            avatar()
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(1.dp),
+            ) {
+                Text(
+                    text = assistantName,
+                    color = MiuixTheme.colorScheme.onSurface,
+                    style = MiuixTheme.textStyles.body2,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(6.dp)
+                            .clip(CircleShape)
+                            .background(MiuixTheme.colorScheme.primary),
+                    )
+                    Text(
+                        text = "当前助手",
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        style = MiuixTheme.textStyles.footnote2,
+                        maxLines = 1,
+                    )
+                }
+            }
+            Icon(
+                imageVector = Icons.Rounded.UnfoldMore,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            )
+        }
+
+        // 右侧 1：九宫格快捷入口（收纳模型/Skills/定时任务/用量统计/权限健康，带文字标签更直观）
+        Box {
+            DrawerFooterCircleButton(
+                icon = Icons.Rounded.Apps,
+                label = "快捷入口",
+                background = circleBg,
+                borderColor = circleBorder,
+                onClick = { showShortcutsMenu = true },
+            )
+            EtaDropdownMenu(
+                expanded = showShortcutsMenu,
+                onDismissRequest = { showShortcutsMenu = false },
+                preferAbove = true,
+                alignEnd = true,
+                offset = DpOffset(x = 0.dp, y = 8.dp),
+            ) {
+                DropdownMenuItem(
+                    modifier = DrawerMenuItemModifier,
+                    contentPadding = DrawerMenuItemPadding,
+                    text = { Text(stringResource(R.string.conversation_dock_models)) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Rounded.Memory,
+                            contentDescription = null,
+                            modifier = Modifier.size(DrawerMetrics.ActionIconSize),
+                        )
+                    },
+                    onClick = {
+                        showShortcutsMenu = false
+                        onOpenModelProviders()
+                    },
+                )
+                DropdownMenuItem(
+                    modifier = DrawerMenuItemModifier,
+                    contentPadding = DrawerMenuItemPadding,
+                    text = { Text(stringResource(R.string.route_skills)) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Rounded.Extension,
+                            contentDescription = null,
+                            modifier = Modifier.size(DrawerMetrics.ActionIconSize),
+                        )
+                    },
+                    onClick = {
+                        showShortcutsMenu = false
+                        onOpenSkills()
+                    },
+                )
+                DropdownMenuItem(
+                    modifier = DrawerMenuItemModifier,
+                    contentPadding = DrawerMenuItemPadding,
+                    text = { Text(stringResource(R.string.route_scheduled_tasks)) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Rounded.Schedule,
+                            contentDescription = null,
+                            modifier = Modifier.size(DrawerMetrics.ActionIconSize),
+                        )
+                    },
+                    onClick = {
+                        showShortcutsMenu = false
+                        onOpenScheduledTasks()
+                    },
+                )
+                DropdownMenuItem(
+                    modifier = DrawerMenuItemModifier,
+                    contentPadding = DrawerMenuItemPadding,
+                    text = { Text(stringResource(R.string.stats_page_title)) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Rounded.BarChart,
+                            contentDescription = null,
+                            modifier = Modifier.size(DrawerMetrics.ActionIconSize),
+                        )
+                    },
+                    onClick = {
+                        showShortcutsMenu = false
+                        onOpenUsageStats()
+                    },
+                )
+                DropdownMenuItem(
+                    modifier = DrawerMenuItemModifier,
+                    contentPadding = DrawerMenuItemPadding,
+                    text = { Text(stringResource(R.string.ui_permission_health_3048bb)) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Rounded.HealthAndSafety,
+                            contentDescription = null,
+                            modifier = Modifier.size(DrawerMetrics.ActionIconSize),
+                        )
+                    },
+                    onClick = {
+                        showShortcutsMenu = false
+                        onOpenPermissions()
+                    },
+                )
+            }
+        }
+
+        // 右侧 2：设置圆形按钮
+        DrawerFooterCircleButton(
+            icon = if (isCoui) CouiIcons.Outlined.Setting else Icons.Rounded.Settings,
             label = stringResource(R.string.route_settings),
+            background = circleBg,
+            borderColor = circleBorder,
             onClick = onOpenSettings,
         )
     }
 }
 
 @Composable
-private fun DrawerCircleButton(
+private fun DrawerFooterCircleButton(
     icon: ImageVector,
     label: String,
+    background: Color,
+    borderColor: Color,
     onClick: () -> Unit,
 ) {
     val view = LocalView.current
     Box(
         modifier = Modifier
+            .size(42.dp)
             .clip(CircleShape)
-            .background(MiuixTheme.colorScheme.primaryContainer)
+            .background(background)
+            .then(if (borderColor != Color.Transparent) Modifier.border(0.5.dp, borderColor, CircleShape) else Modifier)
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
             ) {
                 TouchHaptics.click(view)
                 onClick()
-            }
-            .padding(DrawerMetrics.CircleButtonPadding),
+            },
         contentAlignment = Alignment.Center,
     ) {
         Icon(

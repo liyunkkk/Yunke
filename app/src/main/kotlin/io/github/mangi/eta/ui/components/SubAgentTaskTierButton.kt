@@ -1,5 +1,8 @@
 package io.github.mangi.eta.ui.components
 
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import com.itos.coui.theme.CouiTheme
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -74,16 +77,23 @@ internal fun SubAgentDropdownMenu(
     offset: DpOffset = DpOffset.Zero,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    // COUI 下换成 COUI 菜单外观：28dp 圆角、COUI 菜单底色、立体投影与细腻轮廓线。
+    val coui = LocalUiStyle.current == AppearanceUiStyle.COUI
+    val couiDark = if (coui) CouiTheme.isDark else false
     DropdownMenu(
         expanded = expanded,
         onDismissRequest = onDismissRequest,
         modifier = modifier,
         offset = offset,
-        shape = RoundedCornerShape(12.dp),
-        containerColor = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(if (coui) 28.dp else 12.dp),
+        containerColor = if (coui) CouiTheme.colorScheme.menuSurface else MaterialTheme.colorScheme.surface,
         tonalElevation = 0.dp,
-        shadowElevation = 0.dp,
-        border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)),
+        shadowElevation = if (coui) 12.dp else 0.dp,
+        border = if (coui) {
+            BorderStroke(0.75.dp, if (couiDark) Color(0x28FFFFFF) else Color(0x18000000))
+        } else {
+            BorderStroke(0.5.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
+        },
     ) {
         Column(Modifier.width(IntrinsicSize.Max).widthIn(min = 96.dp, max = 220.dp), content = content)
     }

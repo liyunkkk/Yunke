@@ -210,6 +210,12 @@
   <string name="appearance_palette_monochrome">Monochrome</string>
   <string name="appearance_palette_fidelity">Fidelity</string>
   <string name="appearance_palette_content">Content</string>
+  <string name="appearance_ui_style">UI style</string>
+  <string name="appearance_ui_style_coui">COUI</string>
+  <string name="appearance_ui_style_miuix">Miuix</string>
+  <string name="appearance_palette_cmf">CMF</string>
+  <string name="appearance_progressive_blur">Progressive blur</string>
+  <string name="appearance_progressive_blur_summary">Apply progressive blur to top bars and sidebar overlays; disable for smoother performance</string>
   <string name="appearance_accent_color">Accent color</string>
   <string name="appearance_accent_system">System colors</string>
   <string name="appearance_accent_blue">Blue</string>
@@ -234,9 +240,9 @@
   <string name="appearance_predictive_back">Predictive back gesture</string>
   <string name="appearance_predictive_back_summary">Enable predictive back animations</string>
   <string name="appearance_interface_scale">Interface scale</string>
-  <string name="appearance_interface_scale_summary" formatted="false">Adjust the global display scale (80%–110%)</string>
+  <string name="appearance_interface_scale_summary" formatted="false">Adjust the global display scale (70%–130%)</string>
   <string name="appearance_interface_scale_dialog_title">Interface scale</string>
-  <string name="appearance_interface_scale_dialog_summary">Enter an integer from 80 to 110</string>
+  <string name="appearance_interface_scale_dialog_summary">Enter an integer from 70 to 130</string>
   <string name="appearance_interface_scale_input_label">Percentage</string>
   <string name="appearance_morph_loading">Morph loading indicator</string>
   <string name="appearance_morph_loading_summary">Show a morphing circular indicator after sending a message</string>
@@ -390,6 +396,8 @@
   <string name="tool_launch_app">Launch app</string>
   <string name="tool_open_uri">Open with app</string>
   <string name="tool_browser_use">Browse web</string>
+  <string name="tool_subagent">Run subagent</string>
+  <string name="tool_subagent_profile">Manage subagent</string>
   <string name="tool_terminal">Terminal</string>
   <string name="tool_run_command">Run command</string>
   <string name="tool_read_file">Read file</string>
@@ -1635,4 +1643,24 @@
   <string name="settings_model_retry_summary">Raise it when the network or relay is unstable; 0 disables automatic retries.</string>
   <string name="settings_about_version">Version</string>
   <string name="settings_about_feedback">Send feedback</string>
+  <string name="image_gen_settings_title">AI Image Generation</string>
+  <string name="image_gen_gallery_title">Generated Images</string>
+  <string name="image_gen_configure_action">Configure image generation</string>
+  <string name="tool_generate_image">AI Image Generation</string>
+  <string name="tool_generate_image_description">Generate images from text prompts or edit reference images using the configured image generation model.</string>
+  <string name="route_scheduled_tasks">Scheduled Tasks</string>
+  <string name="route_scheduled_task_detail">Task Details</string>
+  <string name="route_scheduled_task_new">New Scheduled Task</string>
+  <string name="route_scheduled_task_edit">Edit Scheduled Task</string>
+  <string name="scheduled_notification_channel_results">Scheduled task results</string>
+  <string name="scheduled_notification_channel_results_desc">Summaries and updates delivered by scheduled tasks</string>
+  <string name="scheduled_notification_channel_alerts">Scheduled task alerts</string>
+  <string name="scheduled_notification_channel_alerts_desc">Failures, auto-pause alerts, and actions awaiting unlock</string>
+  <string name="scheduled_notification_completed_fallback">Scheduled task completed. Tap to view full conversation.</string>
+  <string name="scheduled_notification_failed_title">Task failed: %1$s</string>
+  <string name="scheduled_notification_auto_disabled_title">Task paused: %1$s</string>
+  <string name="scheduled_notification_failed_fallback">Execution failed. Tap to inspect details.</string>
+  <string name="scheduled_notification_gui_ready_title">Ready to run: %1$s</string>
+  <string name="scheduled_action_run_now">Run now</string>
+  <string name="scheduled_action_stop">Stop</string>
 </resources>

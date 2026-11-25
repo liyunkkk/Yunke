@@ -3,6 +3,7 @@ package io.github.mangi.eta.agent.model
 import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.agent.runtime.AgentRunController
 import io.github.mangi.eta.data.model.CustomBody
+import io.github.mangi.eta.data.model.GeminiEndpointMode
 import io.github.mangi.eta.data.model.OpenAiEndpointMode
 import io.github.mangi.eta.data.model.ProviderTypes
 import kotlinx.serialization.json.Json
@@ -15,7 +16,12 @@ class AgentWireRequestEstimateTest {
     private val config = AgentModelClient.ModelConfig(baseUrl = "https://example.invalid/v1",
         apiKey = "TEST_KEY_NOT_REAL", model = "test", systemPrompt = "")
     private fun config(endpoint: EndpointKind) = config.copy(
-        providerType = if (endpoint == EndpointKind.ANTHROPIC_MESSAGES) ProviderTypes.ANTHROPIC else ProviderTypes.OPENAI_COMPATIBLE,
+        providerType = when (endpoint) {
+            EndpointKind.ANTHROPIC_MESSAGES -> ProviderTypes.ANTHROPIC
+            EndpointKind.GEMINI_INTERACTIONS, EndpointKind.VERTEX_GENERATE_CONTENT -> ProviderTypes.GEMINI
+            else -> ProviderTypes.OPENAI_COMPATIBLE
+        },
+        geminiEndpointMode = if (endpoint == EndpointKind.VERTEX_GENERATE_CONTENT) GeminiEndpointMode.VERTEX_AI else GeminiEndpointMode.AI_STUDIO,
         openAiEndpointMode = if (endpoint == EndpointKind.RESPONSES) OpenAiEndpointMode.RESPONSES else OpenAiEndpointMode.CHAT_COMPLETIONS)
     private fun msg(role: String, text: String) = JSONObject().put("role", role).put("content", text)
     private fun body(c: AgentModelClient.ModelConfig, m: JSONArray, t: JSONArray = JSONArray()) =

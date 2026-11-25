@@ -15,10 +15,11 @@ import io.github.mangi.eta.agent.voice.doubao.DoubaoAsrProtocol
 import io.github.mangi.eta.agent.voice.doubao.DoubaoVoiceConfig
 import io.github.mangi.eta.agent.voice.offline.OfflineSpeechPack
 import io.github.mangi.eta.agent.voice.offline.SpeechModelManifest
-import io.github.mangi.eta.ui.components.MiuixDialogActions
-import top.yukonga.miuix.kmp.basic.Card
+import io.github.mangi.eta.ui.components.Card
 import io.github.mangi.eta.ui.components.ArrowPreference
 import io.github.mangi.eta.ui.components.SwitchPreference
+import io.github.mangi.eta.ui.components.AdaptiveConfirmDialog
+import io.github.mangi.eta.ui.components.coui.EtaLinearProgressIndicator
 
 /** Own ASR selections; only the downloaded offline model is shared with dictation. */
 @Composable
@@ -72,7 +73,7 @@ internal fun VoiceConversationRecognitionSettings() {
                     enabled = !pack.checking && !pack.ready,
                     onClick = { if (pack.downloading) OfflineSpeechPack.cancelDownload() else confirmDownload = true },
                 )
-                if (pack.downloading) LinearProgressIndicator(
+                if (pack.downloading) EtaLinearProgressIndicator(
                     progress = { (pack.downloadedBytes.toFloat() / SpeechModelManifest.totalBytes).coerceIn(0f, 1f) },
                     modifier = Modifier.fillMaxWidth().padding(16.dp),
                 )
@@ -90,17 +91,14 @@ internal fun VoiceConversationRecognitionSettings() {
             DoubaoVoiceConfig.save(context, config.copy(conversationResource = it)); resourcePicker = false
         },
     )
-    top.yukonga.miuix.kmp.window.WindowDialog(
+    AdaptiveConfirmDialog(
         show = confirmDownload,
         title = stringResource(R.string.speech_download),
+        summary = stringResource(R.string.speech_download_confirm),
         onDismissRequest = { confirmDownload = false },
-    ) {
-        Text(stringResource(R.string.speech_download_confirm))
-        MiuixDialogActions(
-            confirmText = stringResource(R.string.speech_download),
-            cancelText = stringResource(R.string.action_cancel),
-            onCancel = { confirmDownload = false },
-            onConfirm = { confirmDownload = false; OfflineSpeechPack.download(context) },
-        )
-    }
+        confirmText = stringResource(R.string.speech_download),
+        cancelText = stringResource(R.string.action_cancel),
+        onCancel = { confirmDownload = false },
+        onConfirm = { confirmDownload = false; OfflineSpeechPack.download(context) },
+    )
 }

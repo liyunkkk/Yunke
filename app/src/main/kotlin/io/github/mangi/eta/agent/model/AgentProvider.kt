@@ -30,7 +30,15 @@ internal data class ProviderCapabilities(
 internal enum class EndpointKind {
     CHAT_COMPLETIONS,
     RESPONSES,
-    ANTHROPIC_MESSAGES
+    ANTHROPIC_MESSAGES,
+    GEMINI_INTERACTIONS,
+    VERTEX_GENERATE_CONTENT,
+}
+
+internal enum class ProviderRequestPurpose {
+    CHAT, COMPACTION, REPLY_REWRITE, TRANSCRIPT_REFINE, TITLE_GENERATION;
+
+    val allowsTools: Boolean get() = this == CHAT
 }
 
 internal data class ProviderRequest(
@@ -48,7 +56,16 @@ internal data class ProviderRequest(
     val reconnectTextOnly: Boolean = false,
     // Keep local function calls usable without reissuing unknown hosted operations.
     val reconnectLocalToolsOnly: Boolean = false,
-)
+    val purpose: ProviderRequestPurpose = ProviderRequestPurpose.CHAT,
+    val toolResultImages: Map<String, List<AgentModelClient.ModelImage>> = emptyMap(),
+) {
+    val effectiveConfig: AgentModelClient.ModelConfig get() =
+        if (!purpose.allowsTools && purpose != ProviderRequestPurpose.COMPACTION) {
+            config.copy(hostedWebSearchEnabled = false, extraBodyJson = "", customBody = emptyList())
+        } else config
+    val effectiveTools: JSONArray get() =
+        if (purpose.allowsTools || purpose == ProviderRequestPurpose.COMPACTION) tools else JSONArray()
+}
 
 internal val ProviderRequest.requiresCompleteStream: Boolean
     get() = ErrorReconnectPolicy.fromPersistedValue(config.errorReconnectPolicy) != ErrorReconnectPolicy.NONE
@@ -76,6 +93,7 @@ internal fun ProviderRequest.restrictReconnectPayload(
                 EndpointKind.CHAT_COMPLETIONS -> functions
                 EndpointKind.RESPONSES -> ResponsesRequestBuilder.buildTools(functions, false)
                 EndpointKind.ANTHROPIC_MESSAGES -> AnthropicMessagesProvider.convertTools(functions) ?: JSONArray()
+                EndpointKind.GEMINI_INTERACTIONS, EndpointKind.VERTEX_GENERATE_CONTENT -> functions
             }
             if (localTools.length() > 0) {
                 body.put("tools", localTools)
@@ -163,7 +181,8 @@ internal sealed interface ProviderEvent {
     ) : ProviderEvent
 
     data class Usage(
-        val usage: AgentTokenUsage
+        val usage: AgentTokenUsage,
+        val contextInputTokens: Int? = usage.inputTokens,
     ) : ProviderEvent
 
     data class HostedToolStarted(
@@ -175,6 +194,11 @@ internal sealed interface ProviderEvent {
         val id: String,
         val name: String,
         val success: Boolean,
+    ) : ProviderEvent
+
+    data class SearchSuggestions(
+        val index: Int,
+        val html: String,
     ) : ProviderEvent
 
     data class Completed(

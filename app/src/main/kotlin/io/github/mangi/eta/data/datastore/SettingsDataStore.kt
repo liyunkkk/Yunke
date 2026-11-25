@@ -1,6 +1,7 @@
 package io.github.mangi.eta.data.datastore
 
 import android.content.Context
+import androidx.datastore.core.DataMigration
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
@@ -17,6 +18,7 @@ import io.github.mangi.eta.data.model.AnswerFoldLevel
 import io.github.mangi.eta.data.model.AppearanceSettings
 import io.github.mangi.eta.data.model.AppearanceThemeMode
 import io.github.mangi.eta.data.model.AppearanceTopBarBlurStyle
+import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.data.model.ErrorReconnectPolicy
 import io.github.mangi.eta.data.model.Settings
 import io.github.mangi.eta.data.repository.ConversationUsageTotals
@@ -32,7 +34,22 @@ import kotlinx.coroutines.flow.map
 
 internal object SettingsDataStore {
     private val CONVERSATION_TITLE_SETTINGS = stringPreferencesKey("conversation_title_settings")
+    private val IMAGE_GEN_SETTINGS = stringPreferencesKey("image_gen_settings")
     private val routingJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true; encodeDefaults = true }
+
+    fun imageGenSettingsFlow(): Flow<io.github.mangi.eta.data.model.ImageGenSettings> {
+        ensureInitialized()
+        return dataStore.data.map { prefs ->
+            prefs[IMAGE_GEN_SETTINGS]?.let { value ->
+                runCatching { routingJson.decodeFromString<io.github.mangi.eta.data.model.ImageGenSettings>(value) }.getOrNull()
+            } ?: io.github.mangi.eta.data.model.ImageGenSettings()
+        }.distinctUntilChanged()
+    }
+    suspend fun imageGenSettings() = imageGenSettingsFlow().first()
+    suspend fun setImageGenSettings(value: io.github.mangi.eta.data.model.ImageGenSettings) {
+        ensureInitialized()
+        dataStore.edit { it[IMAGE_GEN_SETTINGS] = routingJson.encodeToString(io.github.mangi.eta.data.model.ImageGenSettings.serializer(), value) }
+    }
 
     fun conversationTitleSettingsFlow(): Flow<io.github.mangi.eta.data.model.ConversationTitleSettings> {
         ensureInitialized()
@@ -62,6 +79,9 @@ internal object SettingsDataStore {
     private val MEMORY_ENABLED = booleanPreferencesKey("memory_enabled")
     private val FILE_LOGGING_ENABLED = booleanPreferencesKey("file_logging_enabled")
     private val LINUX_DISTRIBUTION = stringPreferencesKey("linux_distribution")
+    private val APPEARANCE_UI_STYLE = stringPreferencesKey("appearance_ui_style")
+    private val APPEARANCE_PROGRESSIVE_BLUR_ENABLED =
+        booleanPreferencesKey("appearance_progressive_blur_enabled")
     private val APPEARANCE_THEME_MODE = stringPreferencesKey("appearance_theme_mode")
     private val APPEARANCE_MONET_ENABLED = booleanPreferencesKey("appearance_monet_enabled")
     private val APPEARANCE_PALETTE_STYLE = stringPreferencesKey("appearance_palette_style")
@@ -96,11 +116,50 @@ internal object SettingsDataStore {
         "selected_translation_model_id_by_provider."
     private const val LINUX_BACKEND_PREFIX = "linux_backend."
 
+    internal object DefaultUiStyleMigration : DataMigration<Preferences> {
+        private val revision = intPreferencesKey("appearance_ui_style_default_revision")
+
+        override suspend fun shouldMigrate(currentData: Preferences): Boolean =
+            (currentData[revision] ?: 0) < AppearanceUiStyle.DEFAULT_REVISION
+
+        override suspend fun migrate(currentData: Preferences): Preferences =
+            currentData.toMutablePreferences().apply {
+                // 只在切换默认样式时清除旧选择，后续启动尊重用户重新选择的样式。
+                remove(APPEARANCE_UI_STYLE)
+                this[revision] = AppearanceUiStyle.DEFAULT_REVISION
+            }
+
+        override suspend fun cleanUp() = Unit
+    }
+
+    /**
+     * 旧版 Yunke 强制开启莫奈并把 true 写进了存储。升级后统一改为默认关闭一次，
+     * 之后尊重用户在外观设置里的手动选择。
+     */
+    internal object MonetDefaultOffMigration : DataMigration<Preferences> {
+        private const val CURRENT_REVISION = 1
+        private val revision = intPreferencesKey("appearance_monet_default_revision")
+
+        override suspend fun shouldMigrate(currentData: Preferences): Boolean =
+            (currentData[revision] ?: 0) < CURRENT_REVISION
+
+        override suspend fun migrate(currentData: Preferences): Preferences =
+            currentData.toMutablePreferences().apply {
+                this[APPEARANCE_MONET_ENABLED] = false
+                this[revision] = CURRENT_REVISION
+            }
+
+        override suspend fun cleanUp() = Unit
+    }
+
     private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(
         name = STORE_NAME,
-        produceMigrations = { context -> listOf(ErrorReconnectPolicyMigration(), UsageLedgerRollbackMigration(
-            File(context.filesDir, "datastore/eta_usage_ledger.json"),
-        )) },
+        produceMigrations = { context -> listOf(
+            ErrorReconnectPolicyMigration(),
+            UsageLedgerRollbackMigration(File(context.filesDir, "datastore/eta_usage_ledger.json")),
+            DefaultUiStyleMigration,
+            MonetDefaultOffMigration,
+        ) },
     )
 
     @Volatile
@@ -297,6 +356,7 @@ internal object SettingsDataStore {
             errorReconnectPolicy = prefs[ERROR_RECONNECT_POLICY],
             errorReconnectPolicyVersion = prefs[ERROR_RECONNECT_POLICY_VERSION],
             conversationTitleSettingsJson = prefs[CONVERSATION_TITLE_SETTINGS],
+            imageGenSettingsJson = prefs[IMAGE_GEN_SETTINGS],
             linuxDistribution = prefs[LINUX_DISTRIBUTION],
             linuxBackends = stringMap(prefs, LINUX_BACKEND_PREFIX),
             selectedModelByProvider = stringMap(prefs, SELECTED_MODEL_BY_PROVIDER_PREFIX),
@@ -336,6 +396,7 @@ internal object SettingsDataStore {
                 ).persistedValue
             prefs[ERROR_RECONNECT_POLICY_VERSION] = ErrorReconnectPolicy.STORAGE_VERSION
             snapshot.conversationTitleSettingsJson?.let { prefs[CONVERSATION_TITLE_SETTINGS] = it }
+            snapshot.imageGenSettingsJson?.let { prefs[IMAGE_GEN_SETTINGS] = it }
             prefs.putOrRemove(LINUX_DISTRIBUTION, snapshot.linuxDistribution)
             prefs.putAppearance(snapshot.appearance.normalized())
             snapshot.linuxBackends.forEach { (distribution, backend) ->
@@ -368,6 +429,10 @@ internal object SettingsDataStore {
                 if (value > 0) prefs[RETIRED_MESSAGES] = value else prefs.remove(RETIRED_MESSAGES)
             }
         }
+    }
+
+    suspend fun selectUiStyle(style: AppearanceUiStyle) {
+        updateAppearanceSettings { it.copy(uiStyle = style) }
     }
 
     suspend fun setAppearanceSettings(settings: AppearanceSettings) {
@@ -632,12 +697,14 @@ internal object SettingsDataStore {
             this[ERROR_RECONNECT_POLICY], this[ERROR_RECONNECT_POLICY_VERSION],
         ),
         appearance = AppearanceSettings(
+            uiStyle = AppearanceUiStyle.fromPersistedValue(this[APPEARANCE_UI_STYLE]),
             themeMode = AppearanceThemeMode.fromPersistedValue(this[APPEARANCE_THEME_MODE]),
-            monetEnabled = true,
+            monetEnabled = this[APPEARANCE_MONET_ENABLED] ?: false,
             paletteStyle = AppearancePaletteStyle.fromPersistedValue(this[APPEARANCE_PALETTE_STYLE]),
             accentColor = AppearanceAccentColor.fromPersistedValue(this[APPEARANCE_ACCENT_COLOR]),
             pureBlackEnabled = this[APPEARANCE_PURE_BLACK_ENABLED] ?: false,
             blurEnabled = this[APPEARANCE_BLUR_ENABLED] ?: true,
+            progressiveBlurEnabled = this[APPEARANCE_PROGRESSIVE_BLUR_ENABLED] ?: true,
             topBarBlurStyle = AppearanceTopBarBlurStyle.fromPersistedValue(
                 this[APPEARANCE_TOP_BAR_BLUR_STYLE],
             ),
@@ -652,6 +719,11 @@ internal object SettingsDataStore {
     )
 
     private fun MutablePreferences.putAppearance(settings: AppearanceSettings) {
+        val currentStyle = AppearanceUiStyle.fromPersistedValue(this[APPEARANCE_UI_STYLE])
+        if (contains(APPEARANCE_UI_STYLE) || settings.uiStyle != currentStyle) {
+            this[APPEARANCE_UI_STYLE] = settings.uiStyle.persistedValue
+        }
+        this[APPEARANCE_PROGRESSIVE_BLUR_ENABLED] = settings.progressiveBlurEnabled
         this[APPEARANCE_THEME_MODE] = settings.themeMode.persistedValue
         this[APPEARANCE_MONET_ENABLED] = settings.monetEnabled
         this[APPEARANCE_PALETTE_STYLE] = settings.paletteStyle.persistedValue
@@ -693,6 +765,7 @@ internal data class EtaSettingsBackup(
     val errorReconnectPolicyVersion: Int? = null,
     // Absent in an older backup means preserve the independent model routing.
     val conversationTitleSettingsJson: String? = null,
+    val imageGenSettingsJson: String? = null,
 )
 
 internal data class RetiredUsage(

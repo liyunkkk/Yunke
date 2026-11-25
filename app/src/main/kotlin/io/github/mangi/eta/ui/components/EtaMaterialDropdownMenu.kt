@@ -1,5 +1,8 @@
 package io.github.mangi.eta.ui.components
 
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import com.itos.coui.theme.CouiTheme
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
@@ -13,6 +16,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -24,15 +28,22 @@ internal fun EtaMaterialDropdownMenu(
     onDismissRequest: () -> Unit,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    // COUI 下换成 COUI 菜单外观：28dp 圆角、COUI 菜单底色、立体投影与细腻轮廓线。
+    val coui = LocalUiStyle.current == AppearanceUiStyle.COUI
+    val couiDark = if (coui) CouiTheme.isDark else false
     DropdownMenu(
         expanded = expanded,
         onDismissRequest = onDismissRequest,
         modifier = Modifier.widthIn(min = 112.dp, max = 280.dp),
-        shape = RoundedCornerShape(16.dp),
-        containerColor = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(if (coui) 28.dp else 16.dp),
+        containerColor = if (coui) CouiTheme.colorScheme.menuSurface else MaterialTheme.colorScheme.surface,
         tonalElevation = 0.dp,
-        shadowElevation = 0.dp,
-        border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)),
+        shadowElevation = if (coui) 12.dp else 0.dp,
+        border = if (coui) {
+            BorderStroke(0.75.dp, if (couiDark) Color(0x28FFFFFF) else Color(0x18000000))
+        } else {
+            BorderStroke(0.5.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
+        },
     ) {
         ProvideTextStyle(MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Normal, fontStyle = FontStyle.Normal)) {
             content()

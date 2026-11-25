@@ -3,7 +3,6 @@ package io.github.mangi.eta.ui.screens.skills
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
@@ -19,20 +18,19 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.ui.components.ListEmptyState
-import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import io.github.mangi.eta.ui.components.PreferenceIcon
 import io.github.mangi.eta.ui.model.AgentSkillsAction
 import io.github.mangi.eta.ui.model.AgentSkillsUiState
 import io.github.mangi.eta.ui.model.SkillItemUi
 import io.github.mangi.eta.ui.model.canDeleteUserSkill
-import top.yukonga.miuix.kmp.basic.BasicComponent
-import top.yukonga.miuix.kmp.basic.ButtonDefaults
-import top.yukonga.miuix.kmp.basic.Card
+import io.github.mangi.eta.ui.components.BasicComponent
+import io.github.mangi.eta.ui.components.Card
 import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
-import top.yukonga.miuix.kmp.basic.SmallTitle
-import top.yukonga.miuix.kmp.basic.TextButton
-import top.yukonga.miuix.kmp.window.WindowDialog
+import io.github.mangi.eta.ui.components.SmallTitle
+import io.github.mangi.eta.ui.components.TextButton
+import io.github.mangi.eta.ui.components.AdaptiveNoticeDialog
+import io.github.mangi.eta.ui.components.AdaptiveConfirmDialog
 
 private val CardHorizontalPadding = 12.dp
 private val CardBottomPadding = 12.dp
@@ -185,58 +183,43 @@ fun AgentSkillsScreen(
     }
 
     state.replacement?.let { replacement ->
-        WindowDialog(
+        AdaptiveConfirmDialog(
             show = true,
             title = stringResource(R.string.ui_replace_user_skills_250e98),
             summary = stringResource(R.string.skills_replace_summary, replacement.name, replacement.id),
             onDismissRequest = { onAction(AgentSkillsAction.CancelZipReplacement) },
-        ) {
-            MiuixDialogActions(
-                confirmText = stringResource(R.string.skills_replace),
-                confirmEnabled = !operationPending,
-                onCancel = { onAction(AgentSkillsAction.CancelZipReplacement) },
-                onConfirm = { onAction(AgentSkillsAction.ConfirmZipReplacement) },
-            )
-        }
+            confirmText = stringResource(R.string.skills_replace),
+            confirmEnabled = !operationPending,
+            onCancel = { onAction(AgentSkillsAction.CancelZipReplacement) },
+            onConfirm = { onAction(AgentSkillsAction.ConfirmZipReplacement) },
+        )
     }
 
     deleteTarget?.let { skill ->
-        WindowDialog(
+        AdaptiveConfirmDialog(
             show = true,
             title = stringResource(R.string.ui_delete_user_skills_f319a9),
             summary = stringResource(R.string.skills_delete_summary, skill.name),
             onDismissRequest = { deleteTarget = null },
-        ) {
-            MiuixDialogActions(
-                confirmText = stringResource(R.string.ui_delete_3755f5),
-                destructive = true,
-                confirmEnabled = !operationPending,
-                onCancel = { deleteTarget = null },
-                onConfirm = {
-                    deleteTarget = null
-                    onAction(AgentSkillsAction.DeleteSkill(skill.id))
-                },
-            )
-        }
+            confirmText = stringResource(R.string.ui_delete_3755f5),
+            destructive = true,
+            confirmEnabled = !operationPending,
+            onCancel = { deleteTarget = null },
+            onConfirm = {
+                deleteTarget = null
+                onAction(AgentSkillsAction.DeleteSkill(skill.id))
+            },
+        )
     }
 
     state.notice?.let { notice ->
-        WindowDialog(
+        AdaptiveNoticeDialog(
             show = true,
             title = notice.title,
             summary = notice.message,
-            onDismissRequest = { onAction(AgentSkillsAction.DismissNotice) },
-        ) {
-            TextButton(
-                text = stringResource(R.string.ui_knew_cb63c6),
-                onClick = { onAction(AgentSkillsAction.DismissNotice) },
-                modifier = Modifier.fillMaxWidth(),
-                colors = if (notice.isError) {
-                    ButtonDefaults.textButtonColors()
-                } else {
-                    ButtonDefaults.textButtonColorsPrimary()
-                },
-            )
-        }
+            buttonText = stringResource(R.string.ui_knew_cb63c6),
+            onDismiss = { onAction(AgentSkillsAction.DismissNotice) },
+            primary = !notice.isError,
+        )
     }
 }

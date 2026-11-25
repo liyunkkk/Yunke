@@ -106,12 +106,12 @@ import io.github.mangi.eta.R
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
-import top.yukonga.miuix.kmp.basic.Card
+import io.github.mangi.eta.ui.components.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
 import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.IconButton
+import io.github.mangi.eta.ui.components.IconButton
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextButton
+import io.github.mangi.eta.ui.components.TextButton
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 // Miuix 未提供语义 success 色，沿用项目既有值；失败色走主题 error
@@ -722,10 +722,10 @@ internal fun AgentResultCard(
             visible = visible,
             enter = slideInVertically(
                 initialOffsetY = { it },
-                animationSpec = spring(
-                    dampingRatio = Spring.DampingRatioLowBouncy,
-                    stiffness = Spring.StiffnessMediumLow,
-                )
+                animationSpec = tween(
+                    durationMillis = 260,
+                    easing = androidx.compose.animation.core.CubicBezierEasing(0.2f, 0f, 0f, 1f),
+                ),
             ) + fadeIn(animationSpec = tween(durationMillis = 200)),
             exit = slideOutVertically(
                 targetOffsetY = { it },

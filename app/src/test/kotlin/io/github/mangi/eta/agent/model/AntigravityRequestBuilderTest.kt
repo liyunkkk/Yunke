@@ -110,7 +110,33 @@ class AntigravityRequestBuilderTest {
     }
 
     @Test
+    fun preservesXHighForModelsThatAdvertiseUltraEffort() {
+        val request = AntigravityRequestBuilder.build(
+            config = AgentModelClient.ModelConfig(
+                baseUrl = "https://daily-cloudcode-pa.googleapis.com",
+                apiKey = "token",
+                model = "gemini-4-hydrogen-xhigh",
+                systemPrompt = "系统",
+                openAiEndpointMode = OpenAiEndpointMode.ANTIGRAVITY,
+                reasoningEffort = io.github.mangi.eta.data.model.ReasoningEffort.XHIGH,
+                reasoningCapabilities = io.github.mangi.eta.data.model.ModelReasoningCapabilities(
+                    supportedEfforts = listOf(io.github.mangi.eta.data.model.ReasoningEffort.HIGH, io.github.mangi.eta.data.model.ReasoningEffort.XHIGH),
+                    defaultEffort = io.github.mangi.eta.data.model.ReasoningEffort.XHIGH,
+                    mandatory = true,
+                ),
+            ),
+            messages = JSONArray().put(JSONObject().put("role", "user").put("content", "分析")),
+            tools = JSONArray(),
+            projectId = "proj-1",
+        )
+        assertEquals("xhigh", request.getJSONObject("request")
+            .getJSONObject("generationConfig").getJSONObject("thinkingConfig").getString("thinkingLevel"))
+    }
+
+    @Test
     fun routesPublicModelNamesToRuntimeIds() {
+        assertEquals("gemini-4-hydrogen-xhigh", AntigravityModelRouting.runtimeModelId("gemini-4-hydrogen"))
+        assertEquals("gemini-4-carbon-high", AntigravityModelRouting.runtimeModelId("gemini-4-carbon"))
         assertEquals("claude-opus-4-6-thinking", AntigravityModelRouting.runtimeModelId("claude-opus-4-6"))
         assertEquals("gemini-3.7-flash-tiered", AntigravityModelRouting.runtimeModelId("gemini-3.7-flash"))
         assertEquals("gemini-3.7-flash-tiered", AntigravityModelRouting.runtimeModelId(" gemini-3.7-flash "))

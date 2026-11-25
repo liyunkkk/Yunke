@@ -15,7 +15,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import io.github.mangi.eta.ui.icons.MenuLines
 import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -27,10 +29,22 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.itos.coui.layout.CouiPageDefaults
+import com.itos.coui.theme.CouiTheme
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.components.coui.CouiBackButton
+import io.github.mangi.eta.ui.components.coui.CouiFastLargeTopAppBar
+import io.github.mangi.eta.ui.components.coui.CouiFastScaffold
+import io.github.mangi.eta.ui.components.coui.CouiFastTopAppBar
+import io.github.mangi.eta.ui.components.coui.CouiTopAppBarIconButton
+import io.github.mangi.eta.ui.components.coui.rememberCouiFastCollapsingState
+import io.github.mangi.eta.ui.layout.rememberIsWideScreen
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.lifecycleScope
@@ -113,6 +127,7 @@ internal fun AgentAppShell(
     onOpenAssistants: () -> Unit = {},
     onOpenUsageStats: () -> Unit,
     onOpenSkills: () -> Unit,
+    onOpenScheduledTasks: () -> Unit = {},
     onOpenPermissions: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenModelProviders: () -> Unit,
@@ -147,51 +162,155 @@ internal fun AgentAppShell(
         }
     }
 
+    val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
     val scrollBehavior = MiuixScrollBehavior()
     val backdrop = rememberTopBarBackdrop()
     val topBarColor = topBarContainerColor(backdrop)
     val pageContent: @Composable () -> Unit = {
-        Scaffold(
-            // Own render node: drawer offset and scrim redraws must not re-record the page.
-            modifier = Modifier.fillMaxSize().graphicsLayer {},
-            contentWindowInsets = WindowInsets.safeDrawing.only(
-                WindowInsetsSides.Top + WindowInsetsSides.Horizontal,
-            ),
-            topBar = {
-                if (currentRoute !is AppRoute.Settings) {
-                    TopBarBackdrop(backdrop) {
-                        AgentTopBar(
-                            route = currentRoute,
-                            scrollBehavior = scrollBehavior,
-                            color = topBarColor,
-                            onBack = onBack,
-                            onOpenConversationPane = onOpenConversationPane,
-                            onNewConversation = onNewConversation,
-                            onOpenTerminal = onOpenTerminal,
-                            onOpenBrowser = onOpenBrowser,
-                            onOpenWorkspace = onOpenWorkspace,
-                            currentConversationTitle = currentConversationTitle,
-                            autoCompressEnabled = autoCompressEnabled,
-                            isCompressingContext = isCompressingContext,
-                            onToggleAutoCompress = onToggleAutoCompress,
-                            onCompressConversation = onCompressConversation,
-                            onSearchHistory = onSearchHistory,
-                            onOpenHistoryHit = onOpenHistoryHit,
-                            tokenUsage = tokenUsage,
-                            subAgentStatuses = subAgentStatuses,
-                            selectedProviderId = selectedProviderId,
-                        )
-                    }
-                }
-            },
-        ) { padding ->
-            Box(
+        if (isCoui) {
+            val view = LocalView.current
+            val couiDark = CouiTheme.isDark
+            val couiPageColors = CouiPageDefaults.themeColors(couiDark)
+            val isHome = currentRoute is AppRoute.Home
+            val useCompact = isHome || rememberIsWideScreen()
+            val collapsingState = if (useCompact || currentRoute is AppRoute.Settings) {
+                null
+            } else {
+                rememberCouiFastCollapsingState()
+            }
+            val balanceStates by ProviderBalanceStore.states.collectAsState()
+            val selectedBalanceState = selectedProviderId?.let(balanceStates::get)
+            val routeTitle = titleForRoute(currentRoute, currentConversationTitle)
+            val containerColor = if (isHome) CouiTheme.colorScheme.surface else couiPageColors.background
+            CouiFastScaffold(
                 modifier = Modifier
                     .fillMaxSize()
-                    .captureForTopBar(backdrop)
-                    .nestedScroll(scrollBehavior.nestedScrollConnection),
-            ) {
-                content(padding)
+                    .graphicsLayer {}
+                    .then(if (collapsingState != null) Modifier.nestedScroll(collapsingState.nestedScrollConnection) else Modifier),
+                containerColor = containerColor,
+                windowInsets = WindowInsets.safeDrawing.only(
+                    WindowInsetsSides.Top + WindowInsetsSides.Horizontal,
+                ),
+                topBar = {
+                    if (currentRoute !is AppRoute.Settings) {
+                        val navIcon: @Composable () -> Unit = {
+                            if (isHome) {
+                                CouiTopAppBarIconButton(
+                                    icon = MenuLines,
+                                    contentDescription = stringResource(R.string.action_conversation_history),
+                                    onClick = {
+                                        TouchHaptics.click(view)
+                                        onOpenConversationPane()
+                                    },
+                                    iconSize = 22.dp,
+                                    dark = couiDark,
+                                    colors = couiPageColors,
+                                )
+                            } else {
+                                CouiBackButton(
+                                    onClick = onBack,
+                                    dark = couiDark,
+                                    colors = couiPageColors,
+                                )
+                            }
+                        }
+                        val barActions: @Composable RowScope.() -> Unit = {
+                            if (isHome) {
+                                if (hasBalanceIndicatorContent(selectedBalanceState)) {
+                                    key(selectedProviderId) {
+                                        ProviderBalanceIndicator(
+                                            state = selectedBalanceState,
+                                            modifier = Modifier.padding(end = 6.dp),
+                                            animateChanges = true,
+                                        )
+                                    }
+                                }
+                                TopBarOverflowMenu(
+                                    onNewConversation = onNewConversation,
+                                    onOpenTerminal = onOpenTerminal,
+                                    onOpenBrowser = onOpenBrowser,
+                                    onOpenWorkspace = onOpenWorkspace,
+                                    autoCompressEnabled = autoCompressEnabled,
+                                    isCompressingContext = isCompressingContext,
+                                    onToggleAutoCompress = onToggleAutoCompress,
+                                    onCompressConversation = onCompressConversation,
+                                    onSearchHistory = onSearchHistory,
+                                    onOpenHistoryHit = onOpenHistoryHit,
+                                    tokenUsage = tokenUsage,
+                                    subAgentStatuses = subAgentStatuses,
+                                )
+                            }
+                        }
+                        if (useCompact) {
+                            CouiFastTopAppBar(
+                                title = routeTitle,
+                                navigationIcon = navIcon,
+                                actions = barActions,
+                                dark = couiDark,
+                                titleColor = couiPageColors.title,
+                                backgroundColor = containerColor,
+                            )
+                        } else {
+                            CouiFastLargeTopAppBar(
+                                title = routeTitle,
+                                navigationIcon = navIcon,
+                                actions = barActions,
+                                collapsingState = collapsingState,
+                                dark = couiDark,
+                                titleColor = couiPageColors.title,
+                                backgroundColor = containerColor,
+                            )
+                        }
+                    }
+                },
+            ) { innerPadding ->
+                Box(modifier = Modifier.fillMaxSize()) {
+                    content(innerPadding)
+                }
+            }
+        } else {
+            Scaffold(
+                // Own render node: drawer offset and scrim redraws must not re-record the page.
+                modifier = Modifier.fillMaxSize().graphicsLayer {},
+                contentWindowInsets = WindowInsets.safeDrawing.only(
+                    WindowInsetsSides.Top + WindowInsetsSides.Horizontal,
+                ),
+                topBar = {
+                    if (currentRoute !is AppRoute.Settings) {
+                        TopBarBackdrop(backdrop) {
+                            AgentTopBar(
+                                route = currentRoute,
+                                scrollBehavior = scrollBehavior,
+                                color = topBarColor,
+                                onBack = onBack,
+                                onOpenConversationPane = onOpenConversationPane,
+                                onNewConversation = onNewConversation,
+                                onOpenTerminal = onOpenTerminal,
+                                onOpenBrowser = onOpenBrowser,
+                                onOpenWorkspace = onOpenWorkspace,
+                                currentConversationTitle = currentConversationTitle,
+                                autoCompressEnabled = autoCompressEnabled,
+                                isCompressingContext = isCompressingContext,
+                                onToggleAutoCompress = onToggleAutoCompress,
+                                onCompressConversation = onCompressConversation,
+                                onSearchHistory = onSearchHistory,
+                                onOpenHistoryHit = onOpenHistoryHit,
+                                tokenUsage = tokenUsage,
+                                subAgentStatuses = subAgentStatuses,
+                                selectedProviderId = selectedProviderId,
+                            )
+                        }
+                    }
+                },
+            ) { padding ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .captureForTopBar(backdrop)
+                        .nestedScroll(scrollBehavior.nestedScrollConnection),
+                ) {
+                    content(padding)
+                }
             }
         }
     }
@@ -226,6 +345,7 @@ internal fun AgentAppShell(
                 onOpenModelProviders = onOpenModelProviders,
                 onOpenUsageStats = onOpenUsageStats,
                 onOpenSkills = onOpenSkills,
+                onOpenScheduledTasks = onOpenScheduledTasks,
                 onOpenPermissions = onOpenPermissions,
             ) {
                 pageContent()
@@ -387,6 +507,13 @@ private fun titleForRoute(route: AppRoute?, currentConversationTitle: String? = 
     is AppRoute.ManageChats -> stringResource(R.string.history_page_title)
     is AppRoute.Assistants -> stringResource(R.string.assistant_list_title)
     is AppRoute.AssistantEdit -> stringResource(R.string.assistant_edit_title)
+    is AppRoute.ImageGenSettings -> stringResource(R.string.image_gen_settings_title)
+    is AppRoute.ImageGenGallery -> stringResource(R.string.image_gen_gallery_title)
+    is AppRoute.ScheduledTasks -> stringResource(R.string.route_scheduled_tasks)
+    is AppRoute.ScheduledTaskDetail -> stringResource(R.string.route_scheduled_task_detail)
+    is AppRoute.ScheduledTaskEditor -> stringResource(
+        if (route.taskId.isNullOrBlank()) R.string.route_scheduled_task_new else R.string.route_scheduled_task_edit,
+    )
     null -> stringResource(R.string.app_name)
 }
 

@@ -6,6 +6,7 @@ import io.github.mangi.eta.agent.runtime.AgentRunController
 import io.github.mangi.eta.agent.runtime.AgentRuntimePolicy
 import io.github.mangi.eta.agent.runtime.AgentTokenUsage
 import io.github.mangi.eta.data.model.ErrorReconnectPolicy
+import io.github.mangi.eta.data.model.ProviderTypes
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -93,6 +94,7 @@ internal class AgentLoop(
     private val accumulatedReasoning = StringBuilder()
     private val sensitiveToolCallIds = linkedSetOf<String>()
     private var pendingToolImageMessage: JSONObject? = null
+    private var pendingToolResultImages = emptyMap<String, List<AgentModelClient.ModelImage>>()
     private val incompleteText = sortedMapOf<Int, String>()
     private var responseStored = false
 
@@ -205,7 +207,12 @@ internal class AgentLoop(
 
     fun run(): Result {
         // Only annotate messages created by this run. The current user entry is initially last.
-        messages.optJSONObject(messages.length() - 1)?.put(AgentTurnIdentity.JSON_KEY, turnId)
+        messages.optJSONObject(messages.length() - 1)?.let { last ->
+            last.put(AgentTurnIdentity.JSON_KEY, turnId)
+            if (config.providerType == ProviderTypes.GEMINI) {
+                GeminiEphemeralState.markRunStart(last)
+            }
+        }
         // UI 手里有上一张可信回执时，用它折算到本次请求的值校准发送上限。
         // 自动压缩不看它：80% 只看本次 run 收到的真实回执（圆环上的数）。
         silentBudget.seed(localRequestTokens(), calibratedInputTokens,
@@ -307,7 +314,8 @@ internal class AgentLoop(
                     initialRound = round,
                     request = ProviderRequest(requestConfigForRound(),
                         filteredMessages, roundTools, sessionId, toolDiagnostics = toolDiagnostics,
-                        reconnectLocalToolsOnly = localOnlyRecovery),
+                        reconnectLocalToolsOnly = localOnlyRecovery,
+                        toolResultImages = pendingToolResultImages),
                     provider = provider,
                     controller = runController,
                     onEvent = onEvent,
@@ -418,7 +426,7 @@ internal class AgentLoop(
             localOnlyRecovery = localOnlyRecovery || completedRound.reconnectLocalToolsOnly
             if (localOnlyRecovery) AgentRecoveryContext.append(messages)
             // Failed/overflowed requests keep their image observation until a successful request.
-            discardPendingToolImageMessage()
+            clearPendingToolImages()
             overflowRecoveryAttempts = 0
             // Transport retries use a distinct display round; its fallback must not
             // duplicate text already retained in the previous display block.
@@ -1411,6 +1419,7 @@ internal class AgentLoop(
                 imageCount = result.images.size,
                 imageBytes = result.images.sumOf { it.bytes },
                 success = traceFormatter.isSuccessResult(result),
+                command = result.command,
             )
         )
     }
@@ -1430,18 +1439,22 @@ internal class AgentLoop(
         if (imageOutcomes.isEmpty()) return
 
         // 工具截图是瞬时观察，不是会话资产。下一次推理消费后立即删除。
-        discardPendingToolImageMessage()
-        val images = imageOutcomes.flatMap { outcome -> outcome.result.images }
-        val toolNames = imageOutcomes
-            .map { outcome -> outcome.call.name }
-            .distinct()
-            .joinToString(", ")
-        pendingToolImageMessage = AgentConversationCodec.userMessage(
-            text = "Latest observation image(s) returned by tool(s): $toolNames.\n" +
-                imageOutcomes.joinToString("\n") { AuxiliaryVision.observationMetadata(it.result.content) } +
-                images.mapIndexed { index, image -> "image ${index + 1}: ${image.width ?: "unknown"} x ${image.height ?: "unknown"} px" }.joinToString("\n", prefix = "\n"),
-            images = images,
-        ).put(AgentTurnIdentity.JSON_KEY, turnId).also(messages::put)
+        clearPendingToolImages()
+        if (provider.capabilities.toolResultImages) {
+            pendingToolResultImages = imageOutcomes.associate { it.call.id to it.result.images }
+        } else {
+            val images = imageOutcomes.flatMap { outcome -> outcome.result.images }
+            val toolNames = imageOutcomes
+                .map { outcome -> outcome.call.name }
+                .distinct()
+                .joinToString(", ")
+            pendingToolImageMessage = AgentConversationCodec.userMessage(
+                text = "Latest observation image(s) returned by tool(s): $toolNames.\n" +
+                    imageOutcomes.joinToString("\n") { AuxiliaryVision.observationMetadata(it.result.content) } +
+                    images.mapIndexed { index, image -> "image ${index + 1}: ${image.width ?: "unknown"} x ${image.height ?: "unknown"} px" }.joinToString("\n", prefix = "\n"),
+                images = images,
+            ).put("_eta_observation", true).put(AgentTurnIdentity.JSON_KEY, turnId).also(messages::put)
+        }
 
         imageOutcomes.forEach { outcome ->
             onEvent(
@@ -1455,7 +1468,8 @@ internal class AgentLoop(
         }
     }
 
-    private fun discardPendingToolImageMessage() {
+    private fun clearPendingToolImages() {
+        pendingToolResultImages = emptyMap()
         val pending = pendingToolImageMessage ?: return
         pendingToolImageMessage = null
         for (index in messages.length() - 1 downTo 0) {
@@ -1518,6 +1532,7 @@ internal class AgentLoop(
                 name = name,
                 success = success,
             )
+            is ProviderEvent.SearchSuggestions -> null
             is ProviderEvent.Completed -> null
         }
 

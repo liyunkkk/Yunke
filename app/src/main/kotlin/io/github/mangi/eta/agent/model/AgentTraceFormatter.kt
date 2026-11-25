@@ -1,5 +1,7 @@
 package io.github.mangi.eta.agent.model
 
+import io.github.mangi.eta.agent.imagegen.GeneratedImageActivityPayload
+import io.github.mangi.eta.agent.imagegen.ImageGenToolCatalog
 import java.net.URI
 import java.util.Locale
 import org.json.JSONObject
@@ -44,6 +46,7 @@ internal class AgentTraceFormatter(
             "wait_for_package" -> "等待应用就绪"
             "open_system_panel" -> "打开系统面板"
             "read_image" -> "查看图片或视频"
+            ImageGenToolCatalog.TOOL_NAME -> summarizeImageGenArguments(toolCall.argumentsJson)
             "delegate_task" -> "委派子代理任务"
             "manage_agent_workspace" -> "管理任务工作区"
             "get_task_result" -> "查询子代理结果"
@@ -74,7 +77,9 @@ internal class AgentTraceFormatter(
 
     /** 命令以脱敏后的用户可见投影进入运行轨迹；日志仍只记录长度。 */
     fun displayCommand(toolCall: AgentModelClient.ToolCall): String? =
-        if (toolCall.name == "terminal" || toolCall.name == "run_command") {
+        if (toolCall.name == ImageGenToolCatalog.TOOL_NAME) {
+            GeneratedImageActivityPayload.initialFromArguments(toolCall.argumentsJson)?.encode()
+        } else if (toolCall.name == "terminal" || toolCall.name == "run_command") {
             runCatching {
                 JSONObject(toolCall.argumentsJson)
                     .optString("command")
@@ -98,6 +103,15 @@ internal class AgentTraceFormatter(
             }
 
     /** 外部 URI 摘要不记录 path、query、fragment 或用户信息。 */
+    private fun summarizeImageGenArguments(argumentsJson: String): String =
+        runCatching {
+            val args = JSONObject(argumentsJson)
+            val refs = args.optJSONArray("reference_images")?.length() ?: 0
+            val count = args.optInt("count", 1).coerceIn(1, 4)
+            val action = if (refs > 0) "编辑图片" else "生成图片"
+            if (count > 1) "$action · $count 张" else action
+        }.getOrDefault("生成图片")
+
     fun summarizeOpenUriArguments(argumentsJson: String): String =
         runCatching {
             val raw = JSONObject(argumentsJson).optString("uri").trim()
@@ -279,6 +293,10 @@ internal class AgentTraceFormatter(
         if (!isSuccessResult(result)) return summarizeFailure(json)
         return when (toolName) {
             BROWSER_TOOL_NAME -> json?.let(::summarizeBrowserResult) ?: "浏览器操作完成"
+            ImageGenToolCatalog.TOOL_NAME -> {
+                val count = json?.optInt("count", 0) ?: 0
+                if (count > 0) "已生成 $count 张图片" else "图片生成完成"
+            }
             "memory_get", "memory_write" ->
                 json?.let { summarizeMemoryResult(toolName, it) } ?: "完成"
             "delegate_task", "get_task_result", "continue_task", "cancel_task" -> summarizeSubAgentResult(json)

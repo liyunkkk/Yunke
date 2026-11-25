@@ -41,16 +41,16 @@ import io.github.mangi.eta.ui.components.discreteSliderIndexForTap
 import io.github.mangi.eta.ui.haptics.HapticIntensity
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import kotlin.math.roundToInt
-import top.yukonga.miuix.kmp.basic.BasicComponent
-import top.yukonga.miuix.kmp.basic.Card
+import io.github.mangi.eta.ui.components.BasicComponent
+import io.github.mangi.eta.ui.components.Card
 import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.Slider
+import io.github.mangi.eta.ui.components.Slider
 import top.yukonga.miuix.kmp.basic.SliderDefaults
-import top.yukonga.miuix.kmp.basic.Switch
+import io.github.mangi.eta.ui.components.Switch
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.preference.SwitchPreference
+import io.github.mangi.eta.ui.components.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import top.yukonga.miuix.kmp.window.WindowDialog
+import io.github.mangi.eta.ui.components.WindowDialog
 
 @Composable
 internal fun HapticsSettingsScreen(onBack: () -> Unit) {

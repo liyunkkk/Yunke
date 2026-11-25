@@ -1,6 +1,7 @@
 package io.github.mangi.eta.agent.model
 
 import io.github.mangi.eta.agent.model.oauth.GoogleAntigravityOAuth
+import io.github.mangi.eta.data.model.GeminiEndpointMode
 import io.github.mangi.eta.data.model.OpenAiEndpointMode
 import io.github.mangi.eta.data.model.ProviderTypes
 
@@ -21,6 +22,10 @@ internal object ProviderClientFactory {
                 else -> OpenAiChatCompletionsProvider
             }
             ProviderTypes.ANTHROPIC -> AnthropicMessagesProvider
+            ProviderTypes.GEMINI -> when (GeminiEndpointMode.normalize(config.geminiEndpointMode)) {
+                GeminiEndpointMode.VERTEX_AI -> VertexGenerateContentProvider
+                else -> GeminiInteractionsProvider
+            }
             else -> error("不支持的 Provider 协议类型：${config.providerType}")
         }
         return UsageRecordingProvider(provider)

@@ -15,6 +15,7 @@ internal fun providerBrandLogoRes(sourceType: String): Int? =
     when (ProviderSourceRegistry.normalize(sourceType)) {
         ProviderSourceTypes.OPENAI -> R.drawable.provider_logo_openai
         ProviderSourceTypes.ANTHROPIC -> R.drawable.provider_logo_anthropic
+        ProviderSourceTypes.GEMINI -> R.drawable.model_logo_gemini
         ProviderSourceTypes.BAILIAN -> R.drawable.provider_logo_bailian
         ProviderSourceTypes.DEEPSEEK -> R.drawable.provider_logo_deepseek
         ProviderSourceTypes.MOONSHOT -> R.drawable.provider_logo_kimi

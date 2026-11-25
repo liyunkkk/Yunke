@@ -2,11 +2,10 @@ package io.github.mangi.eta.agent.overlay
 
 import android.os.SystemClock
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -108,12 +107,35 @@ internal fun VirtualDisplayMicroLens(
                 modifier = Modifier.fillMaxSize(),
             )
         } else {
-            Box(
+            Column(
                 modifier = Modifier
-                    .size(4.dp)
-                    .clip(RoundedCornerShape(2.dp))
-                    .background(accent.copy(alpha = 0.55f)),
-            )
+                    .fillMaxSize()
+                    .background(accent.copy(alpha = 0.08f))
+                    .padding(horizontal = 3.dp, vertical = 5.dp),
+                verticalArrangement = Arrangement.spacedBy(3.dp, Alignment.CenterVertically),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(3.dp)
+                        .clip(RoundedCornerShape(1.5.dp))
+                        .background(accent.copy(alpha = 0.50f)),
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(0.75f)
+                        .height(2.5.dp)
+                        .clip(RoundedCornerShape(1.25.dp))
+                        .background(MiuixTheme.colorScheme.onSurface.copy(alpha = 0.16f)),
+                )
+                Box(
+                    modifier = Modifier
+                        .size(4.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(accent.copy(alpha = 0.72f)),
+                )
+            }
         }
         val effect = snapshot.touchEffect
         if (effect != null && pulse.value > 0.02f) {
@@ -448,9 +470,9 @@ internal fun VirtualDisplayMaterializeOverlay(
 
     val expandProgress by animateFloatAsState(
         targetValue = if (started) 1f else 0f,
-        animationSpec = spring(
-            dampingRatio = 0.88f,
-            stiffness = Spring.StiffnessMediumLow,
+        animationSpec = tween(
+            durationMillis = 280,
+            easing = CubicBezierEasing(0.2f, 0f, 0f, 1f),
         ),
         label = "vd_materialize_expand",
     )

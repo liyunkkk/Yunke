@@ -8,6 +8,7 @@ import io.github.mangi.eta.agent.voice.tts.SpeechPlaybackProfile
 import io.github.mangi.eta.data.datastore.SettingsDataStore
 import io.github.mangi.eta.data.model.AnthropicProviderSetting
 import io.github.mangi.eta.data.model.CustomProviderSetting
+import io.github.mangi.eta.data.model.GeminiProviderSetting
 import io.github.mangi.eta.data.model.Model
 import io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting
 import io.github.mangi.eta.data.model.ProviderSetting
@@ -190,6 +191,12 @@ internal class AgentSelfModelTools(private val context: Context) {
                 isEnabled = isEnabled(args, existing),
             )
             is AnthropicProviderSetting -> existing.copy(
+                name = name.ifBlank { existing.name },
+                baseUrl = if (existing.isBuiltIn) existing.baseUrl else baseUrl.ifBlank { existing.baseUrl },
+                apiKey = if (args.has("api_key")) apiKey else existing.apiKey,
+                isEnabled = isEnabled(args, existing),
+            )
+            is GeminiProviderSetting -> existing.copy(
                 name = name.ifBlank { existing.name },
                 baseUrl = if (existing.isBuiltIn) existing.baseUrl else baseUrl.ifBlank { existing.baseUrl },
                 apiKey = if (args.has("api_key")) apiKey else existing.apiKey,

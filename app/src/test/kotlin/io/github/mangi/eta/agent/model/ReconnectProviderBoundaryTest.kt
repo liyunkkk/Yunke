@@ -111,6 +111,9 @@ class ReconnectProviderBoundaryTest {
                         assertTrue(tool.has("input_schema"))
                         assertFalse(body.has("parallel_tool_calls"))
                     }
+                    EndpointKind.GEMINI_INTERACTIONS, EndpointKind.VERTEX_GENERATE_CONTENT -> {
+                        assertFalse(tool.has("function"))
+                    }
                 }
                 if (provider.capabilities.endpoint == EndpointKind.RESPONSES) {
                     assertFalse(body.getBoolean("parallel_tool_calls"))

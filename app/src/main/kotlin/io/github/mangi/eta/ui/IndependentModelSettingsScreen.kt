@@ -14,10 +14,10 @@ import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import io.github.mangi.eta.ui.components.WindowSpinnerPreference
 import io.github.mangi.eta.ui.model.AgentModelPickerProjector
 import kotlinx.coroutines.launch
-import top.yukonga.miuix.kmp.basic.Card
+import io.github.mangi.eta.ui.components.Card
 import top.yukonga.miuix.kmp.basic.DropdownItem
-import top.yukonga.miuix.kmp.preference.ArrowPreference
-import top.yukonga.miuix.kmp.preference.SwitchPreference
+import io.github.mangi.eta.ui.components.ArrowPreference
+import io.github.mangi.eta.ui.components.SwitchPreference
 
 /** Automatic conversation title configuration; independent of overlay controls. */
 @Composable

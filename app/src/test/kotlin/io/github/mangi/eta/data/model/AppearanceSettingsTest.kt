@@ -1,6 +1,7 @@
 package io.github.mangi.eta.data.model
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -12,7 +13,7 @@ class AppearanceSettingsTest {
         assertEquals(AppearanceThemeMode.LIGHT, settings.themeMode)
         assertEquals(AppearancePaletteStyle.NEUTRAL, settings.paletteStyle)
         assertEquals(AppearanceAccentColor.SYSTEM, settings.accentColor)
-        assertTrue(settings.monetEnabled)
+        assertFalse(settings.monetEnabled)
         assertTrue(settings.blurEnabled)
         assertEquals(AppearanceTopBarBlurStyle.GAUSSIAN, settings.topBarBlurStyle)
         assertTrue(settings.swipeDismissEnabled)

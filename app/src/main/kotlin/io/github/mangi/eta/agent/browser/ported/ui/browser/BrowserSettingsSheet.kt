@@ -66,6 +66,12 @@ import io.github.mangi.eta.agent.browser.ported.logging.AppLogger
 import kotlinx.coroutines.launch
 import io.github.mangi.eta.agent.browser.ported.ui.components.MinisTextButton
 import io.github.mangi.eta.agent.browser.ported.ui.util.bringIntoViewOnFocus
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.components.coui.CouiConfirmDialog
+import androidx.compose.foundation.layout.ColumnScope
+import io.github.mangi.eta.ui.components.coui.CouiModalSheet
+import io.github.mangi.eta.ui.components.coui.EtaRadioButton
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -113,10 +119,7 @@ fun BrowserSettingsSheet(
     // Cookie filter (mirrors iOS `.searchable("Filter by domain")`).
     var cookieFilterText by remember { mutableStateOf("") }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-    ) {
+    val sheetBody: @Composable ColumnScope.() -> Unit = {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -172,7 +175,7 @@ fun BrowserSettingsSheet(
                         .padding(vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    RadioButton(
+                    EtaRadioButton(
                         selected = selectedProfile == profile,
                         onClick = {
                             prefs.edit()
@@ -196,17 +199,31 @@ fun BrowserSettingsSheet(
             }
 
             if (selectedProfile == UserAgentProfile.CUSTOM) {
-                OutlinedTextField(
-                    value = customUA,
-                    onValueChange = {
-                        customUA = it
-                        prefs.edit().putString("custom_user_agent", it).apply()
-                    },
-                    label = { Text(stringResource(R.string.om_browser_settings_custom_ua_label)) },
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                    singleLine = false,
-                    textStyle = MaterialTheme.typography.bodySmall,
-                )
+                if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
+                    io.github.mangi.eta.ui.components.coui.CouiTextField(
+                        value = customUA,
+                        onValueChange = {
+                            customUA = it
+                            prefs.edit().putString("custom_user_agent", it).apply()
+                        },
+                        label = stringResource(R.string.om_browser_settings_custom_ua_label),
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                        singleLine = false,
+                        minLines = 2,
+                    )
+                } else {
+                    OutlinedTextField(
+                        value = customUA,
+                        onValueChange = {
+                            customUA = it
+                            prefs.edit().putString("custom_user_agent", it).apply()
+                        },
+                        label = { Text(stringResource(R.string.om_browser_settings_custom_ua_label)) },
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                        singleLine = false,
+                        textStyle = MaterialTheme.typography.bodySmall,
+                    )
+                }
                 MinisTextButton(onClick = {
                     tabPool.setUserAgentFromUI(UserAgentProfile.CUSTOM, customUA)
                 }) {
@@ -299,18 +316,29 @@ fun BrowserSettingsSheet(
             )
             Spacer(Modifier.height(8.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
-                OutlinedTextField(
-                    value = idleTimeoutText,
-                    onValueChange = { new -> idleTimeoutText = new.filter { it.isDigit() }.take(3) },
-                    label = { Text(stringResource(R.string.om_browser_settings_minutes_label)) },
-                    singleLine = true,
-                    // [T-android-browser-settings-keyboard-overlap] this
-                    // field sits near the bottom of the sheet — without
-                    // scroll-into-view it sits behind the soft keyboard
-                    // every time the user taps it.
-                    modifier = Modifier.weight(1f).bringIntoViewOnFocus(),
-                    textStyle = MaterialTheme.typography.bodyMedium,
-                )
+                if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
+                    io.github.mangi.eta.ui.components.coui.CouiTextField(
+                        value = idleTimeoutText,
+                        onValueChange = { new -> idleTimeoutText = new.filter { it.isDigit() }.take(3) },
+                        label = stringResource(R.string.om_browser_settings_minutes_label),
+                        singleLine = true,
+                        modifier = Modifier.weight(1f).bringIntoViewOnFocus(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    )
+                } else {
+                    OutlinedTextField(
+                        value = idleTimeoutText,
+                        onValueChange = { new -> idleTimeoutText = new.filter { it.isDigit() }.take(3) },
+                        label = { Text(stringResource(R.string.om_browser_settings_minutes_label)) },
+                        singleLine = true,
+                        // [T-android-browser-settings-keyboard-overlap] this
+                        // field sits near the bottom of the sheet — without
+                        // scroll-into-view it sits behind the soft keyboard
+                        // every time the user taps it.
+                        modifier = Modifier.weight(1f).bringIntoViewOnFocus(),
+                        textStyle = MaterialTheme.typography.bodyMedium,
+                    )
+                }
                 Spacer(Modifier.size(8.dp))
                 MinisTextButton(
                     onClick = {
@@ -344,14 +372,24 @@ fun BrowserSettingsSheet(
             }
 
             if (allDomains.isNotEmpty()) {
-                OutlinedTextField(
-                    value = cookieFilterText,
-                    onValueChange = { cookieFilterText = it },
-                    label = { Text(stringResource(R.string.om_browser_settings_filter_by_domain)) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
-                    textStyle = MaterialTheme.typography.bodySmall,
-                )
+                if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
+                    io.github.mangi.eta.ui.components.coui.CouiTextField(
+                        value = cookieFilterText,
+                        onValueChange = { cookieFilterText = it },
+                        placeholder = stringResource(R.string.om_browser_settings_filter_by_domain),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                    )
+                } else {
+                    OutlinedTextField(
+                        value = cookieFilterText,
+                        onValueChange = { cookieFilterText = it },
+                        label = { Text(stringResource(R.string.om_browser_settings_filter_by_domain)) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                        textStyle = MaterialTheme.typography.bodySmall,
+                    )
+                }
             }
 
             if (domains.isEmpty()) {
@@ -414,9 +452,31 @@ fun BrowserSettingsSheet(
             }
         }
     }
+    if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
+        CouiModalSheet(onDismiss = onDismiss, content = sheetBody)
+    } else {
+        ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+            content = sheetBody,
+        )
+    }
 
     if (showClearConfirm) {
-        AlertDialog(
+        if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiConfirmDialog(
+            visible = true,
+            title = stringResource(R.string.om_browser_settings_clear_all_dialog_title),
+            message = stringResource(R.string.om_browser_settings_clear_all_dialog_message),
+            confirmText = stringResource(R.string.om_browser_settings_clear),
+            cancelText = stringResource(R.string.om_cancel),
+            destructive = true,
+            onDismissRequest = { showClearConfirm = false },
+            onConfirm = {
+                CookieManager.getInstance().removeAllCookies(null)
+                WebStorage.getInstance().deleteAllData()
+                showClearConfirm = false
+            },
+        ) else AlertDialog(
             onDismissRequest = { showClearConfirm = false },
             title = { Text(stringResource(R.string.om_browser_settings_clear_all_dialog_title)) },
             text = { Text(stringResource(R.string.om_browser_settings_clear_all_dialog_message)) },
@@ -506,7 +566,7 @@ private fun ViewportSection(
             .padding(vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        RadioButton(
+        EtaRadioButton(
             selected = viewportMode == ViewportMode.DEFAULT,
             onClick = onSelectDefault,
         )
@@ -528,7 +588,7 @@ private fun ViewportSection(
             .padding(vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        RadioButton(
+        EtaRadioButton(
             selected = viewportMode == ViewportMode.CUSTOM,
             onClick = onSelectCustom,
         )
@@ -549,32 +609,56 @@ private fun ViewportSection(
             horizontalArrangement = Arrangement.Center,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            OutlinedTextField(
-                value = widthText,
-                onValueChange = onWidthChange,
-                label = { Text("Width") },
-                singleLine = true,
-                // [T-android-browser-settings-keyboard-overlap] focus →
-                // scroll-into-view so the soft keyboard doesn't cover
-                // the Custom viewport editor.
-                modifier = Modifier.width(110.dp).bringIntoViewOnFocus(),
-                textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            )
+            if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
+                io.github.mangi.eta.ui.components.coui.CouiTextField(
+                    value = widthText,
+                    onValueChange = onWidthChange,
+                    label = "Width",
+                    singleLine = true,
+                    showClearButton = false,
+                    modifier = Modifier.width(110.dp).bringIntoViewOnFocus(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                )
+            } else {
+                OutlinedTextField(
+                    value = widthText,
+                    onValueChange = onWidthChange,
+                    label = { Text("Width") },
+                    singleLine = true,
+                    // [T-android-browser-settings-keyboard-overlap] focus →
+                    // scroll-into-view so the soft keyboard doesn't cover
+                    // the Custom viewport editor.
+                    modifier = Modifier.width(110.dp).bringIntoViewOnFocus(),
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                )
+            }
             Spacer(Modifier.size(8.dp))
             Text("×", color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.size(8.dp))
-            OutlinedTextField(
-                value = heightText,
-                onValueChange = onHeightChange,
-                label = { Text("Height") },
-                singleLine = true,
-                // [T-android-browser-settings-keyboard-overlap] focus →
-                // scroll-into-view; mirrors the Width field.
-                modifier = Modifier.width(110.dp).bringIntoViewOnFocus(),
-                textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            )
+            if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
+                io.github.mangi.eta.ui.components.coui.CouiTextField(
+                    value = heightText,
+                    onValueChange = onHeightChange,
+                    label = "Height",
+                    singleLine = true,
+                    showClearButton = false,
+                    modifier = Modifier.width(110.dp).bringIntoViewOnFocus(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                )
+            } else {
+                OutlinedTextField(
+                    value = heightText,
+                    onValueChange = onHeightChange,
+                    label = { Text("Height") },
+                    singleLine = true,
+                    // [T-android-browser-settings-keyboard-overlap] focus →
+                    // scroll-into-view; mirrors the Width field.
+                    modifier = Modifier.width(110.dp).bringIntoViewOnFocus(),
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                )
+            }
             Spacer(Modifier.size(8.dp))
             MinisTextButton(onClick = onApply) { Text(stringResource(R.string.om_browser_settings_apply)) }
         }

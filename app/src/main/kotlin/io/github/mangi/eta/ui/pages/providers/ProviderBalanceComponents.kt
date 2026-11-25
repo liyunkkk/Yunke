@@ -37,13 +37,13 @@ import io.github.mangi.eta.data.repository.ProviderBalanceState
 import io.github.mangi.eta.data.repository.formatBalanceDisplay
 import io.github.mangi.eta.ui.icons.MoneyBag02
 import kotlinx.coroutines.launch
-import top.yukonga.miuix.kmp.basic.BasicComponent
+import io.github.mangi.eta.ui.components.BasicComponent
 import top.yukonga.miuix.kmp.basic.DropdownItem
-import top.yukonga.miuix.kmp.basic.IconButton
+import io.github.mangi.eta.ui.components.IconButton
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextButton
-import top.yukonga.miuix.kmp.basic.TextField
-import top.yukonga.miuix.kmp.preference.WindowSpinnerPreference
+import io.github.mangi.eta.ui.components.TextButton
+import io.github.mangi.eta.ui.components.TextField
+import io.github.mangi.eta.ui.components.WindowSpinnerPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 /**

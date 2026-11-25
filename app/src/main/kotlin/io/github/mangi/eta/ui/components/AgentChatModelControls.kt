@@ -50,9 +50,15 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.app.LocalUiStyle
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import io.github.mangi.eta.data.repository.ProviderBalanceStore
 import io.github.mangi.eta.ui.pages.providers.ProviderBalanceAmount
+import com.itos.coui.icons.CouiIcons
+import com.itos.coui.shape.CouiCapsuleShape
+import com.itos.coui.shape.CouiShape
+import com.itos.coui.theme.CouiTheme
 import io.github.mangi.eta.ui.model.AgentContextUsageUi
 import io.github.mangi.eta.ui.model.ConversationTokenUsageUi
 import io.github.mangi.eta.ui.model.AgentModelOptionUi
@@ -62,7 +68,6 @@ import io.github.mangi.eta.ui.model.formatContextUsage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.CircularProgressIndicator
-import top.yukonga.miuix.kmp.basic.HorizontalDivider
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.ProgressIndicatorDefaults
 import top.yukonga.miuix.kmp.basic.Text
@@ -182,7 +187,7 @@ internal fun AgentModelPickerButton(
 }
 
 @Composable
-private fun ModelPickerPopupContent(
+internal fun ModelPickerPopupContent(
     state: AgentModelPickerUiState,
     query: String,
     onQueryChange: (String) -> Unit,
@@ -255,19 +260,27 @@ private fun ModelPickerSearchField(
     query: String,
     onQueryChange: (String) -> Unit,
 ) {
+    val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
+    val couiDark = if (isCoui) CouiTheme.isDark else false
+    val containerShape = if (isCoui) CouiCapsuleShape else RoundedCornerShape(12.dp)
+    val containerColor = if (isCoui) {
+        if (couiDark) Color(0x1AFFFFFF) else Color(0x0D000000)
+    } else {
+        MiuixTheme.colorScheme.surfaceContainerHigh
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 8.dp, vertical = 4.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(MiuixTheme.colorScheme.surfaceContainerHigh)
-            .padding(horizontal = 8.dp, vertical = 6.dp),
+            .padding(horizontal = if (isCoui) 10.dp else 8.dp, vertical = 4.dp)
+            .clip(containerShape)
+            .background(containerColor)
+            .padding(horizontal = if (isCoui) 10.dp else 8.dp, vertical = if (isCoui) 7.dp else 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
-            imageVector = Icons.Rounded.Search,
+            imageVector = if (isCoui) CouiIcons.Outlined.Search else Icons.Rounded.Search,
             contentDescription = null,
-            modifier = Modifier.size(14.dp),
+            modifier = Modifier.size(if (isCoui) 15.dp else 14.dp),
             tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
         )
         Box(modifier = Modifier.padding(start = 6.dp).weight(1f)) {
@@ -350,8 +363,19 @@ private fun ModelPickerRow(
     onClick: () -> Unit,
 ) {
     val view = LocalView.current
-    Row(
-        modifier = Modifier
+    val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
+    val couiDark = if (isCoui) CouiTheme.isDark else false
+    val couiAccent = if (isCoui) CouiTheme.colorScheme.accentOnSurface else MiuixTheme.colorScheme.primary
+    val rowModifier = if (isCoui) {
+        val shape = remember { CouiShape(14.dp, 2f) }
+        val bg = if (selected) couiAccent.copy(alpha = if (couiDark) 0.18f else 0.11f) else Color.Transparent
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 2.dp)
+            .clip(shape)
+            .background(bg, shape)
+    } else {
+        Modifier
             .fillMaxWidth()
             .padding(horizontal = 8.dp, vertical = 2.dp)
             .squircleSurface(
@@ -362,6 +386,9 @@ private fun ModelPickerRow(
                 },
                 cornerRadius = 12.dp,
             )
+    }
+    Row(
+        modifier = rowModifier
             .clickable {
                 TouchHaptics.click(view)
                 onClick()
@@ -372,7 +399,7 @@ private fun ModelPickerRow(
         Text(
             text = model.displayName,
             style = MiuixTheme.textStyles.body2,
-            color = MiuixTheme.colorScheme.onSurface,
+            color = if (isCoui && selected) couiAccent else MiuixTheme.colorScheme.onSurface,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
@@ -383,7 +410,7 @@ private fun ModelPickerRow(
                 imageVector = Icons.Rounded.Check,
                 contentDescription = stringResource(R.string.ui_current_model_a0af8f),
                 modifier = Modifier.size(18.dp),
-                tint = MiuixTheme.colorScheme.onSurfaceVariantActions,
+                tint = if (isCoui) couiAccent else MiuixTheme.colorScheme.onSurfaceVariantActions,
             )
         }
     }
@@ -522,7 +549,7 @@ internal fun AgentContextUsageButton(
 }
 
 @Composable
-private fun ModelBrandMark(
+internal fun ModelBrandMark(
     modelId: String?,
     sourceType: String?,
     size: Dp,

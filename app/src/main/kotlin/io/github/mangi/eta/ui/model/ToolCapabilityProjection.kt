@@ -33,6 +33,7 @@ internal fun toolCardAction(id: String, capabilities: AgentToolCapabilities): Ag
     return when (capabilities.unavailableCode(actualToolName(id))) {
         "ROOT_REQUIRED", "DEVICE_UNSUPPORTED" -> AgentToolsAction.OpenEnhancements
         null -> when {
+            id == "generate_image" -> AgentToolsAction.OpenImageGenSettings
             id.startsWith("browser_") -> AgentToolsAction.OpenBrowser
             !capabilities.rootAvailable && requirement.rootRequirement == RootRequirement.PARTIAL ->
                 AgentToolsAction.OpenEnhancements

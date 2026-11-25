@@ -40,14 +40,14 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
-import top.yukonga.miuix.kmp.basic.BasicComponent
-import top.yukonga.miuix.kmp.basic.Card
+import io.github.mangi.eta.ui.components.BasicComponent
+import io.github.mangi.eta.ui.components.Card
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
-import top.yukonga.miuix.kmp.basic.SmallTitle
+import io.github.mangi.eta.ui.components.SmallTitle
 import io.github.mangi.eta.ui.components.ArrowPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import top.yukonga.miuix.kmp.window.WindowDialog
+import io.github.mangi.eta.ui.components.AdaptiveConfirmDialog
 
 @Composable
 internal fun DataBackupScreen(
@@ -188,7 +188,7 @@ internal fun DataBackupScreen(
     }
 
     if (showImportDialog) {
-        WindowDialog(
+        AdaptiveConfirmDialog(
             show = true,
             title = stringResource(R.string.data_backup_import_confirm_title),
             summary = stringResource(R.string.data_backup_import_confirm_summary) + "\n如果选择单会话归档，则导入为独立新会话，不覆盖已有会话或模型配置。",
@@ -198,49 +198,46 @@ internal fun DataBackupScreen(
                     pendingImportUri = null
                 }
             },
-        ) {
-            MiuixDialogActions(
-                confirmText = if (busy) {
-                    stringResource(R.string.data_backup_working)
-                } else {
-                    stringResource(R.string.action_import)
-                },
-                destructive = true,
-                cancelEnabled = !busy,
-                confirmEnabled = !busy,
-                onCancel = {
-                    showImportDialog = false
-                    pendingImportUri = null
-                },
-                onConfirm = {
-                    val uri = pendingImportUri ?: return@MiuixDialogActions
-                    showImportDialog = false
-                    scope.launch {
-                        importing = true
-                        try {
-                            val input = context.contentResolver.openInputStream(uri)
-                                ?: error(context.getString(R.string.data_backup_file_open_failed))
-                            val summary = input.use { onImport(it) }
-                            Toast.makeText(
-                                context,
-                                context.getString(
-                                    R.string.data_backup_imported,
-                                    summary.conversationCount,
-                                    summary.providerCount,
-                                    summary.assistantCount,
-                                ),
-                                Toast.LENGTH_SHORT,
-                            ).show()
-                        } catch (throwable: Throwable) {
-                            showFailure(throwable)
-                        } finally {
-                            pendingImportUri = null
-                            importing = false
-                        }
+            confirmText = if (busy) {
+                stringResource(R.string.data_backup_working)
+            } else {
+                stringResource(R.string.action_import)
+            },
+            destructive = true,
+            cancelEnabled = !busy,
+            confirmEnabled = !busy,
+            onCancel = {
+                showImportDialog = false
+                pendingImportUri = null
+            },
+            onConfirm = {
+                val uri = pendingImportUri ?: return@AdaptiveConfirmDialog
+                showImportDialog = false
+                scope.launch {
+                    importing = true
+                    try {
+                        val input = context.contentResolver.openInputStream(uri)
+                            ?: error(context.getString(R.string.data_backup_file_open_failed))
+                        val summary = input.use { onImport(it) }
+                        Toast.makeText(
+                            context,
+                            context.getString(
+                                R.string.data_backup_imported,
+                                summary.conversationCount,
+                                summary.providerCount,
+                                summary.assistantCount,
+                            ),
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    } catch (throwable: Throwable) {
+                        showFailure(throwable)
+                    } finally {
+                        pendingImportUri = null
+                        importing = false
                     }
-                },
-            )
-        }
+                }
+            },
+        )
     }
 }
 

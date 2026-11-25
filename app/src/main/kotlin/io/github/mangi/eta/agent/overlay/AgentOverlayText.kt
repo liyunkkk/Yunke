@@ -123,6 +123,8 @@ internal fun toolDisplayNameResource(name: String): Int? = when (name) {
     "list_directory" -> R.string.tool_list_directory
     "memory_get" -> R.string.tool_memory_get
     "memory_write" -> R.string.tool_memory_write
+    "subagent" -> R.string.tool_subagent
+    "subagent_profile" -> R.string.tool_subagent_profile
     "set_alarm" -> R.string.tool_set_alarm
     "set_timer" -> R.string.tool_set_timer
     "device_status" -> R.string.tool_device_status
@@ -139,5 +141,6 @@ internal fun toolDisplayNameResource(name: String): Int? = when (name) {
     "set_device_state" -> R.string.tool_set_device_state
     "app_state_control" -> R.string.tool_app_state_control
     "get_logcat" -> R.string.tool_get_logcat
+    "generate_image" -> R.string.tool_generate_image
     else -> null
 }

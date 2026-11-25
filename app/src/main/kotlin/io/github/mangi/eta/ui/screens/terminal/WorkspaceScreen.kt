@@ -50,11 +50,11 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import top.yukonga.miuix.kmp.basic.BasicComponent
-import top.yukonga.miuix.kmp.basic.Card
-import top.yukonga.miuix.kmp.basic.SmallTitle
-import top.yukonga.miuix.kmp.preference.ArrowPreference
-import top.yukonga.miuix.kmp.window.WindowDialog
+import io.github.mangi.eta.ui.components.BasicComponent
+import io.github.mangi.eta.ui.components.Card
+import io.github.mangi.eta.ui.components.SmallTitle
+import io.github.mangi.eta.ui.components.ArrowPreference
+import io.github.mangi.eta.ui.components.AdaptiveConfirmDialog
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -286,7 +286,7 @@ internal fun WorkspaceScreen(onBack: () -> Unit) {
     }
 
     pendingDelete?.let { target ->
-        WindowDialog(
+        AdaptiveConfirmDialog(
             show = true,
             title = stringResource(R.string.capability_workspace_delete_title),
             summary = stringResource(
@@ -295,54 +295,51 @@ internal fun WorkspaceScreen(onBack: () -> Unit) {
                 target.name,
             ),
             onDismissRequest = { if (!busy) pendingDelete = null },
-        ) {
-            MiuixDialogActions(
-                confirmText = stringResource(R.string.action_delete),
-                destructive = true,
-                confirmEnabled = !busy,
-                onCancel = { if (!busy) pendingDelete = null },
-                onConfirm = {
-                    if (busy) return@MiuixDialogActions
-                    val deleting = target
-                    pendingDelete = null
-                    scope.launch {
-                        busy = true
-                        try {
-                            val deleted = if (linuxReady) {
-                                val result = withContext(Dispatchers.IO) {
-                                    LinuxFileExplorer.delete(
-                                        shellSupervisor,
-                                        rootfsDir,
-                                        guestWorkspacePath(deleting.path),
-                                        distribution.terminalEnvironment,
-                                        SharedFolderMounts.current(),
-                                    )
-                                }
-                                if (result == LinuxFileExplorer.DeleteResult.Success) true
-                                else {
-                                    store.delete(deleting.path)
-                                    true
-                                }
-                            } else {
+            confirmText = stringResource(R.string.action_delete),
+            destructive = true,
+            confirmEnabled = !busy,
+            onCancel = { if (!busy) pendingDelete = null },
+            onConfirm = {
+                if (busy) return@AdaptiveConfirmDialog
+                val deleting = target
+                pendingDelete = null
+                scope.launch {
+                    busy = true
+                    try {
+                        val deleted = if (linuxReady) {
+                            val result = withContext(Dispatchers.IO) {
+                                LinuxFileExplorer.delete(
+                                    shellSupervisor,
+                                    rootfsDir,
+                                    guestWorkspacePath(deleting.path),
+                                    distribution.terminalEnvironment,
+                                    SharedFolderMounts.current(),
+                                )
+                            }
+                            if (result == LinuxFileExplorer.DeleteResult.Success) true
+                            else {
                                 store.delete(deleting.path)
                                 true
                             }
-                            message = context.getString(
-                                if (deleted) R.string.capability_workspace_deleted
-                                else R.string.capability_workspace_failed,
-                            )
-                            revision++
-                        } catch (cancelled: CancellationException) {
-                            throw cancelled
-                        } catch (_: Exception) {
-                            message = context.getString(R.string.capability_workspace_failed)
-                        } finally {
-                            busy = false
+                        } else {
+                            store.delete(deleting.path)
+                            true
                         }
+                        message = context.getString(
+                            if (deleted) R.string.capability_workspace_deleted
+                            else R.string.capability_workspace_failed,
+                        )
+                        revision++
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        message = context.getString(R.string.capability_workspace_failed)
+                    } finally {
+                        busy = false
                     }
-                },
-            )
-        }
+                }
+            },
+        )
     }
 }
 

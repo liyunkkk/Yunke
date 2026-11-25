@@ -46,6 +46,11 @@ import androidx.core.content.FileProvider
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.browser.ported.ui.components.MinisTextButton
 import io.github.mangi.eta.agent.browser.ported.browser.BrowserTabPool
+import androidx.compose.foundation.layout.ColumnScope
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.components.coui.CouiModalSheet
+import io.github.mangi.eta.ui.components.coui.EtaLinearProgressIndicator
 
 /**
  * [T-android-browser-download-ux] Downloads panel — Android port of iOS
@@ -71,10 +76,7 @@ fun BrowserDownloadsSheet(
     // actually looked at the panel.
     LaunchedEffect(Unit) { tabPool.markDownloadsSeen() }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-    ) {
+    val sheetBody: @Composable ColumnScope.() -> Unit = {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -117,6 +119,15 @@ fun BrowserDownloadsSheet(
                 }
             }
         }
+    }
+    if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
+        CouiModalSheet(onDismiss = onDismiss, content = sheetBody)
+    } else {
+        ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+            content = sheetBody,
+        )
     }
 }
 
@@ -171,14 +182,14 @@ private fun DownloadRow(
                     )
                     Spacer(Modifier.height(4.dp))
                     if (entry.totalBytes > 0) {
-                        LinearProgressIndicator(
+                        EtaLinearProgressIndicator(
                             progress = {
                                 (entry.bytesDone.toFloat() / entry.totalBytes).coerceIn(0f, 1f)
                             },
                             modifier = Modifier.fillMaxWidth(),
                         )
                     } else {
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        EtaLinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                     }
                 }
                 BrowserTabPool.DownloadState.COMPLETED -> {

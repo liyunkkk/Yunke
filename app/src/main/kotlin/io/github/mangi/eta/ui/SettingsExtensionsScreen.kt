@@ -5,6 +5,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.MenuBook
 import androidx.compose.material.icons.rounded.AccountTree
 import androidx.compose.material.icons.rounded.Extension
+import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.SmartToy
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
@@ -15,8 +16,8 @@ import io.github.mangi.eta.ui.components.ArrowPreference
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import io.github.mangi.eta.ui.components.PreferenceIcon
 import io.github.mangi.eta.ui.navigation.AppRoute
-import top.yukonga.miuix.kmp.basic.Card
-import top.yukonga.miuix.kmp.basic.SmallTitle
+import io.github.mangi.eta.ui.components.Card
+import io.github.mangi.eta.ui.components.SmallTitle
 
 /**
  * 设置二级页：扩展与角色。
@@ -78,6 +79,16 @@ internal fun SettingsExtensionsScreen(
                         )
                     },
                     onClick = { onNavigate(AppRoute.McpServers) },
+                )
+
+                ArrowPreference(
+                    title = stringResource(R.string.route_scheduled_tasks),
+                    startAction = {
+                        PreferenceIcon(
+                            icon = Icons.Rounded.Schedule,
+                        )
+                    },
+                    onClick = { onNavigate(AppRoute.ScheduledTasks) },
                 )
             }
         }

@@ -27,6 +27,10 @@ import io.github.mangi.eta.data.repository.RuntimeConfigRepository
 import io.github.mangi.eta.ui.TtsModelPickerDialog
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import io.github.mangi.eta.ui.model.AgentModelPickerProjector
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.components.coui.CouiNoticeDialog
+import io.github.mangi.eta.ui.components.coui.CouiConfirmDialog
 
 /** Pickers capture both editor identity and profile binding; a changed owner/run dismisses them. */
 @OptIn(ExperimentalFoundationApi::class)
@@ -163,7 +167,27 @@ internal fun SubAgentProfileRow(profile: SubAgentProfile, providers: List<Provid
             io.github.mangi.eta.agent.model.RequestBodyMerge.mergeCustomBody(body, config.customBody)
             io.github.mangi.eta.agent.model.GrokImageProfile.applies(config.baseUrl, config.model, body)
         }.getOrDefault(false)
-        AlertDialog(onDismissRequest = { resolutionPicker = false }, title = { Text("默认分辨率") },
+        if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiNoticeDialog(
+            visible = true,
+            message = null,
+            title = "默认分辨率",
+            confirmText = "关闭",
+            onDismissRequest = { resolutionPicker = false },
+        ) {
+            Column {
+                Text("低、中、高、超高表示请求档位，不承诺固定像素。自然语言和本次子代理参数可覆盖此默认值。" +
+                    if (verifiedGrok) "当前 Grok 实测端点仅验证低、高；中、超高不可选。" else "实际支持取决于端点映射。")
+                (listOf<String?>(null) + io.github.mangi.eta.agent.model.ImageResolutionTier.values).forEach { tier ->
+                    val allowed = !verifiedGrok || tier == null || tier in setOf("low", "high")
+                    TextButton(enabled = usable && allowed, onClick = {
+                        if (currentUsable) editor?.updateProfile(profile.id) { latest ->
+                            if (latest.providerId == profile.providerId && latest.modelId == profile.modelId && latest.role == "image_generation") latest.copy(imageResolution = tier) else latest
+                        }
+                        resolutionPicker = false
+                    }) { Text(tier?.let(io.github.mangi.eta.agent.model.ImageResolutionTier::label) ?: "跟随接口") }
+                }
+            }
+        } else AlertDialog(onDismissRequest = { resolutionPicker = false }, title = { Text("默认分辨率") },
             text = { Column {
                 Text("低、中、高、超高表示请求档位，不承诺固定像素。自然语言和本次子代理参数可覆盖此默认值。" +
                     if (verifiedGrok) "当前 Grok 实测端点仅验证低、高；中、超高不可选。" else "实际支持取决于端点映射。")

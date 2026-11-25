@@ -6,6 +6,13 @@ import io.github.mangi.eta.agent.model.ProviderUrls
 import io.github.mangi.eta.agent.model.oauth.GoogleAntigravityOAuth
 import io.github.mangi.eta.data.model.ProviderAuthMode
 import io.github.mangi.eta.data.model.AnthropicProviderSetting
+import io.github.mangi.eta.data.model.GeminiProviderSetting
+import io.github.mangi.eta.agent.runtime.AgentRunController
+import io.github.mangi.eta.agent.runtime.AgentRunCancelledException
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.CancellationException
+import kotlin.coroutines.resume
+import okhttp3.OkHttpClient
 import io.github.mangi.eta.data.model.Model
 import io.github.mangi.eta.data.model.ModelReasoningCapabilities
 import io.github.mangi.eta.data.model.ModelSource
@@ -36,8 +43,56 @@ internal object RemoteModelFetcher {
             runCatching {
                 when (provider) {
                     is AnthropicProviderSetting -> fetchAnthropic(provider)
+                    is GeminiProviderSetting -> fetchGemini(provider)
                     else -> fetchOpenAiCompatible(provider)
                 }
+            }
+        }
+
+    suspend fun testVertexConnection(
+        provider: GeminiProviderSetting,
+        client: OkHttpClient = AgentHttpClient.client,
+        preferredModelId: String? = null,
+    ): Result<String> = kotlinx.coroutines.withContext(Dispatchers.IO) {
+        suspendCancellableCoroutine { continuation ->
+            val controller = AgentRunController()
+            continuation.invokeOnCancellation { controller.cancel() }
+            try {
+                val model = GeminiModelCatalog.testVertexConnection(provider, client, controller, preferredModelId)
+                controller.throwIfCancelled()
+                continuation.resume(Result.success(model))
+            } catch (failure: AgentRunCancelledException) {
+                continuation.cancel(CancellationException("连接测试已取消", failure))
+            } catch (failure: Exception) {
+                continuation.resume(Result.failure(failure))
+            }
+        }
+    }
+
+    private suspend fun fetchGemini(provider: GeminiProviderSetting): List<Model> =
+        suspendCancellableCoroutine { continuation ->
+            val controller = AgentRunController()
+            continuation.invokeOnCancellation { controller.cancel() }
+            try {
+                val models = GeminiModelCatalog.fetch(provider, controller, 8L * 1024 * 1024) { request, maxBytes ->
+                    val call = AgentHttpClient.vertexClient(AgentHttpClient.client).newCall(request)
+                    val binding = controller.register(interruptible = true, cancel = call::cancel)
+                    try {
+                        call.execute().use { response ->
+                            val bytes = response.peekBody(maxBytes + 1).bytes()
+                            require(bytes.size.toLong() <= maxBytes) { "服务商模型目录超过大小限制" }
+                            val body = bytes.toString(Charsets.UTF_8)
+                            if (!response.isSuccessful) error("拉取 Gemini 模型失败 HTTP ${response.code}: ${body.compactError()}")
+                            body
+                        }
+                    } finally { binding.close() }
+                }
+                controller.throwIfCancelled()
+                continuation.resume(models)
+            } catch (failure: AgentRunCancelledException) {
+                continuation.cancel(CancellationException("模型目录拉取已取消", failure))
+            } catch (failure: Exception) {
+                continuation.resumeWith(Result.failure(failure))
             }
         }
 

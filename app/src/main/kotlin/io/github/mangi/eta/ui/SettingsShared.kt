@@ -35,14 +35,13 @@ import io.github.mangi.eta.systemizer.RootManager
 import io.github.mangi.eta.systemizer.SystemizerInstallResult
 import io.github.mangi.eta.ui.app.EnhancementSettingsHistory
 import io.github.mangi.eta.ui.components.ArrowPreference
-import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.PreferenceIcon
 import io.github.mangi.eta.ui.components.StreamPerformanceDiagnostics
 import io.github.mangi.eta.ui.components.SwitchPreference
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import top.yukonga.miuix.kmp.window.WindowDialog
+import io.github.mangi.eta.ui.components.AdaptiveConfirmDialog
 
 // ── 设置页共享：状态持有器与开关 helper（一级页与各二级页共用） ─────────────
 // 来源：Yunke SettingsScreen.kt 底部 helper（原样搬出，只改可见性 private → internal，
@@ -285,24 +284,21 @@ internal fun SystemizerConfirmDialog(
     onDismissRequest: () -> Unit,
     onConfirm: () -> Unit,
 ) {
-    WindowDialog(
+    AdaptiveConfirmDialog(
         show = show,
         title = stringResource(R.string.ui_convert_google_apps_to_system_apps_0f6d89),
         summary = stringResource(R.string.ui_system_applications_have_voice_wake_up_permissions_f_0190f2),
         onDismissRequest = onDismissRequest,
-    ) {
-        MiuixDialogActions(
-            confirmText = if (installing) {
-                stringResource(R.string.status_processing)
-            } else {
-                stringResource(R.string.action_confirm)
-            },
-            cancelEnabled = !installing,
-            confirmEnabled = !installing,
-            onCancel = onDismissRequest,
-            onConfirm = onConfirm,
-        )
-    }
+        confirmText = if (installing) {
+            stringResource(R.string.status_processing)
+        } else {
+            stringResource(R.string.action_confirm)
+        },
+        cancelEnabled = !installing,
+        confirmEnabled = !installing,
+        onCancel = onDismissRequest,
+        onConfirm = onConfirm,
+    )
 }
 
 @Composable

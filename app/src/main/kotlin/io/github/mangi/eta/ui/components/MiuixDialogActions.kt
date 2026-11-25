@@ -10,7 +10,6 @@ import io.github.mangi.eta.ui.haptics.TouchHaptics
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
-import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import io.github.mangi.eta.R
 
@@ -37,6 +36,7 @@ fun MiuixDialogActions(
     cancelEnabled: Boolean = true,
     confirmEnabled: Boolean = true,
     destructive: Boolean = false,
+    confirmHaptic: Boolean = true,
 ) {
     val view = LocalView.current
     Row(
@@ -55,7 +55,7 @@ fun MiuixDialogActions(
         TextButton(
             text = confirmText,
             onClick = {
-                TouchHaptics.click(view)
+                if (confirmHaptic) TouchHaptics.click(view)
                 onConfirm()
             },
             enabled = confirmEnabled,

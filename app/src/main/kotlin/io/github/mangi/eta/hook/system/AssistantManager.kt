@@ -151,6 +151,7 @@ internal object AssistantManager {
 
             hookUserLifecycleSelfHeal(hooks, serviceClass, "onUserUnlocking", 1)
             hookUserLifecycleSelfHeal(hooks, serviceClass, "onUserSwitching", 2)
+            hookXiaomiAssistantSettingGuard(hooks)
         }
     }
 
@@ -912,18 +913,20 @@ internal object AssistantManager {
         logger: ModuleLogger
     ): Boolean {
         val resolver = context.contentResolver
+        // 与系统 RoleObserver 统一写入 flattenToShortString() 形态，避免短类名与全类名互相覆写。
+        val targetComponent = binding.shortComponentName
         var changed = false
         changed = updateSecureString(
             resolver,
             ModuleConfig.SECURE_ASSISTANT,
-            binding.componentName,
+            targetComponent,
             userId,
             forceRefresh
         ) || changed
         changed = updateSecureString(
             resolver,
             ModuleConfig.SECURE_VOICE_INTERACTION_SERVICE,
-            binding.componentName,
+            targetComponent,
             userId,
             forceRefresh
         ) || changed
@@ -941,7 +944,7 @@ internal object AssistantManager {
         forceRefresh: Boolean
     ): Boolean {
         val currentValue = getSecureStringForUser(resolver, key, userId)
-        if (!forceRefresh && currentValue == targetValue) {
+        if (!forceRefresh && isSameComponentName(currentValue, targetValue)) {
             return false
         }
         if (forceRefresh) {
@@ -981,7 +984,10 @@ internal object AssistantManager {
         )
         return PowerAssistantTarget.entries.asSequence()
             .mapNotNull(::assistantBindingFor)
-            .any { it.componentName == assistant || it.componentName == voiceInteraction }
+            .any {
+                isSameComponentName(it.componentName, assistant) ||
+                    isSameComponentName(it.componentName, voiceInteraction)
+            }
     }
 
     private fun roleMutationReachedTarget(
@@ -998,13 +1004,13 @@ internal object AssistantManager {
         binding: AssistantBinding,
     ): Boolean {
         val resolver = context.contentResolver
-        return getSecureStringForUser(resolver, ModuleConfig.SECURE_ASSISTANT, userId) ==
-            binding.componentName &&
-            getSecureStringForUser(
-                resolver,
-                ModuleConfig.SECURE_VOICE_INTERACTION_SERVICE,
-                userId
-            ) == binding.componentName
+        return isSameComponentName(
+            getSecureStringForUser(resolver, ModuleConfig.SECURE_ASSISTANT, userId),
+            binding.componentName,
+        ) && isSameComponentName(
+            getSecureStringForUser(resolver, ModuleConfig.SECURE_VOICE_INTERACTION_SERVICE, userId),
+            binding.componentName,
+        )
     }
 
     private fun getSecureStringForUser(
@@ -1113,6 +1119,51 @@ internal object AssistantManager {
                 )
             }
             result
+        }
+    }
+
+    private fun hookXiaomiAssistantSettingGuard(hooks: HookRegistrar) {
+        val logger = hooks.logger
+        val methods = Settings.Secure::class.java.declaredMethods.filter { method ->
+            if (method.name != "putStringForUser") return@filter false
+            val params = method.parameterTypes
+            params.size >= 4 &&
+                params[0] == ContentResolver::class.java &&
+                params[1] == String::class.java &&
+                params[2] == String::class.java
+        }
+        if (methods.isEmpty()) {
+            hooks.missing(
+                id = "system.assistant-settings-guard",
+                description = "Settings.Secure.putStringForUser",
+                detail = "未找到 Settings.Secure.putStringForUser，跳过 HyperOS 助理设置保护",
+            )
+            return
+        }
+        methods.forEachIndexed { index, method ->
+            hooks.intercept(
+                id = "system.assistant-settings-guard-$index",
+                executable = method,
+                description = "Settings.Secure.putStringForUser/${method.parameterTypes.size}",
+            ) { chain ->
+                val args = chain.args
+                val key = args.getOrNull(1) as? String
+                val value = args.getOrNull(2) as? String
+                val replacement = rewriteManagedAssistantSettingIfOverwritten(
+                    autoConfigEnabled = Prefs.isEnabled(Prefs.Keys.ASSISTANT_AUTO_CONFIG),
+                    target = Prefs.powerAssistantTarget(),
+                    key = key,
+                    value = value,
+                )
+                if (replacement != null) {
+                    val updatedArgs = args.toTypedArray()
+                    updatedArgs[2] = replacement
+                    logger.debug { "AssistantManager: 已拦截对 $key 的小爱覆写并保持托管目标" }
+                    chain.proceed(updatedArgs)
+                } else {
+                    chain.proceed()
+                }
+            }
         }
     }
 

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="imagegen_generated_image_desc">AI-generated image</string>
+    <string name="imagegen_card_completed">Image generation completed</string>
+    <string name="imagegen_card_failed">Image generation failed</string>
+    <string name="imagegen_card_generating">Generating image</string>
+    <string name="imagegen_card_generating_multiple">Generating %1$d images</string>
+    <string name="imagegen_card_editing">Editing image</string>
+    <string name="imagegen_card_editing_multiple">Editing %1$d images</string>
+    <string name="imagegen_card_elapsed_seconds">Elapsed %1$ds</string>
+    <string name="imagegen_card_please_wait">Please wait…</string>
+    <string name="imagegen_card_saving">Saving</string>
+    <string name="imagegen_card_save_all">Save all</string>
+    <string name="imagegen_card_saved_single">Saved to gallery (Pictures/Eta)</string>
+    <string name="imagegen_card_saved_multiple">Saved %1$d images to gallery</string>
+    <string name="imagegen_card_save_failed">Failed to save. Please try again</string>
+    <string name="imagegen_card_action_share">Share</string>
+    <string name="imagegen_card_share_failed">Failed to share</string>
+    <string name="imagegen_card_action_edit">Edit</string>
+    <string name="imagegen_card_edit_loaded_hint">Attached to input. Describe the changes you want.</string>
+    <string name="imagegen_card_prompt_label">Prompt</string>
+    <string name="imagegen_card_image_missing">Local image was cleared</string>
+</resources>

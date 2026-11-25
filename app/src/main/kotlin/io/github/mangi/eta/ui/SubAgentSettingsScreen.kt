@@ -47,6 +47,15 @@ import io.github.mangi.eta.ui.layout.horizontalCutoutPadding
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.DropdownItem
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.components.coui.CouiButton
+import io.github.mangi.eta.ui.components.coui.CouiButtonRole
+import io.github.mangi.eta.ui.components.coui.CouiConfirmDialog
+import io.github.mangi.eta.ui.components.coui.CouiLazyScaffoldPage
+import io.github.mangi.eta.ui.components.coui.EtaMaterialSwitch
+import com.itos.coui.layout.CouiPageDefaults
+import com.itos.coui.theme.CouiTheme
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -87,39 +96,84 @@ internal fun SubAgentSettingsScreen(
     var name by remember { mutableStateOf("") }
     val view = LocalView.current
     val editable = !directory.loading && directory.error == null
+    val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
+    val couiColors = if (isCoui) CouiPageDefaults.themeColors(CouiTheme.isDark) else null
+    val presetListItems: androidx.compose.foundation.lazy.LazyListScope.() -> Unit = {
+        item {
+            Column(
+                modifier = if (isCoui) Modifier.padding(horizontal = CouiPageDefaults.horizontalMargin, vertical = 6.dp) else Modifier,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    "预设组可供不同会话复制使用；修改预设不会改变已应用的会话。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = couiColors?.summary ?: MaterialTheme.colorScheme.onSurface,
+                )
+                SubAgentPresetDirectoryStatus(directory)
+            }
+        }
+        items(directory.entries, key = { it.id }) { preset ->
+            Box(modifier = if (isCoui) Modifier.padding(horizontal = CouiPageDefaults.horizontalMargin, vertical = 6.dp) else Modifier) {
+                SubAgentPresetCard(preset, editable, "编辑子代理组${preset.name}",
+                    onClick = { if (editable) directory.change {
+                        check(repository.presetExists(preset.id)) { "子代理组不存在，请重试" }
+                        selectedId = preset.id
+                    } },
+                    trailing = {
+                        IconButton(modifier = Modifier.padding(end = 8.dp).size(48.dp), enabled = editable, onClick = {
+                            if (editable) { TouchHaptics.click(view); actionsPreset = preset }
+                        }) {
+                            Icon(
+                                Icons.Rounded.MoreVert,
+                                "${preset.name}组更多操作",
+                                tint = couiColors?.summary ?: LocalContentColor.current,
+                            )
+                        }
+                    })
+            }
+        }
+        if (isCoui) {
+            item { Spacer(Modifier.height(84.dp)) }
+        }
+    }
     CompositionLocalProvider(LocalRippleConfiguration provides null) {
         WithoutPressRipple {
-            Scaffold(containerColor = MaterialTheme.colorScheme.surface,
-                topBar = { TopAppBar(title = { Text("子代理组") }, navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回") }
-                }, colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)) },
-                floatingActionButtonPosition = FabPosition.Center,
-                floatingActionButton = {
-                    FilledTonalButton(enabled = editable, onClick = {
-                        TouchHaptics.click(view); name = ""; add = true
-                    }, modifier = Modifier.heightIn(min = 48.dp).widthIn(min = 168.dp), shape = RoundedCornerShape(50)) {
-                        Text("添加子代理组", style = MaterialTheme.typography.bodyLarge)
-                    }
-                }) { padding ->
-                LazyColumn(Modifier.fillMaxSize().padding(padding).horizontalCutoutPadding(),
-                    contentPadding = PaddingValues(start = 24.dp, end = 24.dp, top = 12.dp, bottom = 96.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    item {
-                        Text("预设组可供不同会话复制使用；修改预设不会改变已应用的会话。", style = MaterialTheme.typography.bodyMedium)
-                        SubAgentPresetDirectoryStatus(directory)
-                    }
-                    items(directory.entries, key = { it.id }) { preset ->
-                        SubAgentPresetCard(preset, editable, "编辑子代理组${preset.name}",
-                            onClick = { if (editable) directory.change {
-                                check(repository.presetExists(preset.id)) { "子代理组不存在，请重试" }
-                                selectedId = preset.id
-                            } },
-                            trailing = {
-                                IconButton(modifier = Modifier.padding(end = 8.dp).size(48.dp), enabled = editable, onClick = {
-                                    if (editable) { TouchHaptics.click(view); actionsPreset = preset }
-                                }) { Icon(Icons.Rounded.MoreVert, "${preset.name}组更多操作") }
-                            })
-                    }
+            if (isCoui) {
+                CouiLazyScaffoldPage(
+                    title = "子代理组",
+                    onBack = onBack,
+                    floatingAction = {
+                        CouiButton(
+                            text = "添加子代理组",
+                            enabled = editable,
+                            role = CouiButtonRole.Primary,
+                            onClick = { TouchHaptics.click(view); name = ""; add = true },
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(bottom = 16.dp)
+                                .heightIn(min = 48.dp)
+                                .widthIn(min = 168.dp),
+                        )
+                    },
+                    content = presetListItems,
+                )
+            } else {
+                Scaffold(containerColor = MaterialTheme.colorScheme.surface,
+                    topBar = { TopAppBar(title = { Text("子代理组") }, navigationIcon = {
+                        IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回") }
+                    }, colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)) },
+                    floatingActionButtonPosition = FabPosition.Center,
+                    floatingActionButton = {
+                        FilledTonalButton(enabled = editable, onClick = {
+                            TouchHaptics.click(view); name = ""; add = true
+                        }, modifier = Modifier.heightIn(min = 48.dp).widthIn(min = 168.dp), shape = RoundedCornerShape(50)) {
+                            Text("添加子代理组", style = MaterialTheme.typography.bodyLarge)
+                        }
+                    }) { padding ->
+                    LazyColumn(Modifier.fillMaxSize().padding(padding).horizontalCutoutPadding(),
+                        contentPadding = PaddingValues(start = 24.dp, end = 24.dp, top = 12.dp, bottom = 96.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                        content = presetListItems)
                 }
             }
             actionsPreset?.takeIf { editable }?.let { preset ->
@@ -146,7 +200,18 @@ internal fun SubAgentSettingsScreen(
                 },
             )
             delete?.let { preset ->
-                AlertDialog(onDismissRequest = { delete = null }, title = { Text("删除子代理组？") },
+                if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiConfirmDialog(
+                    visible = true,
+                    title = "删除子代理组？",
+                    message = "删除“${preset.name}”不会改变已应用此组的会话配置。",
+                    confirmText = "删除",
+                    destructive = true,
+                    confirmEnabled = editable,
+                    onDismissRequest = { delete = null },
+                    onConfirm = {
+                        if (directory.change { check(repository.removePreset(preset.id)) { "子代理组不存在，请重试" } }) delete = null
+                    },
+                ) else AlertDialog(onDismissRequest = { delete = null }, title = { Text("删除子代理组？") },
                     text = { Text("删除“${preset.name}”不会改变已应用此组的会话配置。") },
                     dismissButton = { TextButton(onClick = { delete = null }) { Text("取消") } },
                     confirmButton = { TextButton(enabled = editable, onClick = {
@@ -177,107 +242,215 @@ private fun SubAgentPresetDetail(editor: ConversationSubAgentEditor, groupName: 
     var pollGuard by remember { mutableStateOf(Prefs.isEnabled(Prefs.Keys.SUBAGENT_POLL_GUARD)) }
     val context = LocalContext.current
     val view = LocalView.current
+    val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
+    val couiColors = if (isCoui) CouiPageDefaults.themeColors(CouiTheme.isDark) else null
     LaunchedEffect(editor, editable) { if (!editable) { rename = null; delete = null } }
+    val detailItems: androidx.compose.foundation.lazy.LazyListScope.() -> Unit = {
+        item {
+            Column(modifier = if (isCoui) Modifier.padding(horizontal = CouiPageDefaults.horizontalMargin, vertical = 6.dp) else Modifier) {
+                Text(when (state) {
+                    is SubAgentEditorState.Error -> "子代理配置读取或保存失败：${state.reason}"
+                    SubAgentEditorState.Loading -> "正在读取子代理组配置…"
+                    else -> if (!editable) "当前子代理组暂不可修改。"
+                        else "配置属于此预设组；会话应用时复制，后续修改互不影响。"
+                }, style = MaterialTheme.typography.bodyMedium, color = couiColors?.summary ?: MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(bottom = 4.dp))
+                if (state is SubAgentEditorState.Error) {
+                    if (isCoui) {
+                        CouiButton(
+                            text = "重试恢复配置",
+                            role = CouiButtonRole.Secondary,
+                            minHeight = 36.dp,
+                            onClick = { editor?.retry() },
+                        )
+                    } else {
+                        TextButton(onClick = { editor?.retry() }) { Text("重试恢复配置") }
+                    }
+                }
+            }
+        }
+        if (config != null) {
+            item {
+                val guardRow: @Composable () -> Unit = {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(
+                                horizontal = if (isCoui) 16.dp else 0.dp,
+                                vertical = if (isCoui) 14.dp else 8.dp,
+                            ),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                "轮询退避门禁",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = couiColors?.title ?: MaterialTheme.colorScheme.onSurface,
+                            )
+                            Text(
+                                "同一运行中任务的连续查询过于频繁时，短暂摘除查询工具；终态任务与列表查询不受限。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = couiColors?.summary ?: MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        EtaMaterialSwitch(checked = pollGuard, enabled = editable,
+                            onCheckedChange = { if (editor?.enabled == true) {
+                                pollGuard = it
+                                Prefs.putBoolean(Prefs.Keys.SUBAGENT_POLL_GUARD, it)
+                            } })
+                    }
+                }
+                if (isCoui) {
+                    Surface(
+                        shape = CouiPageDefaults.shape,
+                        color = couiColors!!.card,
+                        contentColor = couiColors.title,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = CouiPageDefaults.horizontalMargin, vertical = 6.dp),
+                    ) {
+                        guardRow()
+                    }
+                } else {
+                    guardRow()
+                }
+            }
+            // Editing a preset does not change its saved automatic-delegation value.
+            items(profiles, key = { it.id }) { profile ->
+                val profileBody: @Composable () -> Unit = {
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(
+                                start = if (isCoui) 16.dp else 0.dp,
+                                end = if (isCoui) 16.dp else 0.dp,
+                                top = if (isCoui) 14.dp else 16.dp,
+                                bottom = if (isCoui) 10.dp else 4.dp,
+                            )
+                            .alpha(if (editable) 1f else 0.38f),
+                    ) {
+                        Column(Modifier.padding(bottom = if (isCoui) 4.dp else 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Icon(when (profile.role) {
+                                    "review" -> Icons.Rounded.FactCheck
+                                    "image_generation" -> Icons.Rounded.Image
+                                    "video_generation" -> Icons.Rounded.Videocam
+                                    else -> Icons.Rounded.AccountTree
+                                }, null, Modifier.size(22.dp), tint = couiColors?.accent ?: MaterialTheme.colorScheme.onSurface)
+                                Text(profile.name, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium,
+                                    color = couiColors?.title ?: MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                Box(Modifier.requiredSize(if (isCoui) 48.dp else 36.dp, if (isCoui) 28.dp else 22.dp).wrapContentSize(unbounded = true)
+                                    .semantics { contentDescription = "启用${profile.name}" }, contentAlignment = Alignment.Center) {
+                                    CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides Dp.Unspecified) {
+                                        EtaMaterialSwitch(profile.enabled, enabled = editable, onCheckedChange = { active ->
+                                            if (editor?.enabled == true) { TouchHaptics.click(view); editor.updateProfile(profile.id) { it.copy(enabled = active) } }
+                                        }, modifier = if (isCoui) Modifier.scale(0.85f) else Modifier.scale(0.7f))
+                                    }
+                                }
+                                var expanded by remember(editor, profile.id) { mutableStateOf(false) }
+                                LaunchedEffect(editable) { if (!editable) expanded = false }
+                                Box {
+                                    IconButton(enabled = editable, onClick = { if (editor?.enabled == true) { TouchHaptics.click(view); expanded = true } }) {
+                                        Icon(Icons.Rounded.MoreVert, "${profile.name}更多操作", tint = couiColors?.summary ?: LocalContentColor.current)
+                                    }
+                                    if (editable) SubAgentDropdownMenu(expanded, { expanded = false }) {
+                                        DropdownMenuItem(text = { Text("配置") }, leadingIcon = { Icon(Icons.Rounded.Tune, null) },
+                                            onClick = {
+                                                if (editor.enabled) SubAgentProfileDraftSession.open(editor, profile)?.let {
+                                                    TouchHaptics.click(view)
+                                                    addedDraft = it
+                                                }
+                                                expanded = false
+                                            })
+                                        DropdownMenuItem(text = { Text("重命名") }, leadingIcon = { Icon(Icons.Rounded.Edit, null) },
+                                            onClick = { if (editor?.enabled == true) { name = profile.name; rename = profile }; expanded = false })
+                                        DropdownMenuItem(text = { Text("删除", color = MaterialTheme.colorScheme.error) },
+                                            leadingIcon = { Icon(Icons.Rounded.DeleteOutline, null, tint = MaterialTheme.colorScheme.error) },
+                                            onClick = { if (editor?.enabled == true) delete = profile; expanded = false })
+                                    }
+                                }
+                            }
+                            SubAgentProfileRow(profile, providers, enabled = editable, settings = true, draftAllowed = true)
+                        }
+                        if (!isCoui) {
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+                        }
+                    }
+                }
+                if (isCoui) {
+                    Surface(
+                        shape = CouiPageDefaults.shape,
+                        color = couiColors!!.card,
+                        contentColor = couiColors.title,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = CouiPageDefaults.horizontalMargin, vertical = 6.dp),
+                    ) {
+                        profileBody()
+                    }
+                } else {
+                    profileBody()
+                }
+            }
+        }
+        if (isCoui) {
+            item { Spacer(Modifier.height(84.dp)) }
+        }
+    }
     CompositionLocalProvider(LocalRippleConfiguration provides null) {
     WithoutPressRipple {
-        Scaffold(containerColor = MaterialTheme.colorScheme.surface,
-            topBar = { TopAppBar(title = { Text(groupName) }, navigationIcon = {
-                IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回") }
-            }, colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)) },
-            floatingActionButtonPosition = FabPosition.Center,
-            floatingActionButton = {
-                FilledTonalButton(onClick = {
-                    if (editor.enabled) SubAgentProfileDraftSession.open(editor)?.let {
-                        TouchHaptics.click(view)
-                        addedDraft = it
-                    }
+        if (isCoui) {
+            CouiLazyScaffoldPage(
+                title = groupName,
+                onBack = onBack,
+                floatingAction = {
+                    CouiButton(
+                        text = "添加子代理",
+                        enabled = editable,
+                        role = CouiButtonRole.Primary,
+                        onClick = {
+                            if (editor.enabled) SubAgentProfileDraftSession.open(editor)?.let {
+                                TouchHaptics.click(view)
+                                addedDraft = it
+                            }
+                        },
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 16.dp)
+                            .heightIn(min = 48.dp)
+                            .widthIn(min = 168.dp),
+                    )
                 },
-                    enabled = editable, modifier = Modifier.heightIn(min = 48.dp).widthIn(min = 168.dp),
-                    shape = RoundedCornerShape(50),
-                    colors = ButtonDefaults.filledTonalButtonColors(containerColor = MaterialTheme.colorScheme.primaryContainer,
-                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer),
-                    elevation = ButtonDefaults.filledTonalButtonElevation(defaultElevation = 3.dp)) {
-                    Text("添加子代理", style = MaterialTheme.typography.bodyLarge)
-                }
-            }) { padding ->
-            Box(Modifier.fillMaxSize().padding(padding).horizontalCutoutPadding(), contentAlignment = Alignment.TopCenter) {
-                LazyColumn(Modifier.widthIn(max = 640.dp).fillMaxSize(),
-                    contentPadding = PaddingValues(start = 24.dp, end = 24.dp, top = 12.dp, bottom = 96.dp)) {
-                    item {
-                        Text(when (state) {
-                            is SubAgentEditorState.Error -> "子代理配置读取或保存失败：${state.reason}"
-                            SubAgentEditorState.Loading -> "正在读取子代理组配置…"
-                            else -> if (!editable) "当前子代理组暂不可修改。"
-                                else "配置属于此预设组；会话应用时复制，后续修改互不影响。"
-                        }, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.padding(bottom = 4.dp))
-                        if (state is SubAgentEditorState.Error) TextButton(onClick = { editor?.retry() }) { Text("重试恢复配置") }
-                    }
-                    if (config != null) {
-                        item {
-                            Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Column(Modifier.weight(1f)) {
-                                    Text("轮询退避门禁", style = MaterialTheme.typography.bodyLarge)
-                                    Text("同一运行中任务的连续查询过于频繁时，短暂摘除查询工具；终态任务与列表查询不受限。", style = MaterialTheme.typography.bodySmall)
-                                }
-                                Switch(checked = pollGuard, enabled = editable,
-                                    onCheckedChange = { if (editor?.enabled == true) {
-                                        pollGuard = it
-                                        Prefs.putBoolean(Prefs.Keys.SUBAGENT_POLL_GUARD, it)
-                                    } })
-                            }
+                content = detailItems,
+            )
+        } else {
+            Scaffold(containerColor = MaterialTheme.colorScheme.surface,
+                topBar = { TopAppBar(title = { Text(groupName) }, navigationIcon = {
+                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回") }
+                }, colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)) },
+                floatingActionButtonPosition = FabPosition.Center,
+                floatingActionButton = {
+                    FilledTonalButton(onClick = {
+                        if (editor.enabled) SubAgentProfileDraftSession.open(editor)?.let {
+                            TouchHaptics.click(view)
+                            addedDraft = it
                         }
-                        // Editing a preset does not change its saved automatic-delegation value.
-                        items(profiles, key = { it.id }) { profile ->
-                            Column(Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 4.dp).alpha(if (editable) 1f else 0.38f)) {
-                                Column(Modifier.padding(bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        Icon(when (profile.role) {
-                                            "review" -> Icons.Rounded.FactCheck
-                                            "image_generation" -> Icons.Rounded.Image
-                                            "video_generation" -> Icons.Rounded.Videocam
-                                            else -> Icons.Rounded.AccountTree
-                                        }, null, Modifier.size(22.dp), tint = MaterialTheme.colorScheme.onSurface)
-                                        Text(profile.name, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium,
-                                            maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                        Box(Modifier.requiredSize(36.dp, 22.dp).wrapContentSize(unbounded = true)
-                                            .semantics { contentDescription = "启用${profile.name}" }, contentAlignment = Alignment.Center) {
-                                            CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides Dp.Unspecified) {
-                                                Switch(profile.enabled, enabled = editable, onCheckedChange = { active ->
-                                                    if (editor?.enabled == true) { TouchHaptics.click(view); editor.updateProfile(profile.id) { it.copy(enabled = active) } }
-                                                }, modifier = Modifier.scale(0.7f))
-                                            }
-                                        }
-                                        var expanded by remember(editor, profile.id) { mutableStateOf(false) }
-                                        LaunchedEffect(editable) { if (!editable) expanded = false }
-                                        Box {
-                                            IconButton(enabled = editable, onClick = { if (editor?.enabled == true) { TouchHaptics.click(view); expanded = true } }) {
-                                                Icon(Icons.Rounded.MoreVert, "${profile.name}更多操作")
-                                            }
-                                            if (editable) SubAgentDropdownMenu(expanded, { expanded = false }) {
-                                                DropdownMenuItem(text = { Text("配置") }, leadingIcon = { Icon(Icons.Rounded.Tune, null) },
-                                                    onClick = {
-                                                        if (editor.enabled) SubAgentProfileDraftSession.open(editor, profile)?.let {
-                                                            TouchHaptics.click(view)
-                                                            addedDraft = it
-                                                        }
-                                                        expanded = false
-                                                    })
-                                                DropdownMenuItem(text = { Text("重命名") }, leadingIcon = { Icon(Icons.Rounded.Edit, null) },
-                                                    onClick = { if (editor?.enabled == true) { name = profile.name; rename = profile }; expanded = false })
-                                                DropdownMenuItem(text = { Text("删除", color = MaterialTheme.colorScheme.error) },
-                                                    leadingIcon = { Icon(Icons.Rounded.DeleteOutline, null, tint = MaterialTheme.colorScheme.error) },
-                                                    onClick = { if (editor?.enabled == true) delete = profile; expanded = false })
-                                            }
-                                        }
-                                    }
-                                    SubAgentProfileRow(profile, providers, enabled = editable, settings = true, draftAllowed = true)
-                                }
-                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
-                            }
-                        }
+                    },
+                        enabled = editable, modifier = Modifier.heightIn(min = 48.dp).widthIn(min = 168.dp),
+                        shape = RoundedCornerShape(50),
+                        colors = ButtonDefaults.filledTonalButtonColors(containerColor = MaterialTheme.colorScheme.primaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer),
+                        elevation = ButtonDefaults.filledTonalButtonElevation(defaultElevation = 3.dp)) {
+                        Text("添加子代理", style = MaterialTheme.typography.bodyLarge)
                     }
+                }) { padding ->
+                Box(Modifier.fillMaxSize().padding(padding).horizontalCutoutPadding(), contentAlignment = Alignment.TopCenter) {
+                    LazyColumn(Modifier.widthIn(max = 640.dp).fillMaxSize(),
+                        contentPadding = PaddingValues(start = 24.dp, end = 24.dp, top = 12.dp, bottom = 96.dp),
+                        content = detailItems)
                 }
             }
         }
@@ -302,7 +475,18 @@ private fun SubAgentPresetDetail(editor: ConversationSubAgentEditor, groupName: 
             )
         }
         delete?.let { profile ->
-            if (editable) AlertDialog(onDismissRequest = { delete = null }, title = { Text("删除代理？") },
+            if (editable && LocalUiStyle.current == AppearanceUiStyle.COUI) CouiConfirmDialog(
+                visible = true,
+                title = "删除代理？",
+                message = "将删除“${profile.name}”的配置，不会删除提供商或模型。",
+                confirmText = "删除",
+                destructive = true,
+                onDismissRequest = { delete = null },
+                onConfirm = {
+                    if (editor?.enabled == true && editor.remove(profile.id) is ConversationSubAgentPreferences.WriteResult.Saved)
+                        delete = null
+                },
+            ) else if (editable) AlertDialog(onDismissRequest = { delete = null }, title = { Text("删除代理？") },
                 text = { Text("将删除“${profile.name}”的配置，不会删除提供商或模型。") },
                 dismissButton = { TextButton(onClick = { delete = null }) { Text("取消") } },
                 confirmButton = { TextButton(enabled = editable, onClick = {

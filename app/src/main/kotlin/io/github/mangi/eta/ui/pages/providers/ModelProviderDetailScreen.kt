@@ -42,6 +42,8 @@ import io.github.mangi.eta.EtaApp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import io.github.mangi.eta.data.model.AnthropicProviderSetting
+import io.github.mangi.eta.data.model.GeminiProviderSetting
+import io.github.mangi.eta.data.provider.OfficialModelCatalog
 import io.github.mangi.eta.data.model.BalanceOption
 import io.github.mangi.eta.data.model.CustomProviderSetting
 import io.github.mangi.eta.agent.model.oauth.GoogleAntigravityOAuth
@@ -59,7 +61,6 @@ import io.github.mangi.eta.data.model.withId
 import io.github.mangi.eta.data.repository.ProviderRepository
 import io.github.mangi.eta.data.repository.RemoteModelFetcher
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
-import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixPageBottomSpacer
 import io.github.mangi.eta.ui.components.MiuixScaffold
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
@@ -71,24 +72,24 @@ import io.github.mangi.eta.ui.navigation.NewProviderType
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
-import top.yukonga.miuix.kmp.basic.BasicComponent
+import io.github.mangi.eta.ui.components.BasicComponent
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
-import top.yukonga.miuix.kmp.basic.Card
+import io.github.mangi.eta.ui.components.Card
 import top.yukonga.miuix.kmp.basic.DropdownItem
-import top.yukonga.miuix.kmp.basic.HorizontalDivider
+import io.github.mangi.eta.ui.components.HorizontalDivider
 import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.IconButton
+import io.github.mangi.eta.ui.components.IconButton
 import top.yukonga.miuix.kmp.basic.ScrollBehavior
-import top.yukonga.miuix.kmp.basic.TabRow
+import io.github.mangi.eta.ui.components.TabRow
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextButton
-import top.yukonga.miuix.kmp.basic.TextField
-import top.yukonga.miuix.kmp.overlay.OverlayDialog
-import top.yukonga.miuix.kmp.preference.SwitchPreference
-import top.yukonga.miuix.kmp.preference.WindowSpinnerPreference
+import io.github.mangi.eta.ui.components.TextButton
+import io.github.mangi.eta.ui.components.TextField
+import io.github.mangi.eta.ui.components.SwitchPreference
+import io.github.mangi.eta.ui.components.WindowSpinnerPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import top.yukonga.miuix.kmp.utils.scrollEndHaptic
+import io.github.mangi.eta.ui.components.AdaptiveConfirmDialog
 
 @Composable
 internal fun ModelProviderDetailScreen(
@@ -142,6 +143,10 @@ internal fun ModelProviderDetailScreen(
                 endpointMode = GoogleAntigravityOAuth.defaultEndpointMode(),
                 authMode = ProviderAuthMode.OAUTH_ANTIGRAVITY,
                 sourceType = ProviderSourceTypes.ANTIGRAVITY,
+            )
+            NewProviderType.Gemini -> GeminiProviderSetting(
+                id = "", name = "Gemini", baseUrl = GeminiProviderSetting.DEFAULT_BASE_URL,
+                sourceType = ProviderSourceTypes.GEMINI,
             )
             NewProviderType.Anthropic -> AnthropicProviderSetting(
                 id = "",
@@ -227,6 +232,7 @@ internal fun ModelProviderDetailScreen(
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                 when (currentTab) {
                     0 -> ProviderConfigTab(
+                        preferredModelId = currentModelId,
                         provider = initial,
                         draft = configDraft,
                         onDraftChange = { configDraft = it },
@@ -255,6 +261,7 @@ internal fun ModelProviderDetailScreen(
 
 @Composable
 private fun ProviderConfigTab(
+    preferredModelId: String? = null,
     provider: ProviderSetting,
     draft: ProviderConfigDraft,
     onDraftChange: (ProviderConfigDraft) -> Unit,
@@ -265,6 +272,7 @@ private fun ProviderConfigTab(
     onCreated: (String) -> Unit,
     onDeleted: () -> Unit,
 ) {
+    val storedModelId by RuntimeConfigRepository.selectedModelIdFlow().collectAsState(initial = null)
     val context = LocalContext.current
     val view = LocalView.current
     var headersExpanded by rememberSaveable { mutableStateOf(false) }
@@ -312,7 +320,11 @@ private fun ProviderConfigTab(
                         modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(modifier = Modifier.height(12.dp))
-                    if (ProviderAuthMode.isOAuth(draft.authMode)) {
+                    if (provider is GeminiProviderSetting) {
+                        GeminiConnectionFields(draft, onDraftChange)
+                        Spacer(modifier = Modifier.height(12.dp))
+                    }
+                    if (ProviderAuthMode.isOAuth(draft.authMode) && provider !is GeminiProviderSetting) {
                         ProviderOAuthLoginRow(
                             providerId = provider.id,
                             signedIn = draft.apiKey.isNotBlank(),
@@ -358,7 +370,7 @@ private fun ProviderConfigTab(
                     }
                 }
                 val speechOnly = SpeechSynthesisModels.isSpeechOnlyProvider(provider)
-                if (provider !is AnthropicProviderSetting && !speechOnly) {
+                if (provider !is AnthropicProviderSetting && provider !is GeminiProviderSetting && !speechOnly) {
                     HorizontalDivider()
                     WindowSpinnerPreference(
                         items = listOf(
@@ -425,11 +437,14 @@ private fun ProviderConfigTab(
                                         responsesStripReasoningStatus = draft.responsesStripReasoningStatus,
                                         hostedWebSearchEnabled = draft.hostedWebSearchEnabled,
                                         anthropicVersion = draft.anthropicVersion,
+                                        vertexProject = draft.vertexProject,
+                                        vertexLocation = draft.vertexLocation,
                                         customHeaders = draft.headers.map { it.header },
                                         customBody = bodiesResult.getOrThrow(),
                                         balanceOption = draft.balanceOption,
                                         sessionGatewayJson = draft.encodedSessionGateway(),
-                                    )
+                                    ),
+                                    preferredModelId = preferredModelId ?: storedModelId,
                                 )
                             } finally {
                                 isWorking = false
@@ -511,6 +526,8 @@ private fun ProviderConfigTab(
                         responsesStripReasoningStatus = draft.responsesStripReasoningStatus,
                         hostedWebSearchEnabled = draft.hostedWebSearchEnabled,
                         anthropicVersion = draft.anthropicVersion,
+                        vertexProject = draft.vertexProject,
+                        vertexLocation = draft.vertexLocation,
                         customHeaders = draft.headers.map { it.header },
                         customBody = bodiesResult.getOrElse { provider.customBody },
                         balanceOption = draft.balanceOption,
@@ -564,6 +581,8 @@ private fun ProviderConfigTab(
                                 responsesStripReasoningStatus = draft.responsesStripReasoningStatus,
                                 hostedWebSearchEnabled = draft.hostedWebSearchEnabled,
                                 anthropicVersion = draft.anthropicVersion,
+                                vertexProject = draft.vertexProject,
+                                vertexLocation = draft.vertexLocation,
                                 customHeaders = draft.headers.map { it.header },
                                 customBody = bodiesResult.getOrThrow(),
                                 balanceOption = draft.balanceOption,
@@ -574,6 +593,8 @@ private fun ProviderConfigTab(
                                     val newId = provider.id.ifBlank { ProviderRepository.newId() }
                                     val toSave = built.withId(newId).let { saved ->
                                         when {
+                                            saved is GeminiProviderSetting && saved.models.isEmpty() ->
+                                                saved.withModels(OfficialModelCatalog.modelsForProvider(saved))
                                             saved.usesOAuth && saved.models.isEmpty() ->
                                                 saved.withModels(
                                                     if (GoogleAntigravityOAuth.usesBackend(saved)) {
@@ -666,19 +687,17 @@ private fun ProviderConfigTab(
     }
 
     if (showDeleteDialog) {
-        OverlayDialog(
+        AdaptiveConfirmDialog(
             show = true,
             title = stringResource(R.string.ui_remove_provider_9f848f),
             summary = stringResource(R.string.provider_delete_summary, provider.name),
             onDismissRequest = { if (!isWorking) showDeleteDialog = false },
-        ) {
-            MiuixDialogActions(
-                confirmText = if (isWorking) context.getString(R.string.page_deleting_6f941d) else context.getString(R.string.page_delete_3755f5),
-                cancelEnabled = !isWorking,
-                confirmEnabled = !isWorking,
-                destructive = true,
-                onCancel = { showDeleteDialog = false },
-                onConfirm = {
+            confirmText = if (isWorking) context.getString(R.string.page_deleting_6f941d) else context.getString(R.string.page_delete_3755f5),
+            cancelEnabled = !isWorking,
+            confirmEnabled = !isWorking,
+            destructive = true,
+            onCancel = { showDeleteDialog = false },
+            onConfirm = {
                     scope.launch {
                         isWorking = true
                         try {
@@ -699,23 +718,20 @@ private fun ProviderConfigTab(
                         }
                     }
                 },
-            )
-        }
+        )
     }
 
     if (showResetDialog) {
-        OverlayDialog(
+        AdaptiveConfirmDialog(
             show = true,
             title = stringResource(R.string.ui_reset_built_in_configuration_35b6ec),
             summary = stringResource(R.string.provider_reset_summary, provider.name),
             onDismissRequest = { if (!isWorking) showResetDialog = false },
-        ) {
-            MiuixDialogActions(
-                confirmText = if (isWorking) context.getString(R.string.page_resetting_616090) else context.getString(R.string.page_reset_3d8134),
-                cancelEnabled = !isWorking,
-                confirmEnabled = !isWorking,
-                onCancel = { showResetDialog = false },
-                onConfirm = {
+            confirmText = if (isWorking) context.getString(R.string.page_resetting_616090) else context.getString(R.string.page_reset_3d8134),
+            cancelEnabled = !isWorking,
+            confirmEnabled = !isWorking,
+            onCancel = { showResetDialog = false },
+            onConfirm = {
                     scope.launch {
                         isWorking = true
                         try {
@@ -739,14 +755,14 @@ private fun ProviderConfigTab(
                         }
                     }
                 },
-            )
-        }
+        )
     }
 }
 
 private suspend fun testConnection(
     context: android.content.Context,
     provider: ProviderSetting,
+    preferredModelId: String? = null,
 ): String {
     if (SpeechSynthesisModels.isSpeechOnlyProvider(provider) &&
         !SpeechSynthesisModels.isCompatibleSpeechProvider(provider)) {
@@ -779,6 +795,12 @@ private suspend fun testConnection(
                 else R.string.provider_oauth_signed_in,
             )
         }
+    }
+    if (provider is GeminiProviderSetting && provider.isVertexAi) {
+        return RemoteModelFetcher.testVertexConnection(provider, preferredModelId = preferredModelId).fold(
+            onSuccess = { "连接成功：$it（countTokens）" },
+            onFailure = { context.getString(R.string.provider_error, it.message ?: it.javaClass.simpleName) },
+        )
     }
     return RemoteModelFetcher.fetch(provider)
         .map { context.resources.getQuantityString(R.plurals.provider_models_fetched, it.size, it.size) }

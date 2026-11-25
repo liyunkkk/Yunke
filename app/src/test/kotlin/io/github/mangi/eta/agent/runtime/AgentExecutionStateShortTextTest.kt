@@ -142,6 +142,27 @@ class AgentExecutionStateShortTextTest {
         assertTrue(AgentExecutionState.shouldPromoteToLiveUpdate(running, AgentExecutionState.LIVE_UPDATE_MIN_SDK))
     }
 
+    @Test
+    fun testSuppressLiveUpdateBlocksPromotion() {
+        val suppressed = AgentExecutionState(
+            phase = AgentExecutionPhase.TOOL_EXECUTING,
+            title = "⚡ 点击屏幕",
+            suppressLiveUpdate = true,
+        )
+        assertFalse(AgentExecutionState.shouldPromoteToLiveUpdate(suppressed, 36))
+    }
+
+    @Test
+    fun testIslandShortTextStaysWithinSixChars() {
+        val longTool = AgentExecutionState(
+            phase = AgentExecutionPhase.TOOL_EXECUTING,
+            title = "⚡ 正在梳理推导步骤并且准备工具",
+        )
+        assertEquals(6, longTool.islandShortText().codePointCount(0, longTool.islandShortText().length))
+        assertTrue(longTool.islandShortText().endsWith("…"))
+        assertEquals("思考中", AgentExecutionState(phase = AgentExecutionPhase.THINKING, title = "正在梳理推导步骤").islandShortText())
+    }
+
     private fun hasUnpairedSurrogate(text: String): Boolean {
         var index = 0
         while (index < text.length) {

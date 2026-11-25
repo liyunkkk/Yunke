@@ -77,6 +77,20 @@ internal interface ConversationDao {
     @Query("SELECT * FROM conversation_messages WHERE conversation_id = :conversationId ORDER BY sort_index ASC LIMIT :limit OFFSET :offset")
     suspend fun messagesPage(conversationId: String, limit: Int, offset: Int): List<ConversationMessageEntity>
 
+    @Query(
+        "SELECT * FROM conversation_messages WHERE conversation_id = :conversationId " +
+            "AND type = 'user' AND images_json != '[]' AND images_json != '' " +
+            "ORDER BY sort_index DESC LIMIT 1",
+    )
+    suspend fun latestUserMessageWithImages(conversationId: String): ConversationMessageEntity?
+
+    @Query(
+        "SELECT * FROM conversation_messages WHERE conversation_id = :conversationId " +
+            "AND type = 'tool' AND tool_name = :toolName AND tool_status = 'Success' " +
+            "ORDER BY sort_index DESC LIMIT 1",
+    )
+    suspend fun latestSuccessfulToolMessage(conversationId: String, toolName: String): ConversationMessageEntity?
+
     // Message IDs are primary keys for the whole table, not just one conversation.
     @Query("SELECT EXISTS(SELECT 1 FROM conversation_messages WHERE id = :id)")
     suspend fun messageIdExists(id: String): Boolean

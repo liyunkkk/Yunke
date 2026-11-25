@@ -7,6 +7,8 @@ import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
 import androidx.room.Relation
+import io.github.mangi.eta.data.model.GeminiProviderSetting
+import io.github.mangi.eta.data.model.GeminiEndpointMode
 import io.github.mangi.eta.data.model.BalanceOption
 import io.github.mangi.eta.data.model.AnthropicProviderSetting
 import io.github.mangi.eta.data.model.CustomBody
@@ -53,6 +55,10 @@ internal data class ProviderEntity(
     val authMode: String = "api_key",
     @ColumnInfo(name = "session_gateway_json", defaultValue = "''")
     val sessionGatewayJson: String = "",
+    @ColumnInfo(name = "vertex_project", defaultValue = "''")
+    val vertexProject: String = "",
+    @ColumnInfo(name = "vertex_location", defaultValue = "'global'")
+    val vertexLocation: String = GeminiProviderSetting.DEFAULT_VERTEX_LOCATION,
 )
 
 @Serializable
@@ -130,12 +136,15 @@ internal fun ProviderSetting.toEntity(): ProviderEntity =
             is OpenAiCompatibleProviderSetting -> endpointMode
             is CustomProviderSetting -> endpointMode
             is AnthropicProviderSetting -> OpenAiEndpointMode.CHAT_COMPLETIONS
+            is GeminiProviderSetting -> GeminiEndpointMode.normalize(endpointMode)
         },
         responsesStripReasoningStatus = responsesStripReasoningStatus,
         hostedWebSearchEnabled = hostedWebSearchEnabled,
         balanceOptionJson = ProviderJson.encodeBalance(balanceOption),
         authMode = io.github.mangi.eta.data.model.ProviderAuthMode.parse(authMode),
         sessionGatewayJson = sessionGatewayJson,
+        vertexProject = (this as? GeminiProviderSetting)?.vertexProject.orEmpty(),
+        vertexLocation = (this as? GeminiProviderSetting)?.vertexLocation?.trim()?.ifBlank { GeminiProviderSetting.DEFAULT_VERTEX_LOCATION } ?: GeminiProviderSetting.DEFAULT_VERTEX_LOCATION,
         anthropicVersion = when (this) {
             is AnthropicProviderSetting -> anthropicVersion
             else -> AnthropicProviderSetting.DEFAULT_ANTHROPIC_VERSION
@@ -175,6 +184,29 @@ internal fun ProviderWithModels.toDomain(): ProviderSetting {
             anthropicVersion = provider.anthropicVersion.ifBlank {
                 AnthropicProviderSetting.DEFAULT_ANTHROPIC_VERSION
             },
+        )
+
+        ProviderTypes.GEMINI -> GeminiProviderSetting(
+            id = provider.id,
+            name = provider.name,
+            baseUrl = provider.baseUrl,
+            sourceType = sourceType,
+            apiKey = provider.apiKey,
+            isEnabled = provider.isEnabled,
+            isBuiltIn = provider.isBuiltIn,
+            sortOrder = provider.sortOrder,
+            systemPrompt = provider.systemPrompt,
+            models = domainModels,
+            customHeaders = ProviderJson.decodeHeaders(provider.customHeadersJson),
+            customBody = ProviderJson.decodeBody(provider.customBodyJson),
+            createdAt = provider.createdAt,
+            authMode = io.github.mangi.eta.data.model.ProviderAuthMode.parse(provider.authMode),
+            endpointMode = GeminiEndpointMode.normalize(provider.endpointMode),
+            vertexProject = provider.vertexProject,
+            vertexLocation = provider.vertexLocation.ifBlank { GeminiProviderSetting.DEFAULT_VERTEX_LOCATION },
+            hostedWebSearchEnabled = provider.hostedWebSearchEnabled,
+            balanceOption = ProviderJson.decodeBalance(provider.balanceOptionJson),
+            sessionGatewayJson = provider.sessionGatewayJson,
         )
 
         ProviderTypes.CUSTOM -> CustomProviderSetting(
@@ -227,6 +259,7 @@ private val ProviderSetting.storageType: String
     get() = when (this) {
         is OpenAiCompatibleProviderSetting -> ProviderTypes.OPENAI_COMPATIBLE
         is AnthropicProviderSetting -> ProviderTypes.ANTHROPIC
+        is GeminiProviderSetting -> ProviderTypes.GEMINI
         is CustomProviderSetting -> ProviderTypes.CUSTOM
     }
 

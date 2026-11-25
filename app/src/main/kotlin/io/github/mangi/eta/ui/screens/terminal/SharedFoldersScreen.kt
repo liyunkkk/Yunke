@@ -42,19 +42,18 @@ import io.github.mangi.eta.agent.terminal.TerminalEnvironment
 import io.github.mangi.eta.agent.terminal.TerminalRuntime
 import io.github.mangi.eta.agent.terminal.runOneShotShell
 import io.github.mangi.eta.agent.terminal.shellQuote
-import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import top.yukonga.miuix.kmp.basic.BasicComponent
-import top.yukonga.miuix.kmp.basic.Card
+import io.github.mangi.eta.ui.components.BasicComponent
+import io.github.mangi.eta.ui.components.Card
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
-import top.yukonga.miuix.kmp.basic.TextButton
-import top.yukonga.miuix.kmp.basic.TextField
+import io.github.mangi.eta.ui.components.TextButton
+import io.github.mangi.eta.ui.components.TextField
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import top.yukonga.miuix.kmp.window.WindowDialog
+import io.github.mangi.eta.ui.components.AdaptiveConfirmDialog
 
 /**
  * 共享文件夹管理：把 Android 目录配置为 Linux 环境 /workspace/mounts/ 下的挂载点。
@@ -209,40 +208,37 @@ internal fun SharedFoldersScreen(
     }
 
     removeTarget?.let { target ->
-        WindowDialog(
+        AdaptiveConfirmDialog(
             show = true,
             title = stringResource(R.string.shared_folders_remove_title),
             summary = stringResource(R.string.shared_folders_remove_message, target.name, target.sourcePath),
             onDismissRequest = { removeTarget = null },
-        ) {
-            MiuixDialogActions(
-                confirmText = stringResource(R.string.action_delete),
-                destructive = true,
-                onCancel = { removeTarget = null },
-                onConfirm = {
-                    val updated = mounts.filterNot { it.name == target.name }
-                    if (SharedFolderMounts.save(updated)) {
-                        mounts = updated
-                        removeTarget = null
-                        refreshSources(updated)
-                        coroutineScope.launch(Dispatchers.IO) {
-                            // 清理空的挂载点目录；仍有会话占用时 rmdir 失败，无副作用。
-                            runOneShotShell(
-                                processSupervisor = shellSupervisor,
-                                identity = TerminalRuntime.defaultIdentity(TerminalEnvironment.ANDROID),
-                                command = "rmdir " +
-                                    shellQuote("${SharedFolderMounts.ANDROID_MOUNTS_ROOT}/${target.name}") +
-                                    " 2>/dev/null",
-                                timeoutSeconds = 10,
-                            )
-                        }
-                    } else {
-                        notice = context.getString(R.string.shared_folders_error_save)
-                        removeTarget = null
+            confirmText = stringResource(R.string.action_delete),
+            destructive = true,
+            onCancel = { removeTarget = null },
+            onConfirm = {
+                val updated = mounts.filterNot { it.name == target.name }
+                if (SharedFolderMounts.save(updated)) {
+                    mounts = updated
+                    removeTarget = null
+                    refreshSources(updated)
+                    coroutineScope.launch(Dispatchers.IO) {
+                        // 清理空的挂载点目录；仍有会话占用时 rmdir 失败，无副作用。
+                        runOneShotShell(
+                            processSupervisor = shellSupervisor,
+                            identity = TerminalRuntime.defaultIdentity(TerminalEnvironment.ANDROID),
+                            command = "rmdir " +
+                                shellQuote("${SharedFolderMounts.ANDROID_MOUNTS_ROOT}/${target.name}") +
+                                " 2>/dev/null",
+                            timeoutSeconds = 10,
+                        )
                     }
-                },
-            )
-        }
+                } else {
+                    notice = context.getString(R.string.shared_folders_error_save)
+                    removeTarget = null
+                }
+            },
+        )
     }
 }
 
@@ -320,12 +316,43 @@ private fun SharedFolderPickerDialog(
         }
     }
 
-    WindowDialog(
+    AdaptiveConfirmDialog(
         show = true,
         title = stringResource(R.string.shared_folders_picker_title),
         onDismissRequest = onDismiss,
+        confirmText = stringResource(R.string.shared_folders_add),
+        onCancel = onDismiss,
+        onConfirm = {
+                    val sourceError = SharedFolderMounts.validateSource(path, existing, extraForbiddenRoots)
+                    val errorText = when (sourceError) {
+                        SharedFolderMounts.SourceError.INVALID_PATH ->
+                            context.getString(R.string.shared_folders_error_path_invalid)
+                        SharedFolderMounts.SourceError.FORBIDDEN_ROOT ->
+                            context.getString(R.string.shared_folders_error_path_forbidden)
+                        SharedFolderMounts.SourceError.DUPLICATE ->
+                            context.getString(R.string.shared_folders_error_path_duplicate)
+                        null -> when (SharedFolderMounts.validateName(nameInput, existing)) {
+                            SharedFolderMounts.NameError.INVALID ->
+                                context.getString(R.string.shared_folders_error_name_invalid)
+                            SharedFolderMounts.NameError.DUPLICATE ->
+                                context.getString(R.string.shared_folders_error_name_duplicate)
+                            null -> if (existing.size >= SharedFolderMounts.MAX_MOUNTS) {
+                                context.getString(
+                                    R.string.shared_folders_error_limit,
+                                    SharedFolderMounts.MAX_MOUNTS,
+                                )
+                            } else {
+                                null
+                            }
+                        }
+                    }
+                    if (errorText != null) {
+                        formError = errorText
+                    } else {
+                        onConfirm(path, nameInput.trim())
+                    }
+                },
     ) {
-        Column {
             TextField(
                 value = pathInput,
                 onValueChange = { pathInput = it },
@@ -392,42 +419,6 @@ private fun SharedFolderPickerDialog(
                     modifier = Modifier.padding(top = 4.dp),
                 )
             }
-            MiuixDialogActions(
-                confirmText = stringResource(R.string.shared_folders_add),
-                onCancel = onDismiss,
-                onConfirm = {
-                    val sourceError = SharedFolderMounts.validateSource(path, existing, extraForbiddenRoots)
-                    val errorText = when (sourceError) {
-                        SharedFolderMounts.SourceError.INVALID_PATH ->
-                            context.getString(R.string.shared_folders_error_path_invalid)
-                        SharedFolderMounts.SourceError.FORBIDDEN_ROOT ->
-                            context.getString(R.string.shared_folders_error_path_forbidden)
-                        SharedFolderMounts.SourceError.DUPLICATE ->
-                            context.getString(R.string.shared_folders_error_path_duplicate)
-                        null -> when (SharedFolderMounts.validateName(nameInput, existing)) {
-                            SharedFolderMounts.NameError.INVALID ->
-                                context.getString(R.string.shared_folders_error_name_invalid)
-                            SharedFolderMounts.NameError.DUPLICATE ->
-                                context.getString(R.string.shared_folders_error_name_duplicate)
-                            null -> if (existing.size >= SharedFolderMounts.MAX_MOUNTS) {
-                                context.getString(
-                                    R.string.shared_folders_error_limit,
-                                    SharedFolderMounts.MAX_MOUNTS,
-                                )
-                            } else {
-                                null
-                            }
-                        }
-                    }
-                    if (errorText != null) {
-                        formError = errorText
-                    } else {
-                        onConfirm(path, nameInput.trim())
-                    }
-                },
-                modifier = Modifier.padding(top = 12.dp),
-            )
-        }
     }
 }
 

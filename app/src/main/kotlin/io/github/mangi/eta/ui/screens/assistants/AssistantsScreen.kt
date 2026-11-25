@@ -20,9 +20,12 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.EtaApp
 import io.github.mangi.eta.R
+import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.data.model.AssistantProfile
 import io.github.mangi.eta.data.repository.AssistantRepository
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import com.itos.coui.icons.CouiIcons
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import io.github.mangi.eta.ui.components.rememberAssistantAvatarBitmap
 import io.github.mangi.eta.ui.navigation.AppRoute
@@ -30,8 +33,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.IconButton
-import top.yukonga.miuix.kmp.basic.InputField
+import io.github.mangi.eta.ui.components.IconButton
+import io.github.mangi.eta.ui.components.InputField
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
@@ -81,9 +84,10 @@ internal fun AssistantsScreen(
         title = stringResource(R.string.assistant_list_title),
         onBack = onBack,
         actions = {
+            val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
             IconButton(onClick = createAssistant) {
                 Icon(
-                    imageVector = Icons.Rounded.Add,
+                    imageVector = if (isCoui) CouiIcons.Outlined.Add else Icons.Rounded.Add,
                     contentDescription = stringResource(R.string.assistant_add),
                 )
             }

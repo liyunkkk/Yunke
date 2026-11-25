@@ -72,7 +72,6 @@ import io.github.mangi.eta.ui.SettingsExtensionsScreen
 import io.github.mangi.eta.ui.SettingsToolsScreen
 import io.github.mangi.eta.ui.SettingsGeneralScreen
 import io.github.mangi.eta.ui.components.AppUpdateDialog
-import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.AgentPendingChildStopDialog
 import io.github.mangi.eta.ui.model.AgentChatAction
 import io.github.mangi.eta.ui.model.AgentHomeAction
@@ -106,7 +105,13 @@ import io.github.mangi.eta.ui.screens.terminal.LinuxFilesScreen
 import io.github.mangi.eta.ui.screens.terminal.SharedFoldersScreen
 import io.github.mangi.eta.ui.screens.terminal.TerminalEntryScreen
 import io.github.mangi.eta.ui.screens.terminal.WorkspaceScreen
+import io.github.mangi.eta.ui.screens.imagegen.ImageGenGalleryScreen
+import io.github.mangi.eta.ui.screens.imagegen.ImageGenSettingsScreen
+import io.github.mangi.eta.ui.screens.scheduled.ScheduledTaskDetailScreen
+import io.github.mangi.eta.ui.screens.scheduled.ScheduledTaskEditorScreen
+import io.github.mangi.eta.ui.screens.scheduled.ScheduledTasksScreen
 import io.github.mangi.eta.ui.screens.tools.AgentToolsScreen
+import io.github.mangi.eta.ui.ArchivedConversationLaunchRequest
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -115,20 +120,25 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.ensureActive
-import top.yukonga.miuix.kmp.basic.TextField
+import io.github.mangi.eta.ui.components.TextField
 import top.yukonga.miuix.kmp.nav.core.NavDisplay
 import top.yukonga.miuix.kmp.nav.core.NavDisplayEffects
 import top.yukonga.miuix.kmp.nav.core.rememberNavBackStack
 import top.yukonga.miuix.kmp.nav.core.rememberNavSystemCornerRadius
 import top.yukonga.miuix.kmp.nav.transition.NavSwipeDirection
-import top.yukonga.miuix.kmp.window.WindowDialog
+import io.github.mangi.eta.ui.components.WindowDialog
+import io.github.mangi.eta.ui.components.AdaptiveConfirmDialog
 
 /**
  * Agent App 根组件：持有本地导航栈，并把 Screen actions 交给 [AgentAppState]。
  */
 @Composable
-fun AgentAppRoot(
+internal fun AgentAppRoot(
     assistantConversationKey: String? = null,
+    requestedScheduledTaskId: String? = null,
+    onScheduledTaskOpened: () -> Unit = {},
+    archivedConversationRequest: ArchivedConversationLaunchRequest? = null,
+    onArchivedConversationOpened: () -> Unit = {},
     inboundShareUris: List<String> = emptyList(),
     onAssistantConversationOpened: (Boolean) -> Unit = {},
     onInboundShareConsumed: () -> Unit = {},
@@ -362,6 +372,24 @@ fun AgentAppRoot(
             ?.let { updateOffer = it }
     }
 
+    LaunchedEffect(archivedConversationRequest) {
+        val request = archivedConversationRequest ?: return@LaunchedEffect
+        val opened = agentState.openArchivedConversation(request.source, request.conversationKey)
+        if (opened) {
+            focusManager.clearFocus(force = true)
+            conversationPaneOpen = false
+            navigator.popToHome()
+        }
+        onArchivedConversationOpened()
+    }
+
+    LaunchedEffect(requestedScheduledTaskId) {
+        val taskId = requestedScheduledTaskId ?: return@LaunchedEffect
+        conversationPaneOpen = false
+        navigator.push(AppRoute.ScheduledTaskDetail(taskId))
+        onScheduledTaskOpened()
+    }
+
     LaunchedEffect(assistantConversationKey) {
         val conversationKey = assistantConversationKey ?: return@LaunchedEffect
         val opened = agentState.openAssistantConversation(conversationKey)
@@ -529,6 +557,7 @@ fun AgentAppRoot(
             onOpenAssistants = { pushFromDrawer(AppRoute.Assistants()) },
             onOpenUsageStats = { pushFromDrawer(AppRoute.UsageStats) },
             onOpenSkills = { pushFromDrawer(AppRoute.Skills) },
+            onOpenScheduledTasks = { pushFromDrawer(AppRoute.ScheduledTasks) },
             onOpenPermissions = { pushFromDrawer(AppRoute.Permissions) },
             onOpenSettings = { pushFromDrawer(AppRoute.Settings) },
             onOpenModelProviders = { pushFromDrawer(AppRoute.ModelProviders) },
@@ -759,6 +788,7 @@ fun AgentAppRoot(
                         when (action) {
                             AgentToolsAction.NavigateBack -> popRoute()
                             AgentToolsAction.OpenBrowser -> pushRoute(AppRoute.Browser)
+                            AgentToolsAction.OpenImageGenSettings -> pushRoute(AppRoute.ImageGenSettings)
                             AgentToolsAction.OpenEnhancements -> pushRoute(AppRoute.SystemEnhance)
                             AgentToolsAction.OpenPermissions -> pushRoute(AppRoute.Permissions)
                         }
@@ -1021,6 +1051,66 @@ fun AgentAppRoot(
             entry<AppRoute.WebToolsSettings>(swipeDismiss = swipeDismiss) {
                 io.github.mangi.eta.ui.screens.tools.WebToolsSettingsScreen(onBack = ::popRoute)
             }
+            entry<AppRoute.ImageGenSettings>(swipeDismiss = swipeDismiss) {
+                ImageGenSettingsScreen(
+                    onBack = ::popRoute,
+                    onOpenGallery = { pushRoute(AppRoute.ImageGenGallery) },
+                )
+            }
+            entry<AppRoute.ImageGenGallery>(swipeDismiss = swipeDismiss) {
+                ImageGenGalleryScreen(onBack = ::popRoute)
+            }
+            entry<AppRoute.ScheduledTasks>(swipeDismiss = swipeDismiss) {
+                ScheduledTasksScreen(
+                    onNavigate = { route -> pushRoute(route) },
+                    onBack = ::popRoute,
+                )
+            }
+            entry<AppRoute.ScheduledTaskDetail>(swipeDismiss = swipeDismiss) { route ->
+                ScheduledTaskDetailScreen(
+                    taskId = route.taskId,
+                    onNavigate = { target -> pushRoute(target) },
+                    onOpenRun = { run, task, isLive ->
+                        val archiveKey = run.archiveConversationKey?.takeIf { it.isNotBlank() }
+                            ?: return@ScheduledTaskDetailScreen
+                        uiScope.launch {
+                            val opened = agentState.openScheduledTaskRun(
+                                runId = run.id,
+                                archiveConversationKey = archiveKey,
+                                taskTitle = task.name,
+                                taskPrompt = task.prompt,
+                                isRunning = isLive,
+                            )
+                            if (opened) {
+                                focusManager.clearFocus()
+                                conversationPaneOpen = false
+                                navigator.popToHome()
+                            } else {
+                                Toast.makeText(
+                                    context,
+                                    "该次运行暂无可查看的对话记录",
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                            }
+                        }
+                    },
+                    onBack = ::popRoute,
+                )
+            }
+            entry<AppRoute.ScheduledTaskEditor>(swipeDismiss = swipeDismiss) { route ->
+                ScheduledTaskEditorScreen(
+                    taskId = route.taskId,
+                    presetId = route.presetId,
+                    onSaved = { savedId ->
+                        if (route.taskId.isNullOrBlank()) {
+                            navigator.replace(AppRoute.ScheduledTaskDetail(savedId))
+                        } else {
+                            popRoute()
+                        }
+                    },
+                    onBack = ::popRoute,
+                )
+            }
             entry<AppRoute.ErrorReconnectSettings>(swipeDismiss = swipeDismiss) {
                 ErrorReconnectSettingsScreen(onBack = ::popRoute)
             }
@@ -1165,12 +1255,18 @@ fun AgentAppRoot(
 
     conversationRenameTarget?.let { conversation ->
         var renameInput by remember(conversation.id) { mutableStateOf(conversation.title) }
-        WindowDialog(
+        AdaptiveConfirmDialog(
             show = true,
             title = stringResource(R.string.conversation_rename_title),
             onDismissRequest = { conversationRenameTarget = null },
+            confirmText = stringResource(R.string.action_save),
+            confirmEnabled = renameInput.isNotBlank(),
+            onCancel = { conversationRenameTarget = null },
+            onConfirm = {
+                        agentState.renameConversation(conversation.id, renameInput)
+                        conversationRenameTarget = null
+                    },
         ) {
-            Column {
                 TextField(
                     value = renameInput,
                     onValueChange = { renameInput = it },
@@ -1178,17 +1274,6 @@ fun AgentAppRoot(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
-                MiuixDialogActions(
-                    confirmText = stringResource(R.string.action_save),
-                    confirmEnabled = renameInput.isNotBlank(),
-                    onCancel = { conversationRenameTarget = null },
-                    onConfirm = {
-                        agentState.renameConversation(conversation.id, renameInput)
-                        conversationRenameTarget = null
-                    },
-                    modifier = Modifier.padding(top = 16.dp),
-                )
-            }
         }
     }
 
@@ -1204,7 +1289,7 @@ fun AgentAppRoot(
     }
 
     if (conversationExportConfirmation) {
-        WindowDialog(
+        AdaptiveConfirmDialog(
             show = true,
             title = stringResource(R.string.conversation_export_title),
             summary = stringResource(R.string.conversation_export_summary),
@@ -1212,25 +1297,22 @@ fun AgentAppRoot(
                 conversationExportConfirmation = false
                 conversationExportId = null
             },
-        ) {
-            MiuixDialogActions(
-                confirmText = stringResource(R.string.conversation_export_choose_location),
-                onCancel = {
-                    conversationExportConfirmation = false
-                    conversationExportId = null
-                },
-                onConfirm = {
-                    conversationExportConfirmation = false
-                    val stamp = SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())
-                    val title = conversationExportTitle.replace(Regex("""[\\/:*?"<>|]"""), "_").take(40)
-                    conversationExportLauncher.launch("YUNKe-$title-$stamp.zip")
-                },
-            )
-        }
+            confirmText = stringResource(R.string.conversation_export_choose_location),
+            onCancel = {
+                conversationExportConfirmation = false
+                conversationExportId = null
+            },
+            onConfirm = {
+                conversationExportConfirmation = false
+                val stamp = SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())
+                val title = conversationExportTitle.replace(Regex("""[\\/:*?"<>|]"""), "_").take(40)
+                conversationExportLauncher.launch("YUNKe-$title-$stamp.zip")
+            },
+        )
     }
 
     if (conversationExportMarkdownConfirmation) {
-        WindowDialog(
+        AdaptiveConfirmDialog(
             show = true,
             title = stringResource(R.string.conversation_export_markdown_title),
             summary = stringResource(R.string.conversation_export_markdown_summary),
@@ -1238,43 +1320,37 @@ fun AgentAppRoot(
                 conversationExportMarkdownConfirmation = false
                 conversationExportMarkdownId = null
             },
-        ) {
-            MiuixDialogActions(
-                confirmText = stringResource(R.string.conversation_export_markdown_choose_location),
-                onCancel = {
-                    conversationExportMarkdownConfirmation = false
-                    conversationExportMarkdownId = null
-                },
-                onConfirm = {
-                    conversationExportMarkdownConfirmation = false
-                    conversationExportMarkdownLauncher.launch(
-                        ConversationMarkdownExporter.defaultFileName(
-                            title = conversationExportMarkdownTitle,
-                            fallback = context.getString(R.string.conversation_export_default_name),
-                        )
+            confirmText = stringResource(R.string.conversation_export_markdown_choose_location),
+            onCancel = {
+                conversationExportMarkdownConfirmation = false
+                conversationExportMarkdownId = null
+            },
+            onConfirm = {
+                conversationExportMarkdownConfirmation = false
+                conversationExportMarkdownLauncher.launch(
+                    ConversationMarkdownExporter.defaultFileName(
+                        title = conversationExportMarkdownTitle,
+                        fallback = context.getString(R.string.conversation_export_default_name),
                     )
-                },
-            )
-        }
+                )
+            },
+        )
     }
 
     conversationDeleteTarget?.let { conversation ->
-        WindowDialog(
+        AdaptiveConfirmDialog(
             show = true,
             title = stringResource(R.string.conversation_delete_title),
             summary = stringResource(R.string.conversation_delete_message),
             onDismissRequest = { conversationDeleteTarget = null },
-        ) {
-            MiuixDialogActions(
-                confirmText = stringResource(R.string.action_delete),
-                destructive = true,
-                onCancel = { conversationDeleteTarget = null },
-                onConfirm = {
-                    agentState.deleteConversation(conversation.id)
-                    conversationDeleteTarget = null
-                },
-            )
-        }
+            confirmText = stringResource(R.string.action_delete),
+            destructive = true,
+            onCancel = { conversationDeleteTarget = null },
+            onConfirm = {
+                agentState.deleteConversation(conversation.id)
+                conversationDeleteTarget = null
+            },
+        )
     }
 
     conversationMoveTarget?.let { conversation ->
@@ -1308,7 +1384,7 @@ fun AgentAppRoot(
     }
 
     messageDeleteTarget?.let { target ->
-        WindowDialog(
+        AdaptiveConfirmDialog(
             show = true,
             title = stringResource(R.string.conversation_delete_message_title),
             summary = if (target.laterTurnCount == 0) {
@@ -1321,17 +1397,14 @@ fun AgentAppRoot(
                 )
             },
             onDismissRequest = { messageDeleteTarget = null },
-        ) {
-            MiuixDialogActions(
-                confirmText = stringResource(R.string.action_delete),
-                destructive = true,
-                onCancel = { messageDeleteTarget = null },
-                onConfirm = {
-                    agentState.deleteMessageTurn(target.messageId)
-                    messageDeleteTarget = null
-                },
-            )
-        }
+            confirmText = stringResource(R.string.action_delete),
+            destructive = true,
+            onCancel = { messageDeleteTarget = null },
+            onConfirm = {
+                agentState.deleteMessageTurn(target.messageId)
+                messageDeleteTarget = null
+            },
+        )
     }
 
     AppUpdateDialog(
@@ -1341,7 +1414,7 @@ fun AgentAppRoot(
     )
 
     messageRegenerateTarget?.let { target ->
-        WindowDialog(
+        AdaptiveConfirmDialog(
             show = true,
             title = stringResource(R.string.conversation_regenerate_title),
             summary = if (target.laterTurnCount == 0) {
@@ -1354,17 +1427,14 @@ fun AgentAppRoot(
                 )
             },
             onDismissRequest = { messageRegenerateTarget = null },
-        ) {
-            MiuixDialogActions(
-                confirmText = stringResource(R.string.action_regenerate),
-                destructive = true,
-                onCancel = { messageRegenerateTarget = null },
-                onConfirm = {
-                    agentState.regenerateMessage(target.messageId)
-                    messageRegenerateTarget = null
-                },
-            )
-        }
+            confirmText = stringResource(R.string.action_regenerate),
+            destructive = true,
+            onCancel = { messageRegenerateTarget = null },
+            onConfirm = {
+                agentState.regenerateMessage(target.messageId)
+                messageRegenerateTarget = null
+            },
+        )
     }
     } // task controls overlay
     } // selected conversation settings context

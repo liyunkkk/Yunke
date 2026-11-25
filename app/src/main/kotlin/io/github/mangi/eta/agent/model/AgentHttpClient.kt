@@ -46,6 +46,20 @@ internal object AgentHttpClient {
             .build()
     }
 
+    private val compactionClient: OkHttpClient by lazy {
+        modelClient.newBuilder()
+            .callTimeout(MODEL_READ_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            .build()
+    }
+
+    fun modelClient(purpose: ProviderRequestPurpose): OkHttpClient =
+        if (purpose == ProviderRequestPurpose.COMPACTION) compactionClient else modelClient
+
+    fun vertexClient(client: OkHttpClient): OkHttpClient = client.newBuilder()
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .build()
+
     /**
      * Antigravity / Cloud Code Assist 专用：强制 HTTP/1.1 单连接。
      *

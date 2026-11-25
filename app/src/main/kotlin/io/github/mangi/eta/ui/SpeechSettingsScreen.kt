@@ -17,11 +17,12 @@ import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.voice.offline.OfflineSpeechPack
 import io.github.mangi.eta.agent.voice.offline.SpeechModelManifest
-import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.haptics.TouchHaptics
-import top.yukonga.miuix.kmp.basic.Card
-import top.yukonga.miuix.kmp.preference.ArrowPreference
-import top.yukonga.miuix.kmp.preference.SwitchPreference
+import io.github.mangi.eta.ui.components.Card
+import io.github.mangi.eta.ui.components.ArrowPreference
+import io.github.mangi.eta.ui.components.SwitchPreference
+import io.github.mangi.eta.ui.components.AdaptiveConfirmDialog
+import io.github.mangi.eta.ui.components.coui.EtaLinearProgressIndicator
 
 @Composable
 internal fun SpeechSettingsScreen(onBack: () -> Unit) {
@@ -76,7 +77,7 @@ internal fun SpeechSettingsScreen(onBack: () -> Unit) {
                 if (state.downloading) {
                     val progress = (state.downloadedBytes.toFloat() / SpeechModelManifest.totalBytes).coerceIn(0f, 1f)
                     Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 16.dp)) {
-                        LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
+                        EtaLinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
                         Text("${(progress * 100).toInt()}%", style = MaterialTheme.typography.bodySmall,
                             modifier = Modifier.padding(top = 6.dp))
                     }
@@ -91,18 +92,14 @@ internal fun SpeechSettingsScreen(onBack: () -> Unit) {
         }
 
     }
-    top.yukonga.miuix.kmp.window.WindowDialog(
+    AdaptiveConfirmDialog(
         show = confirmDownload,
         title = stringResource(R.string.speech_download),
+        summary = stringResource(R.string.speech_download_confirm),
         onDismissRequest = { confirmDownload = false },
-    ) {
-        Text(stringResource(R.string.speech_download_confirm), style = MaterialTheme.typography.bodyMedium)
-        MiuixDialogActions(
-            confirmText = stringResource(R.string.speech_download),
-            cancelText = stringResource(R.string.action_cancel),
-            modifier = Modifier.padding(top = 16.dp),
-            onCancel = { confirmDownload = false },
-            onConfirm = { confirmDownload = false; OfflineSpeechPack.download(context) },
-        )
-    }
+        confirmText = stringResource(R.string.speech_download),
+        cancelText = stringResource(R.string.action_cancel),
+        onCancel = { confirmDownload = false },
+        onConfirm = { confirmDownload = false; OfflineSpeechPack.download(context) },
+    )
 }

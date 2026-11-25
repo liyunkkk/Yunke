@@ -18,6 +18,7 @@ import io.github.mangi.eta.agent.browser.ported.browser.BrowserTabPool
 import io.github.mangi.eta.agent.browser.ported.ui.browser.BrowserSheet
 import kotlinx.coroutines.CancellationException
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import io.github.mangi.eta.ui.components.coui.EtaCircularProgressIndicator
 
 /** Full multi-tab browser UI; the pool is the same one used by browser_use. */
 @Composable
@@ -48,7 +49,7 @@ internal fun AgentBrowserScreen(onDismiss: () -> Unit, conversationId: String? =
             StandardChatSheet(title = stringResource(R.string.om_browser_title), onDismiss = onDismiss) {
                 Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     if (failed) Text(stringResource(R.string.browser_initialization_failed))
-                    else CircularProgressIndicator()
+                    else EtaCircularProgressIndicator()
                 }
             }
         }

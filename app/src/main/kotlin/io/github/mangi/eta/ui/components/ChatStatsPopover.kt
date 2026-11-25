@@ -56,6 +56,14 @@ import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.squircle.squircleBorder
 import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import androidx.compose.foundation.border
+import com.itos.coui.effect.couiButtonFeedback
+import com.itos.coui.shape.CouiShape
+import com.itos.coui.theme.CouiTheme
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import androidx.compose.ui.draw.dropShadow
+import androidx.compose.ui.graphics.shadow.Shadow
 
 /*
  * 单轮回答底部的性能统计胶囊（移植自 Eta 的 ChatStatsPopover.kt，只保留 Miuix 外观）。
@@ -96,6 +104,8 @@ internal fun TurnStatsPill(
     }
 
     val view = LocalView.current
+    val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
+    val couiDark = CouiTheme.isDark
     val interactionSource = remember { MutableInteractionSource() }
     val restingTint = MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.78f)
     val activeBg = if (open) {
@@ -110,6 +120,13 @@ internal fun TurnStatsPill(
                 .height(TurnStatsPillHeight)
                 .clip(RoundedCornerShape(8.dp))
                 .background(activeBg, RoundedCornerShape(8.dp))
+                .then(
+                    if (isCoui) {
+                        Modifier.couiButtonFeedback(couiDark, interactionSource, enabled = true)
+                    } else {
+                        Modifier
+                    },
+                )
                 .clickable(
                     interactionSource = interactionSource,
                     indication = null,
@@ -181,14 +198,34 @@ internal fun TurnStatsPopoverPopup(
     val density = LocalDensity.current
     val positionProvider = remember(density) { StatsPopoverPositionProvider(density) }
     val dismiss by rememberUpdatedState(onDismissRequest)
+    val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
+    val couiDark = CouiTheme.isDark
 
     Popup(
         popupPositionProvider = positionProvider,
         onDismissRequest = { dismiss() },
         properties = PopupProperties(focusable = true),
     ) {
-        Column(
-            modifier = Modifier
+        // COUI 下照 Eta：白底/深灰底卡片 + 细描边 + 柔和阴影；Miuix 下保持原来的 squircle 卡片。
+        val cardModifier = if (isCoui) {
+            val shape = remember { CouiShape(18.dp, 2.2f) }
+            val bgColor = if (couiDark) Color(0xFF24262B) else Color.White
+            val borderColor = if (couiDark) Color(0x24FFFFFF) else Color(0x12000000)
+            Modifier
+                .widthIn(min = 232.dp, max = 320.dp)
+                .dropShadow(
+                    shape = shape,
+                    shadow = Shadow(
+                        radius = 18.dp,
+                        color = Color.Black,
+                        alpha = if (couiDark) 0.38f else 0.10f,
+                    ),
+                )
+                .clip(shape)
+                .background(bgColor, shape)
+                .border(0.5.dp, borderColor, shape)
+        } else {
+            Modifier
                 .widthIn(min = 232.dp, max = 320.dp)
                 .squircleSurface(
                     color = MiuixTheme.colorScheme.surfaceContainer,
@@ -199,7 +236,9 @@ internal fun TurnStatsPopoverPopup(
                     color = MiuixTheme.colorScheme.outline.copy(alpha = 0.5f),
                     cornerRadius = 18.dp,
                 )
-                .padding(horizontal = 16.dp, vertical = 14.dp),
+        }
+        Column(
+            modifier = cardModifier.padding(horizontal = 16.dp, vertical = 14.dp),
             content = content,
         )
     }

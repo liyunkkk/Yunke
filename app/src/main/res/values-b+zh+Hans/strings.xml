@@ -239,6 +239,12 @@
   <string name="appearance_palette_monochrome">单色（Monochrome）</string>
   <string name="appearance_palette_fidelity">保真（Fidelity）</string>
   <string name="appearance_palette_content">内容（Content）</string>
+  <string name="appearance_ui_style">界面样式</string>
+  <string name="appearance_ui_style_coui">COUI</string>
+  <string name="appearance_ui_style_miuix">Miuix</string>
+  <string name="appearance_palette_cmf">质感工艺（CMF）</string>
+  <string name="appearance_progressive_blur">渐进模糊</string>
+  <string name="appearance_progressive_blur_summary">为顶栏与侧栏浮层启用渐进模糊，关闭可提升流畅度</string>
   <string name="appearance_accent_color">强调色</string>
   <string name="appearance_accent_system">系统取色</string>
   <string name="appearance_accent_blue">蓝色</string>
@@ -263,9 +269,9 @@
   <string name="appearance_predictive_back">预测性返回手势</string>
   <string name="appearance_predictive_back_summary">启用预测性返回动画效果</string>
   <string name="appearance_interface_scale">界面缩放</string>
-  <string name="appearance_interface_scale_summary" formatted="false">调整全局显示比例（80%–110%）</string>
+  <string name="appearance_interface_scale_summary" formatted="false">调整全局显示比例（70%–130%）</string>
   <string name="appearance_interface_scale_dialog_title">界面缩放</string>
-  <string name="appearance_interface_scale_dialog_summary">请输入 80 至 110 之间的整数</string>
+  <string name="appearance_interface_scale_dialog_summary">请输入 70 至 130 之间的整数</string>
   <string name="appearance_interface_scale_input_label">百分比</string>
   <string name="appearance_morph_loading">圆形加载指示器</string>
   <string name="appearance_morph_loading_summary">发出消息后显示变形动画</string>
@@ -398,6 +404,8 @@
   <string name="tool_launch_app">打开应用</string>
   <string name="tool_open_uri">用应用打开</string>
   <string name="tool_browser_use">浏览网页</string>
+  <string name="tool_subagent">运行子代理</string>
+  <string name="tool_subagent_profile">管理子代理</string>
   <string name="tool_terminal">终端</string>
   <string name="tool_run_command">执行命令</string>
   <string name="tool_read_file">读取文件</string>
@@ -1601,4 +1609,24 @@
   <string name="settings_model_retry_summary">网络或中转站不稳时可调高；0 表示不自动重试。</string>
   <string name="settings_about_version">版本</string>
   <string name="settings_about_feedback">问题反馈</string>
+  <string name="image_gen_settings_title">AI 生图</string>
+  <string name="image_gen_gallery_title">已生成图片</string>
+  <string name="image_gen_configure_action">配置生图</string>
+  <string name="tool_generate_image">AI 生图</string>
+  <string name="tool_generate_image_description">使用已配置的生图模型根据文字描述创作图片，或基于参考图进行图像编辑与风格迁移。</string>
+  <string name="route_scheduled_tasks">定时任务</string>
+  <string name="route_scheduled_task_detail">任务详情</string>
+  <string name="route_scheduled_task_new">新建定时任务</string>
+  <string name="route_scheduled_task_edit">编辑定时任务</string>
+  <string name="scheduled_notification_channel_results">定时任务结果</string>
+  <string name="scheduled_notification_channel_results_desc">定时任务完成后的简报与变动提醒</string>
+  <string name="scheduled_notification_channel_alerts">定时任务告警</string>
+  <string name="scheduled_notification_channel_alerts_desc">任务执行失败、连续失败自动暂停及待解锁提醒</string>
+  <string name="scheduled_notification_completed_fallback">定时任务已完成，点按查看完整对话。</string>
+  <string name="scheduled_notification_failed_title">定时任务失败：%1$s</string>
+  <string name="scheduled_notification_auto_disabled_title">定时任务已暂停：%1$s</string>
+  <string name="scheduled_notification_failed_fallback">任务执行失败，点按查看详情。</string>
+  <string name="scheduled_notification_gui_ready_title">定时任务就绪：%1$s</string>
+  <string name="scheduled_action_run_now">立即试跑</string>
+  <string name="scheduled_action_stop">停止运行</string>
 </resources>

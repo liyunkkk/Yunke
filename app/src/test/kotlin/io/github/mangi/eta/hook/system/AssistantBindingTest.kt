@@ -29,6 +29,23 @@ class AssistantBindingTest {
         assertEquals(ModuleConfig.GOOGLE_ASSISTANT_COMPONENT, gemini.componentName)
         assertEquals(ModuleConfig.ETA_PACKAGE, eta.packageName)
         assertEquals(ModuleConfig.ETA_VOICE_INTERACTION_COMPONENT, eta.componentName)
+        assertEquals(
+            "io.github.mangi.eta/.agent.voice.EtaVoiceInteractionService",
+            eta.shortComponentName,
+        )
+        assertEquals(ModuleConfig.GOOGLE_ASSISTANT_COMPONENT, gemini.shortComponentName)
+        assertTrue(
+            isSameComponentName(
+                eta.componentName,
+                "io.github.mangi.eta/.agent.voice.EtaVoiceInteractionService",
+            ),
+        )
+        assertFalse(
+            isSameComponentName(
+                eta.componentName,
+                gemini.componentName,
+            ),
+        )
     }
 
     @Test
@@ -73,6 +90,51 @@ class AssistantBindingTest {
         assertEquals(
             AssistantSelectionAction.RESTORE_OEM,
             assistantSelectionAction(false, PowerAssistantTarget.OEM),
+        )
+    }
+
+    @Test
+    fun `assistant setting guard rewrites only xiaoai overwrites while auto config is enabled`() {
+        assertEquals(
+            "io.github.mangi.eta/.agent.voice.EtaVoiceInteractionService",
+            rewriteManagedAssistantSettingIfOverwritten(
+                autoConfigEnabled = true,
+                target = PowerAssistantTarget.ETA,
+                key = ModuleConfig.SECURE_VOICE_INTERACTION_SERVICE,
+                value = "com.miui.voiceassist/com.xiaomi.voiceassistant.AssistInteractionService",
+            ),
+        )
+        assertNull(
+            rewriteManagedAssistantSettingIfOverwritten(
+                autoConfigEnabled = false,
+                target = PowerAssistantTarget.ETA,
+                key = ModuleConfig.SECURE_VOICE_INTERACTION_SERVICE,
+                value = "com.miui.voiceassist/com.xiaomi.voiceassistant.AssistInteractionService",
+            ),
+        )
+        assertNull(
+            rewriteManagedAssistantSettingIfOverwritten(
+                autoConfigEnabled = true,
+                target = PowerAssistantTarget.OEM,
+                key = ModuleConfig.SECURE_VOICE_INTERACTION_SERVICE,
+                value = "com.miui.voiceassist/com.xiaomi.voiceassistant.AssistInteractionService",
+            ),
+        )
+        assertNull(
+            rewriteManagedAssistantSettingIfOverwritten(
+                autoConfigEnabled = true,
+                target = PowerAssistantTarget.ETA,
+                key = ModuleConfig.SECURE_VOICE_INTERACTION_SERVICE,
+                value = "com.google.android.googlequicksearchbox/com.google.android.voiceinteraction.GsaVoiceInteractionService",
+            ),
+        )
+        assertNull(
+            rewriteManagedAssistantSettingIfOverwritten(
+                autoConfigEnabled = true,
+                target = PowerAssistantTarget.ETA,
+                key = ModuleConfig.SECURE_VOICE_INTERACTION_SERVICE,
+                value = "io.github.mangi.eta/.agent.voice.EtaVoiceInteractionService",
+            ),
         )
     }
 }

@@ -281,6 +281,7 @@ internal object AgentConversationCodec {
                 }
                 ResponsesEphemeralState.copyOutputItems(source, message)
                 ResponsesReasoningState.copy(source, message)
+                GeminiEphemeralState.copyAssistantState(source, message)
             }
 
     fun toolResultMessage(
@@ -529,15 +530,28 @@ internal object AgentConversationCodec {
 
     private fun sanitizeToolCallsJson(raw: String, preserveText: Boolean = false): String {
         if (raw.isBlank()) return ""
+        val source = runCatching { JSONArray(raw) }.getOrNull() ?: return if (preserveText) raw else ""
         if (preserveText) {
-            if (runCatching { JSONArray(raw) }.isSuccess) return raw
+            // Protected turns retain exact text and call metadata, but transient image
+            // references must still be removed before storage or transcript transport.
+            var mutated = false
+            for (index in 0 until source.length()) {
+                val function = source.optJSONObject(index)?.optJSONObject("function") ?: continue
+                val arguments = function.optString("arguments")
+                val sanitized = sanitizeToolArguments(function.optString("name"), arguments)
+                if (sanitized != arguments) {
+                    function.put("arguments", sanitized)
+                    mutated = true
+                }
+            }
+            return if (mutated) source.toString() else raw
         }
-        val source = runCatching { JSONArray(raw) }.getOrNull() ?: return ""
         val target = JSONArray()
         for (index in 0 until minOf(source.length(), MAX_TOOL_CALLS_PER_MESSAGE)) {
             val call = source.optJSONObject(index) ?: continue
             val function = call.optJSONObject("function")
-            val arguments = function?.optString("arguments").orEmpty()
+            val toolName = function?.optString("name").orEmpty().take(128)
+            val arguments = sanitizeToolArguments(toolName, function?.optString("arguments").orEmpty())
             target.put(
                 JSONObject()
                     .put("id", call.optString("id").take(256))
@@ -545,7 +559,7 @@ internal object AgentConversationCodec {
                     .put(
                         "function",
                         JSONObject()
-                            .put("name", function?.optString("name").orEmpty().take(128))
+                            .put("name", toolName)
                             .put(
                                 "arguments",
                                 if (arguments.length <= MAX_TOOL_ARGUMENT_CHARS) {
@@ -558,6 +572,33 @@ internal object AgentConversationCodec {
             )
         }
         return target.toString()
+    }
+
+    /** 生图工具的 reference_images 可能含大体积 data URL 或本地路径，持久 transcript 统一脱敏为语义占位符。 */
+    private fun sanitizeToolArguments(toolName: String, arguments: String): String {
+        if (!toolName.equals("generate_image", ignoreCase = true) || arguments.isBlank()) {
+            return arguments
+        }
+        val obj = runCatching { JSONObject(arguments) }.getOrNull() ?: return arguments
+        val refs = obj.optJSONArray("reference_images") ?: return arguments
+        var mutated = false
+        val cleaned = JSONArray()
+        for (i in 0 until refs.length()) {
+            val item = refs.optString(i).trim()
+            when {
+                item.startsWith("data:image/", ignoreCase = true) -> {
+                    cleaned.put("<redacted_inline_image>")
+                    mutated = true
+                }
+                item.startsWith("/") || item.startsWith("file://", ignoreCase = true) -> {
+                    cleaned.put("<redacted_local_path>")
+                    mutated = true
+                }
+                else -> cleaned.put(item)
+            }
+        }
+        if (!mutated) return arguments
+        return obj.put("reference_images", cleaned).toString()
     }
 }
 

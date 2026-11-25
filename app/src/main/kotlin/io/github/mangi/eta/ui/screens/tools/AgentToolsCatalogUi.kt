@@ -29,6 +29,7 @@ internal object AgentToolsCatalogUi {
         val partitions = extra.groupBy { when (it.id) {
             in fileNames -> "terminal"
             "web_search", "fetch_url" -> "web"
+            "generate_image" -> "file_vision"
             else -> "registered"
         } }
         partitions.forEach { (id, tools) ->
@@ -37,6 +38,7 @@ internal object AgentToolsCatalogUi {
             else result += ToolGroupUi(id, when (id) {
                 "terminal" -> "终端与文件"
                 "web" -> "网页浏览"
+                "file_vision" -> "文件视觉"
                 else -> "更多本机工具"
             }, tools)
         }

@@ -29,6 +29,7 @@ import io.github.mangi.eta.data.repository.ProviderRepository
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import io.github.mangi.eta.ui.components.coui.EtaMaterialSwitch
 
 /** A popup entry belongs to one real configuration owner (including the unique draft key).
  * Reopening invalidates previously captured callbacks even when the owner is the same. */
@@ -177,7 +178,7 @@ internal fun ConversationCollaborationDialog(
                                                 Text("按职责自动分配任务", style = MaterialTheme.typography.bodySmall,
                                                     color = MaterialTheme.colorScheme.onSurface)
                                             }
-                                            Switch(checked = panelConfig?.enabled ?: current.enabled, enabled = panelEnabled, onCheckedChange = null)
+                                            EtaMaterialSwitch(checked = panelConfig?.enabled ?: current.enabled, enabled = panelEnabled, onCheckedChange = null)
                                         }
                                         HorizontalDivider(Modifier.padding(top = 12.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
                                         (panelConfig ?: current).profiles.forEach { profile ->

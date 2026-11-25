@@ -2,6 +2,7 @@ package io.github.mangi.eta.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -32,6 +33,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -44,6 +46,11 @@ import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.device.AgentTaskPrompt
 import io.github.mangi.eta.agent.device.AgentTaskSurfaceMode
 import io.github.mangi.eta.ui.haptics.TouchHaptics
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.components.coui.CouiNoticeDialog
+import io.github.mangi.eta.ui.components.coui.CouiConfirmDialog
+import io.github.mangi.eta.ui.components.coui.EtaRadioButton
 
 /**
  * 应用内兜底：独立弹窗 Activity 没能拉起来（例如后台启动受限）或已退到后台时，
@@ -83,7 +90,56 @@ internal fun AgentTaskSurfaceChoiceDialog(
 ) {
     val view = LocalView.current
     var selected by rememberSaveable { mutableStateOf(AgentTaskSurfaceMode.FOREGROUND) }
-    AlertDialog(
+    if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiConfirmDialog(
+        visible = true,
+        message = null,
+        title = stringResource(R.string.agent_task_surface_prompt_title),
+        confirmText = stringResource(R.string.agent_task_surface_prompt_continue),
+        cancelText = stringResource(R.string.agent_task_surface_prompt_cancel),
+        onConfirm = { TouchHaptics.click(view)
+                        onChoose(selected) },
+        onDismissRequest = { TouchHaptics.click(view)
+                        onCancel() },
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    stringResource(R.string.agent_task_surface_prompt_message),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                ) {
+                    Column(modifier = Modifier.selectableGroup()) {
+                        SurfaceChoiceRow(
+                            icon = Icons.Rounded.PhoneAndroid,
+                            title = stringResource(R.string.agent_task_surface_foreground),
+                            summary = stringResource(R.string.agent_task_preference_mode_hint_foreground),
+                            selected = selected == AgentTaskSurfaceMode.FOREGROUND,
+                            onClick = {
+                                TouchHaptics.click(view)
+                                selected = AgentTaskSurfaceMode.FOREGROUND
+                            },
+                        )
+                        HorizontalDivider(
+                            modifier = Modifier.padding(horizontal = 16.dp),
+                            color = MaterialTheme.colorScheme.outlineVariant,
+                        )
+                        SurfaceChoiceRow(
+                            icon = Icons.Rounded.Layers,
+                            title = stringResource(R.string.agent_task_surface_background),
+                            summary = stringResource(R.string.agent_task_preference_mode_hint_background),
+                            selected = selected == AgentTaskSurfaceMode.BACKGROUND,
+                            onClick = {
+                                TouchHaptics.click(view)
+                                selected = AgentTaskSurfaceMode.BACKGROUND
+                            },
+                        )
+                    }
+                }
+            }
+    } else AlertDialog(
         onDismissRequest = onCancel,
         // 点到弹窗外不算取消，避免误触让这次操作失败；返回键仍可取消。
         properties = DialogProperties(dismissOnClickOutside = false),
@@ -156,6 +212,48 @@ private fun SurfaceChoiceRow(
     selected: Boolean,
     onClick: () -> Unit,
 ) {
+    if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
+        val couiColors = com.itos.coui.layout.CouiPageDefaults.themeColors(com.itos.coui.theme.CouiTheme.isDark)
+        Surface(
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
+            color = if (selected) couiColors.accent.copy(alpha = 0.10f) else Color.Transparent,
+            modifier = Modifier
+                .fillMaxWidth()
+                .selectable(selected = selected, role = Role.RadioButton, onClick = onClick),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Icon(
+                    icon,
+                    contentDescription = null,
+                    modifier = Modifier.size(24.dp),
+                    tint = if (selected) couiColors.accent else couiColors.summary,
+                )
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    Text(
+                        title,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = couiColors.title,
+                    )
+                    Text(
+                        summary,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = couiColors.summary,
+                    )
+                }
+                EtaRadioButton(selected = selected, onClick = null)
+            }
+        }
+        return
+    }
     ListItem(
         colors = ListItemDefaults.colors(containerColor = Color.Transparent),
         modifier = Modifier
@@ -173,6 +271,6 @@ private fun SurfaceChoiceRow(
         supportingContent = {
             Text(summary, color = MaterialTheme.colorScheme.onSurfaceVariant)
         },
-        trailingContent = { RadioButton(selected = selected, onClick = null) },
+        trailingContent = { EtaRadioButton(selected = selected, onClick = null) },
     )
 }

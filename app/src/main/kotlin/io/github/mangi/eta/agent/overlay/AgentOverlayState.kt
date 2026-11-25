@@ -22,7 +22,16 @@ internal data class AgentOverlayState(
      * 一行、且需要在 RUNNING 之外清空；完整文本仍走 detailText。
      */
     val thought: String = "",
+    /** 当前在途的工具调用，保证多 Subagent / 工具并发时不会因首个完成而提前切回思考态。 */
+    val activeTools: List<ActiveTool> = emptyList(),
 ) {
+    @Immutable
+    data class ActiveTool(
+        val callId: String,
+        val name: String,
+        val argsPreview: String = "",
+    )
+
     companion object {
         val Initial = AgentOverlayState(status = AgentOverlayStatus.Received)
     }
@@ -47,6 +56,7 @@ internal fun AgentOverlayState.applyEvent(event: AgentEvent): AgentOverlayState 
         phase = AgentOverlayPhase.RUNNING,
         status = AgentOverlayStatus.PreparingTools(event.toolCount),
         detailText = "",
+        activeTools = emptyList(),
     )
 
     is AgentEvent.RoundStarted -> copy(
@@ -138,17 +148,48 @@ internal fun AgentOverlayState.applyEvent(event: AgentEvent): AgentOverlayState 
     is AgentEvent.QuestionResolved -> copy(phase = AgentOverlayPhase.RUNNING,
         status = AgentOverlayStatus.Continuing, detailText = "")
 
-    is AgentEvent.ToolStarted -> copy(
-        phase = AgentOverlayPhase.RUNNING,
-        round = event.round,
-        status = AgentOverlayStatus.RunningTool(event.name),
-    )
+    is AgentEvent.ToolStarted -> {
+        val preview = event.argsPreview.trim()
+        val updatedTools = activeTools.filterNot { event.toolCallId.isNotBlank() && it.callId == event.toolCallId } +
+            AgentOverlayState.ActiveTool(
+                callId = event.toolCallId,
+                name = event.name,
+                argsPreview = preview,
+            )
+        copy(
+            phase = AgentOverlayPhase.RUNNING,
+            round = event.round,
+            status = AgentOverlayStatus.RunningTool(event.name),
+            thought = preview,
+            activeTools = updatedTools,
+        )
+    }
 
-    is AgentEvent.ToolFinished -> copy(
-        phase = AgentOverlayPhase.RUNNING,
-        round = event.round,
-        status = AgentOverlayStatus.ToolCompleted(event.name),
-    )
+    is AgentEvent.ToolFinished -> {
+        val remaining = if (event.toolCallId.isNotBlank() && activeTools.any { it.callId == event.toolCallId }) {
+            activeTools.filterNot { it.callId == event.toolCallId }
+        } else {
+            emptyList()
+        }
+        val nextTool = remaining.lastOrNull()
+        if (nextTool != null) {
+            copy(
+                phase = AgentOverlayPhase.RUNNING,
+                round = event.round,
+                status = AgentOverlayStatus.RunningTool(nextTool.name),
+                thought = nextTool.argsPreview,
+                activeTools = remaining,
+            )
+        } else {
+            copy(
+                phase = AgentOverlayPhase.RUNNING,
+                round = event.round,
+                status = AgentOverlayStatus.ToolCompleted(event.name),
+                thought = "",
+                activeTools = emptyList(),
+            )
+        }
+    }
 
     is AgentEvent.HostedToolStarted -> copy(
         phase = AgentOverlayPhase.RUNNING,
@@ -187,12 +228,14 @@ internal fun AgentOverlayState.applyEvent(event: AgentEvent): AgentOverlayState 
         phase = AgentOverlayPhase.FINISHED,
         round = event.round,
         status = AgentOverlayStatus.ResultReady,
+        activeTools = emptyList(),
     )
 
     is AgentEvent.RunFailed -> copy(
         phase = AgentOverlayPhase.FAILED,
         status = AgentOverlayStatus.RunFailed,
         detailText = "",
+        activeTools = emptyList(),
     )
 }
 

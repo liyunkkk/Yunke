@@ -9,6 +9,9 @@ import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.rememberTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.IntrinsicSize
@@ -31,6 +34,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.dropShadow
 import androidx.compose.ui.graphics.Color
@@ -59,8 +63,15 @@ import top.yukonga.miuix.kmp.squircle.isSquircleEnabled
 import top.yukonga.miuix.kmp.squircle.squircleBorder
 import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import com.itos.coui.shape.CouiShape
+import com.itos.coui.theme.CouiTheme
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.app.LocalUiStyle
 
 private val MenuCornerRadius = 16.dp
+// COUI 菜单：28dp 平滑圆角、细腻轮廓线、Popup 内预留投影呼吸区防止系统窗口裁剪阴影。
+private val CouiMenuCornerRadius = 28.dp
+private val CouiMenuShadowPadding = 16.dp
 private val MenuMinWidth = 180.dp
 private val MenuMaxWidth = 280.dp
 private val MenuScreenMargin = 12.dp
@@ -126,17 +137,23 @@ internal fun EtaDropdownMenu(
     visibleState.targetState = expanded
 
     val colors = MiuixTheme.colorScheme
+    val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
+    val couiDark = if (isCoui) CouiTheme.isDark else false
+    val couiMenu = if (isCoui) CouiTheme.colorScheme.menuSurface else null
+    val couiContent = if (isCoui) CouiTheme.colorScheme.onSurface else null
+    val cornerRadius = if (isCoui) CouiMenuCornerRadius else MenuCornerRadius
     val density = LocalDensity.current
     val offsetXPx = with(density) { offset.x.roundToPx() }
     val offsetYPx = with(density) { offset.y.roundToPx() }
     val screenMarginPx = with(density) { MenuScreenMargin.roundToPx() }
+    val shadowPadPx = if (isCoui) with(density) { CouiMenuShadowPadding.roundToPx() } else 0
     val visibleHeightPx = rememberMenuVisibleHeight()
     val availableHeight = with(density) {
         (visibleHeightPx - screenMarginPx * 2).coerceAtLeast(0).toDp()
     }
     val effectiveMaxHeight = maxHeight?.coerceAtMost(availableHeight) ?: availableHeight
-    val positionProvider = remember(offsetXPx, offsetYPx, alignEnd, preferAbove, centerOnAnchor, screenMarginPx) {
-        EtaMenuPositionProvider(offsetXPx, offsetYPx, alignEnd, preferAbove, centerOnAnchor, screenMarginPx)
+    val positionProvider = remember(offsetXPx, offsetYPx, alignEnd, preferAbove, centerOnAnchor, screenMarginPx, shadowPadPx) {
+        EtaMenuPositionProvider(offsetXPx, offsetYPx, alignEnd, preferAbove, centerOnAnchor, screenMarginPx, shadowPadPx)
     }
     val transition = rememberTransition(visibleState, label = "EtaDropdownMenu")
     val fraction = transition.animateFloat(
@@ -193,50 +210,87 @@ internal fun EtaDropdownMenu(
         popupPositionProvider = positionProvider,
         properties = popupProperties,
     ) {
-        CompositionLocalProvider(LocalContentColor provides colors.onSurface) {
-            Column(
-                modifier = Modifier
-                    .graphicsLayer {
-                        val progress = fraction.value
-                        val scale = 0.15f + 0.85f * progress
-                        scaleX = scale
-                        scaleY = scale
-                        this.alpha = alpha.value
-                        this.transformOrigin = transformOrigin
-                    }
-                    .then(modifier)
-                    .width(IntrinsicSize.Max)
-                    .widthIn(min = minWidth, max = maxWidth)
-                    .heightIn(max = effectiveMaxHeight)
-                    .etaMenuClipReveal(
-                        fractionProgress = {
-                            if (visibleState.targetState) fraction.value else 1f
-                        },
-                        preferAbove = preferAbove,
-                        cornerRadius = MenuCornerRadius,
-                        squircleEnabled = squircleEnabled,
+        CompositionLocalProvider(LocalContentColor provides (couiContent ?: colors.onSurface)) {
+            if (isCoui) {
+                val couiShape = remember { CouiShape(CouiMenuCornerRadius) }
+                val couiBorderColor = if (couiDark) Color(0x28FFFFFF) else Color(0x18000000)
+                Box(modifier = Modifier.padding(CouiMenuShadowPadding)) {
+                    Column(
+                        modifier = Modifier
+                            .graphicsLayer {
+                                val progress = fraction.value
+                                val scale = 0.86f + 0.14f * progress
+                                scaleX = scale
+                                scaleY = scale
+                                this.alpha = alpha.value
+                                this.transformOrigin = transformOrigin
+                            }
+                            .then(modifier)
+                            .width(IntrinsicSize.Max)
+                            .widthIn(min = minWidth, max = maxWidth)
+                            .heightIn(max = effectiveMaxHeight)
+                            .dropShadow(
+                                shape = couiShape,
+                                shadow = Shadow(
+                                    radius = 22.dp,
+                                    offset = DpOffset(0.dp, 6.dp),
+                                    color = Color.Black,
+                                    alpha = if (couiDark) 0.45f else 0.14f,
+                                ),
+                            )
+                            .clip(couiShape)
+                            .background(couiMenu ?: colors.surface, couiShape)
+                            .border(width = 0.75.dp, color = couiBorderColor, shape = couiShape)
+                            .padding(vertical = 8.dp)
+                            .verticalScroll(rememberScrollState()),
+                        content = content,
                     )
-                    .dropShadow(
-                        shape = RoundedCornerShape(MenuCornerRadius),
-                        shadow = Shadow(
-                            radius = 16.dp,
-                            color = Color.Black,
-                            alpha = 0.18f,
-                        ),
-                    )
-                    .squircleSurface(
-                        color = colors.surface,
-                        cornerRadius = MenuCornerRadius,
-                    )
-                    .squircleBorder(
-                        width = 0.5.dp,
-                        color = colors.outline.copy(alpha = 0.45f),
-                        cornerRadius = MenuCornerRadius,
-                    )
-                    .padding(vertical = 6.dp)
-                    .verticalScroll(rememberScrollState()),
-                content = content,
-            )
+                }
+            } else {
+                Column(
+                    modifier = Modifier
+                        .graphicsLayer {
+                            val progress = fraction.value
+                            val scale = 0.15f + 0.85f * progress
+                            scaleX = scale
+                            scaleY = scale
+                            this.alpha = alpha.value
+                            this.transformOrigin = transformOrigin
+                        }
+                        .then(modifier)
+                        .width(IntrinsicSize.Max)
+                        .widthIn(min = minWidth, max = maxWidth)
+                        .heightIn(max = effectiveMaxHeight)
+                        .etaMenuClipReveal(
+                            fractionProgress = {
+                                if (visibleState.targetState) fraction.value else 1f
+                            },
+                            preferAbove = preferAbove,
+                            cornerRadius = cornerRadius,
+                            squircleEnabled = squircleEnabled,
+                        )
+                        .dropShadow(
+                            shape = RoundedCornerShape(cornerRadius),
+                            shadow = Shadow(
+                                radius = 16.dp,
+                                color = Color.Black,
+                                alpha = 0.18f,
+                            ),
+                        )
+                        .squircleSurface(
+                            color = colors.surface,
+                            cornerRadius = cornerRadius,
+                        )
+                        .squircleBorder(
+                            width = 0.5.dp,
+                            color = colors.outline.copy(alpha = 0.45f),
+                            cornerRadius = MenuCornerRadius,
+                        )
+                        .padding(vertical = 6.dp)
+                        .verticalScroll(rememberScrollState()),
+                    content = content,
+                )
+            }
         }
     }
 }
@@ -308,6 +362,7 @@ private class EtaMenuPositionProvider(
     private val preferAbove: Boolean,
     private val centerOnAnchor: Boolean,
     private val screenMarginPx: Int,
+    private val shadowPadPx: Int = 0,
 ) : PopupPositionProvider {
     override fun calculatePosition(
         anchorBounds: IntRect,
@@ -316,30 +371,32 @@ private class EtaMenuPositionProvider(
         popupContentSize: IntSize,
     ): IntOffset {
         val margin = screenMarginPx
-        val maxX = (windowSize.width - popupContentSize.width - margin).coerceAtLeast(margin)
-        val maxY = (windowSize.height - popupContentSize.height - margin).coerceAtLeast(margin)
+        val effectiveMargin = (margin - shadowPadPx).coerceAtLeast(0)
+        val maxX = (windowSize.width - popupContentSize.width - effectiveMargin).coerceAtLeast(effectiveMargin)
+        val maxY = (windowSize.height - popupContentSize.height - effectiveMargin).coerceAtLeast(effectiveMargin)
         if (centerOnAnchor) {
             // 固定居中：弹层以锚点中心为圆心。用于浮窗里「不跟随具体按钮」的二次确认弹层。
             val centeredX = anchorBounds.left + anchorBounds.width / 2 - popupContentSize.width / 2 + offsetXPx
             val centeredY = anchorBounds.top + anchorBounds.height / 2 - popupContentSize.height / 2 + offsetYPx
-            return IntOffset(centeredX.coerceIn(margin, maxX), centeredY.coerceIn(margin, maxY))
+            return IntOffset(centeredX.coerceIn(effectiveMargin, maxX), centeredY.coerceIn(effectiveMargin, maxY))
         }
         val rawX = if (alignEnd) {
-            anchorBounds.right - popupContentSize.width + offsetXPx
+            anchorBounds.right - popupContentSize.width + shadowPadPx + offsetXPx
         } else {
-            anchorBounds.left + offsetXPx
+            anchorBounds.left - shadowPadPx + offsetXPx
         }
-        val x = rawX.coerceIn(margin, maxX)
-        val belowY = anchorBounds.bottom + offsetYPx
-        val aboveY = anchorBounds.top - popupContentSize.height - offsetYPx
-        val fitsBelow = belowY + popupContentSize.height + margin <= windowSize.height
-        val fitsAbove = aboveY >= margin
+        val x = rawX.coerceIn(effectiveMargin, maxX)
+        val cardHeight = (popupContentSize.height - shadowPadPx * 2).coerceAtLeast(0)
+        val belowY = anchorBounds.bottom - shadowPadPx + offsetYPx
+        val aboveY = anchorBounds.top - popupContentSize.height + shadowPadPx - offsetYPx
+        val fitsBelow = anchorBounds.bottom + offsetYPx + cardHeight + margin <= windowSize.height
+        val fitsAbove = anchorBounds.top - offsetYPx - cardHeight >= margin
         val y = when {
             preferAbove && fitsAbove -> aboveY
             fitsBelow && !preferAbove -> belowY
             fitsAbove -> aboveY
             else -> belowY
         }
-        return IntOffset(x, y.coerceIn(margin, maxY))
+        return IntOffset(x, y.coerceIn(effectiveMargin, maxY))
     }
 }

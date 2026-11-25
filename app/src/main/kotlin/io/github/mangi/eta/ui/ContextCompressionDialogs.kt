@@ -76,7 +76,6 @@ import top.yukonga.miuix.kmp.basic.DropdownItem
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.data.datastore.SettingsDataStore
 import io.github.mangi.eta.data.repository.ProviderRepository
-import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import io.github.mangi.eta.ui.model.AgentModelOptionUi
 import io.github.mangi.eta.ui.model.AgentModelPickerProjector
@@ -86,12 +85,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.CircularProgressIndicator
-import top.yukonga.miuix.kmp.basic.HorizontalDivider
+import io.github.mangi.eta.ui.components.HorizontalDivider
 import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Text as MiuixText
-import top.yukonga.miuix.kmp.basic.TextButton
-import top.yukonga.miuix.kmp.window.WindowDialog
+import io.github.mangi.eta.ui.components.AdaptiveNoticeDialog
+import io.github.mangi.eta.ui.components.WindowDialog
+import io.github.mangi.eta.ui.components.AdaptiveConfirmDialog
+import io.github.mangi.eta.ui.components.coui.EtaRadioButton
+import io.github.mangi.eta.ui.components.coui.EtaMaterialSwitch
 
 
 private val CompressDialogChrome = 200.dp
@@ -232,7 +233,7 @@ private fun CompactCompressionEndpointPreference(
                         color = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.weight(1f),
                     )
-                    RadioButton(selected = checked, onClick = null, enabled = enabled)
+                    EtaRadioButton(selected = checked, onClick = null, enabled = enabled)
                 }
             }
         }
@@ -323,11 +324,28 @@ internal fun CompressConversationDialog(
         isLoadingModels = false
     }
 
-    WindowDialog(
+    AdaptiveConfirmDialog(
         show = show,
         title = stringResource(R.string.action_compress_conversation),
         modifier = Modifier.offset(y = dialogImeOffset),
         onDismissRequest = onDismiss,
+        confirmText = stringResource(R.string.compress_conversation_confirm),
+        cancelText = stringResource(R.string.action_cancel),
+        confirmEnabled = !isCompressing && !isLoadingModels,
+        cancelEnabled = !isCompressing,
+        onCancel = onDismiss,
+        onConfirm = {
+                    if (isCompressing) return@AdaptiveConfirmDialog
+                    focusManager.clearFocus()
+                    keyboard?.hide()
+                    Prefs.putString(Prefs.Keys.AGENT_MANUAL_COMPRESS_ENDPOINT_MODE, endpointMode)
+                    onConfirm(
+                        selectedModel?.providerId.takeIf { customModelEnabled },
+                        selectedModel?.id.takeIf { customModelEnabled },
+                    ) { ok ->
+                        if (ok) onDismiss()
+                    }
+                },
     ) {
         val scrollState = rememberScrollState()
         val dialogFocus = remember { FocusRequester() }
@@ -359,7 +377,7 @@ internal fun CompressConversationDialog(
                         modifier = Modifier.weight(1f).padding(end = 12.dp),
                     )
                     val customModelLabel = stringResource(R.string.ui_custom_compress_model_title)
-                    Switch(
+                    EtaMaterialSwitch(
                         checked = customModelEnabled,
                         modifier = Modifier.semantics { contentDescription = customModelLabel },
                         enabled = !isCompressing && !isLoadingModels,
@@ -449,28 +467,6 @@ internal fun CompressConversationDialog(
                 }
             }
 
-            MiuixDialogActions(
-                confirmText = stringResource(R.string.compress_conversation_confirm),
-                cancelText = stringResource(R.string.action_cancel),
-                confirmEnabled = !isCompressing && !isLoadingModels,
-                cancelEnabled = !isCompressing,
-                modifier = Modifier
-                    .padding(top = 16.dp)
-                    .alpha(if (isCompressing) 0.42f else 1f),
-                onCancel = onDismiss,
-                onConfirm = {
-                    if (isCompressing) return@MiuixDialogActions
-                    focusManager.clearFocus()
-                    keyboard?.hide()
-                    Prefs.putString(Prefs.Keys.AGENT_MANUAL_COMPRESS_ENDPOINT_MODE, endpointMode)
-                    onConfirm(
-                        selectedModel?.providerId.takeIf { customModelEnabled },
-                        selectedModel?.id.takeIf { customModelEnabled },
-                    ) { ok ->
-                        if (ok) onDismiss()
-                    }
-                },
-            )
         }
     }
 
@@ -516,19 +512,13 @@ internal fun CompressModelMissingWindowDialog(
     onDismiss: () -> Unit,
 ) {
     if (!show) return
-    WindowDialog(
+    AdaptiveNoticeDialog(
         show = true,
         title = stringResource(R.string.compress_model_missing_window_title),
         summary = stringResource(R.string.compress_model_missing_window_summary),
-        onDismissRequest = onDismiss,
-    ) {
-        TextButton(
-            text = stringResource(R.string.ui_knew_cb63c6),
-            onClick = onDismiss,
-            modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.textButtonColorsPrimary(),
-        )
-    }
+        buttonText = stringResource(R.string.ui_knew_cb63c6),
+        onDismiss = onDismiss,
+    )
 }
 
 @Composable

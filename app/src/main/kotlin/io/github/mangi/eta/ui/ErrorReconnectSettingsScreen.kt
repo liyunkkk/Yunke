@@ -33,10 +33,11 @@ import io.github.mangi.eta.ui.haptics.TouchHaptics
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.map
-import top.yukonga.miuix.kmp.basic.Card
-import top.yukonga.miuix.kmp.basic.SmallTitle
+import io.github.mangi.eta.ui.components.Card
+import io.github.mangi.eta.ui.components.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import io.github.mangi.eta.ui.components.coui.EtaRadioButton
 
 @Composable
 internal fun ErrorReconnectSettingsScreen(onBack: () -> Unit) {
@@ -112,7 +113,7 @@ internal fun ErrorReconnectPolicyOptions(
                     text = stringResource(errorReconnectPolicyLabel(policy)),
                     modifier = Modifier.weight(1f),
                 )
-                RadioButton(
+                EtaRadioButton(
                     selected = selectedPolicy == policy,
                     enabled = enabled,
                     onClick = null,

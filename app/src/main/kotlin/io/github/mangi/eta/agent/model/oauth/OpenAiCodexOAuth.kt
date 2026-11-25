@@ -116,6 +116,8 @@ internal object OpenAiCodexOAuth {
                 updated.copy(customHeaders = mergedHeaders)
             is io.github.mangi.eta.data.model.AnthropicProviderSetting ->
                 updated.copy(customHeaders = mergedHeaders)
+            is io.github.mangi.eta.data.model.GeminiProviderSetting ->
+                updated.copy(customHeaders = mergedHeaders)
         }
     }
 

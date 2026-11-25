@@ -22,6 +22,8 @@ internal object AgentRequestContextDiagnostics {
             EndpointKind.RESPONSES -> "final_responses_http"
             EndpointKind.CHAT_COMPLETIONS -> "final_chat_completions_http"
             EndpointKind.ANTHROPIC_MESSAGES -> "final_anthropic_http"
+            EndpointKind.GEMINI_INTERACTIONS -> "final_gemini_interactions_http"
+            EndpointKind.VERTEX_GENERATE_CONTENT -> "final_vertex_generate_content_http"
         })
         put("request_tokens_est", shape.tokens)
         for ((name, component) in listOf(

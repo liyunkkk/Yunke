@@ -34,6 +34,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.browser.ported.ui.theme.ChatColors
+import androidx.compose.foundation.layout.ColumnScope
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.components.coui.CouiModalSheet
 
 /**
  * Standardized half-screen modal sheet used by every popup launched from the
@@ -64,12 +68,7 @@ fun StandardChatSheet(
     val configuration = LocalConfiguration.current
     val sheetHeight = (configuration.screenHeightDp * heightFraction.coerceIn(0.1f, 1f)).dp
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = ChatColors.background,
-        dragHandle = { CompactDragHandle() },
-    ) {
+    val sheetBody: @Composable ColumnScope.() -> Unit = {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -85,6 +84,17 @@ fun StandardChatSheet(
                 content()
             }
         }
+    }
+    if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
+        CouiModalSheet(onDismiss = onDismiss, content = sheetBody)
+    } else {
+        ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = ChatColors.background,
+        dragHandle = { CompactDragHandle() },
+            content = sheetBody,
+        )
     }
 }
 

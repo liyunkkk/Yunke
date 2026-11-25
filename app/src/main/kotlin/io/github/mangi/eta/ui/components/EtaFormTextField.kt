@@ -19,6 +19,9 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.material3.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.ui.components.coui.CouiTextField
 
 internal val EtaInputCornerRadius = 14.dp
 
@@ -43,6 +46,22 @@ internal fun EtaFormTextField(
     visualTransformation: VisualTransformation = VisualTransformation.None,
     keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
 ) {
+    if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
+        // COUI 风格：改用 COUI 输入框，hint 作为上方标签。
+        CouiTextField(
+            value = value,
+            onValueChange = onValueChange,
+            modifier = modifier.fillMaxWidth().semantics { contentDescription = hint },
+            label = hint,
+            enabled = enabled,
+            singleLine = singleLine,
+            minLines = if (singleLine) 1 else minLines,
+            maxLines = if (singleLine) 1 else maxLines,
+            visualTransformation = visualTransformation,
+            keyboardOptions = keyboardOptions,
+        )
+        return
+    }
     val colors = MiuixTheme.colorScheme
     val container = etaInputContainerColor()
     CompositionLocalProvider(LocalRippleConfiguration provides null) {

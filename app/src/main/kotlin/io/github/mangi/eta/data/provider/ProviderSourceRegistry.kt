@@ -11,6 +11,7 @@ internal object ProviderSourceRegistry {
         ProviderSourceTypes.CUSTOM,
         ProviderSourceTypes.OPENAI,
         ProviderSourceTypes.ANTHROPIC,
+        ProviderSourceTypes.GEMINI,
         ProviderSourceTypes.BAILIAN,
         ProviderSourceTypes.DEEPSEEK,
         ProviderSourceTypes.MOONSHOT,
@@ -49,6 +50,7 @@ internal object ProviderSourceRegistry {
         }
         sourceTypeFromProviderId(providerId)?.let { return it }
         sourceTypeFromBaseUrl(baseUrl)?.let { return it }
+        if (providerType == ProviderTypes.GEMINI) return ProviderSourceTypes.GEMINI
         if (providerType == ProviderTypes.ANTHROPIC) {
             return ProviderSourceTypes.ANTHROPIC
         }

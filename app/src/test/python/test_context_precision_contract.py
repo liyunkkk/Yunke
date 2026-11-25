@@ -22,7 +22,8 @@ class ContextPrecisionContractTest(unittest.TestCase):
             r'ProviderRequest\(requestConfigForRound\(\),\s*'
             r'filteredMessages,\s*roundTools,\s*sessionId'
             r',\s*toolDiagnostics\s*=\s*toolDiagnostics,\s*'
-            r'reconnectLocalToolsOnly\s*=\s*localOnlyRecovery\)')
+            r'reconnectLocalToolsOnly\s*=\s*localOnlyRecovery,\s*'
+            r'toolResultImages\s*=\s*pendingToolResultImages\s*\)')
         self.assertRegex(code,
             r'if \(localOnlyRecovery\) AgentRecoveryContext\.append\(messages\)\s*'
             r'val filteredMessages = AgentRequestMediaPolicy\.filter\(')

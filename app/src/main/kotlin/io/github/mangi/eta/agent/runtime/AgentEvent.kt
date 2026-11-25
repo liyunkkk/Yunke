@@ -183,10 +183,12 @@ internal sealed interface AgentEvent {
         val imageBytes: Int,
         /** 可选：旧版本 Runtime 不发送，消费端缺省时回退到摘要文本判断。 */
         val success: Boolean? = null,
+        /** Structured UI activity payload, omitted from the provider tool result. */
+        val command: String? = null,
     ) : AgentEvent {
         override fun toLogLine(): String =
             "tool_finished round=$round, name=${name.toSafeLogToken()}, " +
-                "${resultSummary.toSafeResultLogFields()}, images=$imageCount, image_bytes=$imageBytes"
+                "${resultSummary.toSafeResultLogFields()}, images=$imageCount, image_bytes=$imageBytes, command_chars=${command?.length ?: 0}"
     }
 
     data class HostedToolStarted(

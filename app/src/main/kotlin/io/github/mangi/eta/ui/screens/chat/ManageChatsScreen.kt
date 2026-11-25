@@ -27,6 +27,9 @@ import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.Search
+import com.itos.coui.icons.CouiIcons
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.app.LocalUiStyle
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
@@ -51,7 +54,6 @@ import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import io.github.mangi.eta.ui.app.SearchHistoryDialog
-import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import io.github.mangi.eta.ui.components.streamDiagnosticDraw
 import io.github.mangi.eta.ui.components.streamDiagnosticMeasure
@@ -62,10 +64,10 @@ import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 import kotlinx.coroutines.flow.collectLatest
 import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.IconButton
+import io.github.mangi.eta.ui.components.IconButton
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import top.yukonga.miuix.kmp.window.WindowDialog
+import io.github.mangi.eta.ui.components.AdaptiveConfirmDialog
 
 
 /** 管理页列表顺序。已有会话保持原位；新会话按当前列表里的相对顺序插到最前。置顶变化才整表重排。 */
@@ -128,9 +130,10 @@ internal fun ManageChatsScreen(
         onBack = onBack,
         listModifier = Modifier.streamDiagnosticMeasure("manage.lazy.measure").streamDiagnosticPlacement("manage.lazy.place").streamDiagnosticDraw("manage.lazy.draw"),
         actions = {
+            val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
             IconButton(onClick = { showSearchHistory = true }) {
                 Icon(
-                    imageVector = Icons.Rounded.Search,
+                    imageVector = if (isCoui) CouiIcons.Outlined.Search else Icons.Rounded.Search,
                     contentDescription = stringResource(R.string.action_search_history),
                     tint = MiuixTheme.colorScheme.onSurface,
                 )
@@ -181,22 +184,19 @@ internal fun ManageChatsScreen(
     )
 
     if (showDeleteAll) {
-        WindowDialog(
+        AdaptiveConfirmDialog(
             show = true,
             title = stringResource(R.string.history_page_delete_all_title),
             summary = stringResource(R.string.history_page_delete_all_message),
             onDismissRequest = { showDeleteAll = false },
-        ) {
-            MiuixDialogActions(
-                confirmText = stringResource(R.string.action_delete),
-                destructive = true,
-                onCancel = { showDeleteAll = false },
-                onConfirm = {
-                    onDeleteAll()
-                    showDeleteAll = false
-                },
-            )
-        }
+            confirmText = stringResource(R.string.action_delete),
+            destructive = true,
+            onCancel = { showDeleteAll = false },
+            onConfirm = {
+                onDeleteAll()
+                showDeleteAll = false
+            },
+        )
     }
 }
 

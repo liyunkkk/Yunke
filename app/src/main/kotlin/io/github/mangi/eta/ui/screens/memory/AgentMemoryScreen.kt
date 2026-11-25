@@ -24,24 +24,24 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
-import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffold
 import io.github.mangi.eta.ui.layout.horizontalCutoutPadding
 import io.github.mangi.eta.ui.model.AgentMemoryAction
 import io.github.mangi.eta.ui.model.AgentMemoryUiState
-import top.yukonga.miuix.kmp.basic.BasicComponent
+import io.github.mangi.eta.ui.components.BasicComponent
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
-import top.yukonga.miuix.kmp.basic.Card
-import top.yukonga.miuix.kmp.basic.SmallTitle
+import io.github.mangi.eta.ui.components.Card
+import io.github.mangi.eta.ui.components.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextButton
-import top.yukonga.miuix.kmp.basic.TextField
-import top.yukonga.miuix.kmp.preference.SwitchPreference
+import io.github.mangi.eta.ui.components.TextButton
+import io.github.mangi.eta.ui.components.TextField
+import io.github.mangi.eta.ui.components.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import top.yukonga.miuix.kmp.utils.scrollEndHaptic
-import top.yukonga.miuix.kmp.window.WindowDialog
+import io.github.mangi.eta.ui.components.AdaptiveNoticeDialog
 import java.text.NumberFormat
+import io.github.mangi.eta.ui.components.AdaptiveConfirmDialog
 
 @Composable
 internal fun AgentMemoryScreen(
@@ -176,38 +176,31 @@ internal fun AgentMemoryScreen(
     }
 
     if (showClearDialog) {
-        WindowDialog(
+        AdaptiveConfirmDialog(
             show = true,
             title = stringResource(R.string.ui_clear_all_memory_a43bd3),
             summary = stringResource(R.string.ui_the_entire_contents_of_memory_md_will_be_deleted_and_83a8ac),
             onDismissRequest = { showClearDialog = false },
-        ) {
-            MiuixDialogActions(
-                confirmText = stringResource(R.string.memory_clear),
-                destructive = true,
-                confirmEnabled = !state.isSaving,
-                onCancel = { showClearDialog = false },
-                onConfirm = {
-                    showClearDialog = false
-                    onAction(AgentMemoryAction.Clear)
-                },
-            )
-        }
+            confirmText = stringResource(R.string.memory_clear),
+            destructive = true,
+            confirmEnabled = !state.isSaving,
+            onCancel = { showClearDialog = false },
+            onConfirm = {
+                showClearDialog = false
+                onAction(AgentMemoryAction.Clear)
+            },
+        )
     }
 
     state.notice?.let { notice ->
-        WindowDialog(
+        AdaptiveNoticeDialog(
             show = true,
             title = stringResource(R.string.ui_memory_b55ff5),
             summary = notice,
-            onDismissRequest = { onAction(AgentMemoryAction.DismissNotice) },
-        ) {
-            TextButton(
-                text = stringResource(R.string.ui_knew_cb63c6),
-                onClick = { onAction(AgentMemoryAction.DismissNotice) },
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
+            buttonText = stringResource(R.string.ui_knew_cb63c6),
+            onDismiss = { onAction(AgentMemoryAction.DismissNotice) },
+            primary = false,
+        )
     }
 }
 

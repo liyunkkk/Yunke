@@ -36,10 +36,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListLayoutInfo
 import androidx.compose.foundation.lazy.LazyListState
@@ -47,8 +49,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.layout.LazyLayoutCacheWindow
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.DocumentScanner
 import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.RocketLaunch
@@ -108,13 +112,17 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.res.vectorResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
+import io.github.mangi.eta.ui.haptics.TouchHaptics
 import io.github.mangi.eta.agent.browser.AgentBrowserSession
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.voice.VoiceChatSnapshot
@@ -129,6 +137,7 @@ import io.github.mangi.eta.data.model.AnswerFoldLevel
 import io.github.mangi.eta.data.model.ReasoningEffort
 import io.github.mangi.eta.ui.app.AgentConversationRevisionReducer
 import io.github.mangi.eta.ui.app.LocalAppearanceSettings
+import io.github.mangi.eta.ui.layout.rememberFloatingBottomBarInsets
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
 import io.github.mangi.eta.ui.model.latestBilledContextTokens
 import io.github.mangi.eta.ui.model.canContinueDisconnectedRun
@@ -163,12 +172,17 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.collectLatest
 import top.yukonga.miuix.kmp.basic.CircularProgressIndicator
 import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import top.yukonga.miuix.kmp.utils.scrollEndHaptic
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import com.itos.coui.effect.couiButtonFeedback
+import com.itos.coui.shape.CouiShape
+import com.itos.coui.theme.CouiTheme
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.app.LocalUiStyle
 
 /**
  * 聊天主体：消息流 + 底部输入框。
@@ -651,15 +665,14 @@ internal fun AgentChatScaffold(
         beforeResponseOnly = appearance.morphLoadingBeforeResponseOnly,
     )
 
-    // 语音态（voice mode）：顶部 AI 回复卡片与底部控制胶囊共用一份玻璃取样层；
-    // backdrop 记录的是整个聊天表面（消息 + 输入框），textureBlur 才能取到毛玻璃底色。
-    val voiceGlassBackdrop = rememberVoiceGlassBackdrop()
     // 「消息」按钮收起的浮层；再次进入语音态自动复位。
     var voiceOverlayCollapsed by remember { mutableStateOf(false) }
     LaunchedEffect(voiceState.active) {
         if (voiceState.active) voiceOverlayCollapsed = false
     }
     val voiceOverlayActive = (voiceState.active || voiceState.error != null) && !voiceOverlayCollapsed
+    // 仅语音浮层可见时才挂全屏玻璃取样层，避免普通聊天滚动/输入/侧边栏动画每帧多录一层离屏。
+    val voiceGlassBackdrop = if (voiceOverlayActive) rememberVoiceGlassBackdrop() else null
     Box(modifier = modifier.fillMaxSize()) {
     Scaffold(
         modifier = Modifier
@@ -770,6 +783,7 @@ internal fun AgentChatScaffold(
                 onBranchMessage = onBranchMessage,
                 onQuestionDraftChanged = onQuestionDraftChanged,
                 onSubmitQuestionAnswer = onSubmitQuestionAnswer,
+                onEditGeneratedImage = onAttachImage,
                 messageActionsEnabled = !isStreaming && !isPaused &&
                     !isCompressingContext &&
                     messageEdit == null,
@@ -856,6 +870,7 @@ internal fun AgentConversationMessages(
     onBranchMessage: (String) -> Unit = {},
     onQuestionDraftChanged: (String, String, io.github.mangi.eta.agent.question.AgentQuestionAnswer) -> Unit = { _, _, _ -> },
     onSubmitQuestionAnswer: (String, String) -> Unit = { _, _ -> },
+    onEditGeneratedImage: ((String) -> Unit)? = null,
     messageActionsEnabled: Boolean = false,
     branchEnabled: Boolean = false,
     editTargetMessageId: String? = null,
@@ -1734,6 +1749,7 @@ internal fun AgentConversationMessages(
             messageActions.onBranchMessage = onBranchMessage
             messageActions.onQuestionDraftChanged = onQuestionDraftChanged
             messageActions.onSubmitQuestionAnswer = onSubmitQuestionAnswer
+            messageActions.onEditGeneratedImage = onEditGeneratedImage
             // Commit count only (ns=0): proves this content lambda was applied, not its cost.
             StreamPerformanceDiagnostics.record("chat.content.commit", value = 1)
         }
@@ -2335,6 +2351,10 @@ private fun AgentChatBottomBar(
     val drawerBlocksIme = LocalConversationDrawerBlocksIme.current
     // 语音态点「键盘」：停止语音态后把焦点还回输入框，普通输入能力立即可用。
     val composerFocus = remember { FocusRequester() }
+    val bottomBarInsets = rememberFloatingBottomBarInsets(
+        baseInsets = WindowInsets.navigationBars,
+        fixedBottomPadding = 12.dp,
+    )
     Box(
         modifier = Modifier.fillMaxWidth(),
     ) {
@@ -2347,7 +2367,7 @@ private fun AgentChatBottomBar(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .navigationBarsPadding()
+                    .windowInsetsPadding(bottomBarInsets)
                     .padding(start = 14.dp, end = 14.dp, bottom = 12.dp),
             ) {
                 AgentChatTodoDock(
@@ -2764,109 +2784,179 @@ private fun EmptyChatState(
     onSuggestionClick: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
+    val couiDark = CouiTheme.isDark
+    val view = LocalView.current
+    val primary = MiuixTheme.colorScheme.primary
+
     val suggestions = listOf(
         SuggestionItem(
             title = stringResource(R.string.ui_analyze_current_screen_ebf08f),
             icon = Icons.Rounded.DocumentScanner,
+            tint = primary,
             prompt = stringResource(R.string.suggestion_analyze_screen_prompt),
         ),
         SuggestionItem(
             title = stringResource(R.string.ui_open_wechat_6b2c28),
             icon = Icons.Rounded.RocketLaunch,
+            tint = if (couiDark) Color(0xFF34D399) else Color(0xFF16A34A),
             prompt = stringResource(R.string.suggestion_open_wechat_prompt),
         ),
         SuggestionItem(
             title = stringResource(R.string.ui_browse_the_web_da7afb),
             icon = Icons.Rounded.Language,
+            tint = if (couiDark) Color(0xFF818CF8) else Color(0xFF6366F1),
             prompt = stringResource(R.string.suggestion_browse_web_prompt),
         ),
         SuggestionItem(
             title = stringResource(R.string.ui_check_memory_pressure_2d9600),
             icon = Icons.Rounded.Terminal,
+            tint = if (couiDark) Color(0xFFFBBF24) else Color(0xFFD97706),
             prompt = stringResource(R.string.suggestion_memory_pressure_prompt),
         ),
     )
 
-    Box(modifier = modifier.fillMaxSize()) {
-        // Q4-A：借鉴旧版空态的中间布局（居中 Hero：主标题 + 副标题 + Try it 胶囊），
-        // 仅对齐布局形态，不引入旧版 Siri 主题体系，视觉仍沿用现版表面样式。
+    Box(
+        modifier = modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center,
+    ) {
         Column(
             modifier = Modifier
-                .align(Alignment.Center)
-                .padding(bottom = 120.dp),
+                .fillMaxWidth()
+                .widthIn(max = 520.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
+            // Hero：柔色主题徽章 + 主标题 + 简洁副标题
+            val badgeShape = remember(isCoui) {
+                if (isCoui) CouiShape(16.dp, 2.2f) else RoundedCornerShape(16.dp)
+            }
+            Box(
+                modifier = Modifier
+                    .size(52.dp)
+                    .clip(badgeShape)
+                    .background(primary.copy(alpha = if (couiDark) 0.20f else 0.11f), badgeShape)
+                    .border(0.5.dp, primary.copy(alpha = if (couiDark) 0.30f else 0.20f), badgeShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.AutoAwesome,
+                    contentDescription = null,
+                    tint = primary,
+                    modifier = Modifier.size(26.dp),
+                )
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
             Text(
                 text = stringResource(R.string.ui_how_can_i_help_you_e75391),
-                style = MiuixTheme.textStyles.title2,
+                style = MiuixTheme.textStyles.title2.copy(fontWeight = FontWeight.SemiBold),
                 color = MiuixTheme.colorScheme.onSurface,
+                textAlign = TextAlign.Center,
             )
 
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(6.dp))
 
             Text(
                 text = stringResource(R.string.siri_hero_subtitle),
                 style = MiuixTheme.textStyles.body2,
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 textAlign = TextAlign.Center,
-                modifier = Modifier.widthIn(max = 320.dp),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 310.dp),
             )
 
-            Spacer(modifier = Modifier.height(18.dp))
-
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(18.dp))
-                    .background(MiuixTheme.colorScheme.surface.copy(alpha = 0.72f))
-                    .border(
-                        width = 0.5.dp,
-                        color = MiuixTheme.colorScheme.outline.copy(alpha = 0.5f),
-                        shape = RoundedCornerShape(18.dp),
-                    )
-                    .clickable { onSuggestionClick(suggestions.first().prompt) }
-                    .padding(horizontal = 20.dp, vertical = 8.dp),
-            ) {
-                Text(
-                    text = stringResource(R.string.siri_hero_try_it),
-                    style = MiuixTheme.textStyles.body1,
-                    color = MiuixTheme.colorScheme.onSurface,
-                )
-            }
-        }
-
-        AnimatedVisibility(
-            visible = showSuggestions,
-            modifier = Modifier.align(Alignment.BottomCenter),
-            enter = fadeIn(
-                animationSpec = tween(durationMillis = 220)
-            ) + slideInVertically(
-                animationSpec = spring(
-                    dampingRatio = Spring.DampingRatioNoBouncy,
-                    stiffness = Spring.StiffnessMediumLow,
+            // 2×2 快捷建议卡片网格（Yunke 原生高频指令）
+            AnimatedVisibility(
+                visible = showSuggestions,
+                enter = fadeIn(
+                    animationSpec = tween(durationMillis = 200),
+                ) + expandVertically(
+                    animationSpec = tween(durationMillis = 200),
                 ),
-                initialOffsetY = { it / 3 },
-            ),
-            exit = fadeOut(
-                animationSpec = tween(durationMillis = 130)
-            ) + slideOutVertically(
-                animationSpec = tween(durationMillis = 180),
-                targetOffsetY = { it / 4 },
-            ),
-        ) {
-            // Q4-A：底部建议改为横排滚动 chips（宽 150dp），对齐旧版布局。
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 14.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                exit = fadeOut(
+                    animationSpec = tween(durationMillis = 120),
+                ) + shrinkVertically(
+                    animationSpec = tween(durationMillis = 160),
+                ),
             ) {
-                suggestions.forEach { item ->
-                    SuggestionCard(
-                        item = item,
-                        onClick = { onSuggestionClick(item.prompt) },
-                        modifier = Modifier.width(150.dp),
-                    )
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    suggestions.chunked(2).forEach { rowItems ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            rowItems.forEach { item ->
+                                SuggestionCard(
+                                    item = item,
+                                    onClick = {
+                                        TouchHaptics.click(view)
+                                        onSuggestionClick(item.prompt)
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                            if (rowItems.size == 1) {
+                                Spacer(modifier = Modifier.weight(1f))
+                            }
+                        }
+                    }
+
+                    // 底部轻提示胶囊：保留「试一试」一键发起
+                    val tipShape = remember(isCoui) {
+                        if (isCoui) CouiShape(14.dp, 2.2f) else RoundedCornerShape(14.dp)
+                    }
+                    val tipSource = remember { MutableInteractionSource() }
+                    Row(
+                        modifier = Modifier
+                            .padding(top = 6.dp)
+                            .then(
+                                if (isCoui) {
+                                    Modifier.couiButtonFeedback(couiDark, tipSource, enabled = true)
+                                } else {
+                                    Modifier
+                                },
+                            )
+                            .clip(tipShape)
+                            .background(
+                                if (isCoui) {
+                                    if (couiDark) Color(0xFF1C1E22) else Color(0xFFF6F7F9)
+                                } else {
+                                    MiuixTheme.colorScheme.surfaceContainer.copy(alpha = 0.6f)
+                                },
+                                tipShape,
+                            )
+                            .clickable(interactionSource = tipSource, indication = null) {
+                                TouchHaptics.click(view)
+                                onSuggestionClick(suggestions.first().prompt)
+                            }
+                            .padding(horizontal = 14.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.AutoAwesome,
+                            contentDescription = null,
+                            tint = primary,
+                            modifier = Modifier.size(13.dp),
+                        )
+                        Text(
+                            text = "${stringResource(R.string.siri_hero_try_it)} · ${suggestions.first().title}",
+                            style = MiuixTheme.textStyles.footnote1,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
             }
         }
@@ -2879,31 +2969,65 @@ private fun SuggestionCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
+    val couiDark = CouiTheme.isDark
+    val cardShape = remember(isCoui) {
+        if (isCoui) CouiShape(18.dp, 2.2f) else RoundedCornerShape(16.dp)
+    }
+    val iconShape = remember(isCoui) {
+        if (isCoui) CouiShape(10.dp, 2.2f) else RoundedCornerShape(10.dp)
+    }
+    val interactionSource = remember { MutableInteractionSource() }
+    val cardFill = if (isCoui) {
+        if (couiDark) Color(0xFF1C1E22) else Color(0xFFF6F7F9)
+    } else {
+        MiuixTheme.colorScheme.surfaceContainer.copy(alpha = 0.75f)
+    }
+    val cardBorder = if (isCoui) {
+        if (couiDark) Color(0x1FFFFFFF) else Color(0x10000000)
+    } else {
+        MiuixTheme.colorScheme.outline.copy(alpha = 0.35f)
+    }
     Column(
         modifier = modifier
-            .clip(RoundedCornerShape(12.dp))
-            .background(MiuixTheme.colorScheme.surface)
-            .border(
-                width = 0.5.dp,
-                color = MiuixTheme.colorScheme.outline.copy(alpha = 0.5f),
-                shape = RoundedCornerShape(12.dp),
+            .then(
+                if (isCoui) Modifier.couiButtonFeedback(couiDark, interactionSource, enabled = true) else Modifier,
             )
-            .clickable(onClick = onClick)
-            .padding(horizontal = 13.dp, vertical = 12.dp),
+            .clip(cardShape)
+            .background(cardFill, cardShape)
+            .border(0.5.dp, cardBorder, cardShape)
+            .clickable(interactionSource = interactionSource, indication = null, onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 13.dp),
     ) {
-        // Q4-A：借鉴旧版两行文建议 chip（标题行 + 内容行）。
+        Box(
+            modifier = Modifier
+                .size(32.dp)
+                .clip(iconShape)
+                .background(item.tint.copy(alpha = if (couiDark) 0.20f else 0.12f), iconShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = item.icon,
+                contentDescription = null,
+                tint = item.tint,
+                modifier = Modifier.size(18.dp),
+            )
+        }
+        Spacer(modifier = Modifier.height(10.dp))
         Text(
             text = item.title,
-            style = MiuixTheme.textStyles.body2,
+            style = MiuixTheme.textStyles.body2.copy(fontWeight = FontWeight.Medium),
             color = MiuixTheme.colorScheme.onSurface,
             maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
         Spacer(modifier = Modifier.height(3.dp))
         Text(
             text = item.prompt,
             style = MiuixTheme.textStyles.footnote1,
             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-            maxLines = 1,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }
@@ -2911,6 +3035,7 @@ private fun SuggestionCard(
 private data class SuggestionItem(
     val title: String,
     val icon: ImageVector,
+    val tint: Color,
     val prompt: String,
 )
 

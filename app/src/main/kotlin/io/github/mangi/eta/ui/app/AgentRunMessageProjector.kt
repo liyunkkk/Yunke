@@ -632,6 +632,7 @@ internal class AgentRunMessageProjector(
                     status = status,
                     resultSummary = event.resultSummary,
                     imageCount = event.imageCount,
+                    command = event.command ?: message.command,
                 )
             } else {
                 message

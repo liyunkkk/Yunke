@@ -17,7 +17,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.Button
-import top.yukonga.miuix.kmp.basic.Card
+import io.github.mangi.eta.ui.components.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -54,6 +54,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import io.github.mangi.eta.ui.components.coui.EtaCircularProgressIndicator
 
 /**
  * Inline controls on the Agent task preference page. Reading status never changes the display.
@@ -157,7 +158,7 @@ internal fun VirtualDisplayRecoveryControls(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     if (working) {
-                        CircularProgressIndicator(
+                        EtaCircularProgressIndicator(
                             modifier = Modifier.size(16.dp),
                             strokeWidth = 2.dp,
                         )

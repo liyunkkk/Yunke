@@ -5,6 +5,8 @@ import android.os.Handler
 import android.os.Looper
 import io.github.mangi.eta.agent.skill.SkillRuntime
 import io.github.mangi.eta.agent.device.RootAccess
+import io.github.mangi.eta.agent.scheduler.ScheduledTaskNotificationManager
+import io.github.mangi.eta.data.repository.ScheduledTaskRepository
 import io.github.mangi.eta.agent.terminal.TerminalRuntime
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.core.AndroidAgentLogger
@@ -74,6 +76,8 @@ class EtaApp : Application(), XposedServiceHelper.OnServiceListener {
         TerminalRuntime.initialize(this)
         RootAccess.initialize(this)
         SettingsDataStore.init(this)
+        ScheduledTaskRepository.init(this)
+        ScheduledTaskNotificationManager.ensureChannels(this)
         runBlocking(Dispatchers.IO) {
             io.github.mangi.eta.ui.components.StreamDiagnosticControl.initialize(this@EtaApp)
         }
@@ -110,6 +114,24 @@ class EtaApp : Application(), XposedServiceHelper.OnServiceListener {
             AppearanceSettingsRepository.settings().predictiveBackEnabled
         }
         PredictiveBackController.apply(applicationInfo, predictiveBackEnabled)
+        // Finish the startup recovery before exposing the runtime service listener, so UI/assistant
+        // entry cannot race a process-local schedule run against stale persisted RUNNING rows.
+        // a process-local schedule run against stale persisted RUNNING rows.
+        runBlocking(Dispatchers.IO) {
+            runCatching {
+                ScheduledTaskRepository.reconcileAfterRestartOrClockChange(
+                    context = this@EtaApp,
+                    cause = ScheduledTaskRepository.ReconcileCause.STARTUP,
+                    isTaskRunning = { taskId ->
+                        io.github.mangi.eta.agent.scheduler.ScheduledTaskRunner.isTaskRunning(taskId)
+                    },
+                )
+            }.onFailure { throwable ->
+                AndroidAgentLogger.warn(
+                    "Scheduled task initialization failed: type=${throwable.safeLogType()}"
+                )
+            }
+        }
         XposedServiceHelper.registerListener(this)
         applicationScope.launch {
             LinuxEnvironmentSettingsRepository.initialize(this@EtaApp)

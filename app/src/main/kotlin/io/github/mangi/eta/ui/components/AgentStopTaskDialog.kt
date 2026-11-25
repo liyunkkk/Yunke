@@ -7,6 +7,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import io.github.mangi.eta.agent.runtime.AgentChildRunControl
+import io.github.mangi.eta.ui.components.coui.rememberCouiDialogMaterial
+import io.github.mangi.eta.ui.components.coui.couiPrimaryDialogAction
+import com.itos.coui.theme.CouiTheme
+import com.itos.coui.menu.rememberCouiWindowBackdrop
+import com.itos.coui.dialog.Dialog as CouiDialog
+import com.itos.coui.dialog.CouiDialogAction
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.data.model.AppearanceUiStyle
 
 /** The parent is already ending and its captured children are already paused before this opens. */
 @Composable
@@ -15,6 +23,21 @@ internal fun AgentStopTaskDialog(
     onStopChildren: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
+        val dark = CouiTheme.isDark
+        CouiDialog(
+            visible = true,
+            onDismissRequest = onDismiss,
+            dark = dark,
+            title = "如何处理子代理？",
+            message = "主回复已结束，未完成的子代理已请求暂停。保留暂停可供之后查询并继续；停止也会保留已有结果。返回或关闭默认保持暂停。",
+            confirmAction = couiPrimaryDialogAction(text = "停止子代理", onClick = onStopChildren, dark = dark),
+            dismissAction = CouiDialogAction(text = "暂停子代理", onClick = onPauseChildren),
+            material = rememberCouiDialogMaterial(dark),
+            backdrop = rememberCouiWindowBackdrop(),
+        )
+        return
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("如何处理子代理？") },

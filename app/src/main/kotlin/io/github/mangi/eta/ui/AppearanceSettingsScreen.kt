@@ -5,14 +5,36 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.ExpandMore
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.font.FontWeight
+import com.itos.coui.theme.CouiPresets
+import com.itos.coui.theme.CouiTheme
+import io.github.mangi.eta.ui.app.seedColor
+import io.github.mangi.eta.ui.haptics.TouchHaptics
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -33,32 +55,39 @@ import io.github.mangi.eta.data.model.AppearancePaletteStyle
 import io.github.mangi.eta.data.model.AppearanceSettings
 import io.github.mangi.eta.data.model.AppearanceThemeMode
 import io.github.mangi.eta.data.model.AppearanceTopBarBlurStyle
+import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.data.model.MAX_INTERFACE_SCALE
 import io.github.mangi.eta.data.model.MIN_INTERFACE_SCALE
 import io.github.mangi.eta.data.model.normalizeInterfaceScale
 import io.github.mangi.eta.data.repository.AppearanceSettingsRepository
 import io.github.mangi.eta.ui.app.LocalAppearanceSettings
-import io.github.mangi.eta.ui.components.MiuixDialogActions
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.ui.components.coui.CouiDropdownPreference
+import io.github.mangi.eta.ui.components.coui.CouiPageBottomSpacer
+import com.itos.coui.layout.Divider
+import com.itos.coui.layout.Group
+import io.github.mangi.eta.ui.components.coui.CouiScaffoldPage
+import io.github.mangi.eta.ui.components.coui.CouiSwitchPreference
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import kotlinx.coroutines.launch
-import top.yukonga.miuix.kmp.basic.BasicComponent
+import io.github.mangi.eta.ui.components.BasicComponent
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
-import top.yukonga.miuix.kmp.basic.TextButton
-import top.yukonga.miuix.kmp.basic.Card
+import io.github.mangi.eta.ui.components.TextButton
+import io.github.mangi.eta.ui.components.Card
 import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.Slider
-import top.yukonga.miuix.kmp.basic.Switch
+import io.github.mangi.eta.ui.components.Slider
+import io.github.mangi.eta.ui.components.Switch
 import top.yukonga.miuix.kmp.basic.SliderDefaults
-import top.yukonga.miuix.kmp.basic.SmallTitle
+import io.github.mangi.eta.ui.components.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextField
-import top.yukonga.miuix.kmp.blur.isRuntimeShaderSupported
+import io.github.mangi.eta.ui.components.TextField
+import top.yukonga.miuix.kmp.material.isRuntimeShaderSupported
 import io.github.mangi.eta.ui.components.ArrowPreference
-import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
+import io.github.mangi.eta.ui.components.OverlayDropdownPreference
 import io.github.mangi.eta.ui.components.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import top.yukonga.miuix.kmp.window.WindowDialog
 import kotlin.math.roundToInt
+import io.github.mangi.eta.ui.components.AdaptiveConfirmDialog
 
 @Composable
 internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
@@ -84,6 +113,19 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
         update { current -> current.copy(interfaceScale = scale) }
     }
 
+    fun selectUiStyle(uiStyle: AppearanceUiStyle) {
+        coroutineScope.launch {
+            AppearanceSettingsRepository.selectUiStyle(uiStyle)
+        }
+    }
+
+    val uiStyles = remember { AppearanceUiStyle.entries.sortedBy { it != AppearanceUiStyle.Default } }
+    val uiStyleLabels = uiStyles.map { style ->
+        when (style) {
+            AppearanceUiStyle.MIUIX -> stringResource(R.string.appearance_ui_style_miuix)
+            AppearanceUiStyle.COUI -> stringResource(R.string.appearance_ui_style_coui)
+        }
+    }
     val themeModes = AppearanceThemeMode.entries
     val themeModeLabels = listOf(
         stringResource(R.string.appearance_theme_system),
@@ -101,6 +143,7 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
         stringResource(R.string.appearance_palette_monochrome),
         stringResource(R.string.appearance_palette_fidelity),
         stringResource(R.string.appearance_palette_content),
+        stringResource(R.string.appearance_palette_cmf),
     )
     val accentColors = AppearanceAccentColor.entries
     val accentLabels = listOf(
@@ -130,15 +173,48 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
         stringResource(R.string.appearance_blur_style_progressive_summary),
     )
 
-    MiuixScaffoldPage(
-        title = stringResource(R.string.appearance_title),
-        onBack = onBack,
-    ) {
+    val minScalePercent = (MIN_INTERFACE_SCALE * 100f).roundToInt()
+    val maxScalePercent = (MAX_INTERFACE_SCALE * 100f).roundToInt()
+
+    if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
+        CouiAppearanceSettingsContent(
+            appearance = appearance,
+            onBack = onBack,
+            uiStyles = uiStyles,
+            uiStyleLabels = uiStyleLabels,
+            themeModeLabels = themeModeLabels,
+            accentColors = accentColors,
+            accentLabels = accentLabels,
+            foldLabels = foldLabels,
+            scaleDraft = scaleDraft,
+            onScaleDraftChange = { scaleDraft = it },
+            onSelectUiStyle = ::selectUiStyle,
+            onUpdate = ::update,
+            onCommitScale = ::commitScale,
+            onOpenScaleDialog = {
+                scaleInput = scaleDraft.roundToInt().toString()
+                showScaleDialog = true
+            },
+        )
+    } else {
+        MiuixScaffoldPage(
+            title = stringResource(R.string.appearance_title),
+            onBack = onBack,
+        ) {
         item(key = "appearance_color_title") {
             SmallTitle(text = stringResource(R.string.appearance_group_color))
         }
         item(key = "appearance_color_card") {
             Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+                OverlayDropdownPreference(
+                    title = stringResource(R.string.appearance_ui_style),
+                    summary = uiStyleLabels[uiStyles.indexOf(appearance.uiStyle)],
+                    items = uiStyleLabels,
+                    selectedIndex = uiStyles.indexOf(appearance.uiStyle),
+                    onSelectedIndexChange = { index ->
+                        uiStyles.getOrNull(index)?.let(::selectUiStyle)
+                    },
+                )
                 OverlayDropdownPreference(
                     title = stringResource(R.string.appearance_theme_mode),
                     summary = themeModeLabels[appearance.themeMode.ordinal],
@@ -150,17 +226,15 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
                         }
                     },
                 )
-                OverlayDropdownPreference(
-                    title = stringResource(R.string.appearance_palette_style),
-                    summary = paletteLabels[appearance.paletteStyle.ordinal],
-                    items = paletteLabels,
-                    selectedIndex = appearance.paletteStyle.ordinal,
-                    onSelectedIndexChange = { index ->
-                        paletteStyles.getOrNull(index)?.let { style ->
-                            update { current -> current.copy(paletteStyle = style) }
-                        }
+                SwitchPreference(
+                    title = stringResource(R.string.appearance_monet),
+                    summary = stringResource(R.string.appearance_monet_summary),
+                    checked = appearance.monetEnabled,
+                    onCheckedChange = { enabled ->
+                        update { current -> current.copy(monetEnabled = enabled) }
                     },
                 )
+                // 主题色在莫奈关闭时也生效（直接决定按钮、标签等强调色）。
                 OverlayDropdownPreference(
                     title = stringResource(R.string.appearance_accent_color),
                     summary = accentLabels[appearance.accentColor.ordinal],
@@ -172,6 +246,23 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
                         }
                     },
                 )
+                AnimatedVisibility(
+                    visible = appearance.monetEnabled,
+                    enter = expandVertically(expandFrom = Alignment.Top) + fadeIn(),
+                    exit = shrinkVertically(shrinkTowards = Alignment.Top) + fadeOut(),
+                ) {
+                Column {
+                OverlayDropdownPreference(
+                    title = stringResource(R.string.appearance_palette_style),
+                    summary = paletteLabels[appearance.paletteStyle.ordinal],
+                    items = paletteLabels,
+                    selectedIndex = appearance.paletteStyle.ordinal,
+                    onSelectedIndexChange = { index ->
+                        paletteStyles.getOrNull(index)?.let { style ->
+                            update { current -> current.copy(paletteStyle = style) }
+                        }
+                    },
+                )
                 SwitchPreference(
                     title = stringResource(R.string.appearance_pure_black),
                     summary = stringResource(R.string.appearance_pure_black_summary),
@@ -180,6 +271,8 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
                         update { current -> current.copy(pureBlackEnabled = enabled) }
                     },
                 )
+                }
+                }
             }
         }
 
@@ -316,6 +409,16 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
                         update { current -> current.copy(predictiveBackEnabled = enabled) }
                     },
                 )
+                if (blurSupported) {
+                    SwitchPreference(
+                        title = stringResource(R.string.appearance_progressive_blur),
+                        summary = stringResource(R.string.appearance_progressive_blur_summary),
+                        checked = appearance.progressiveBlurEnabled,
+                        onCheckedChange = { enabled ->
+                            update { current -> current.copy(progressiveBlurEnabled = enabled) }
+                        },
+                    )
+                }
                 ArrowPreference(
                     title = stringResource(R.string.appearance_interface_scale),
                     summary = stringResource(R.string.appearance_interface_scale_summary),
@@ -337,7 +440,7 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
                             valueRange = (MIN_INTERFACE_SCALE * 100f)..(MAX_INTERFACE_SCALE * 100f),
                             onValueChangeFinished = { commitScale(scaleDraft) },
                             showKeyPoints = true,
-                            keyPoints = listOf(80f, 90f, 100f, 110f),
+                            keyPoints = listOf(70f, 85f, 100f, 115f, 130f),
                             magnetThreshold = 0.01f,
                             hapticEffect = SliderDefaults.SliderHapticEffect.Step,
                         )
@@ -350,33 +453,343 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
                 )
             }
         }
+        }
     }
 
     val parsedScale = scaleInput.toIntOrNull()
-    WindowDialog(
+    AdaptiveConfirmDialog(
         show = showScaleDialog,
         title = stringResource(R.string.appearance_interface_scale_dialog_title),
         summary = stringResource(R.string.appearance_interface_scale_dialog_summary),
         onDismissRequest = { showScaleDialog = false },
+        confirmText = stringResource(R.string.action_confirm),
+        confirmEnabled = parsedScale != null && parsedScale in minScalePercent..maxScalePercent,
+        onCancel = { showScaleDialog = false },
+        onConfirm = {
+            parsedScale?.let { commitScale(it.toFloat()) }
+            showScaleDialog = false
+        },
     ) {
-        Column {
-            TextField(
-                value = scaleInput,
-                onValueChange = { value -> scaleInput = value.filter(Char::isDigit).take(3) },
-                label = stringResource(R.string.appearance_interface_scale_input_label),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
+        TextField(
+            value = scaleInput,
+            onValueChange = { value -> scaleInput = value.filter(Char::isDigit).take(3) },
+            label = stringResource(R.string.appearance_interface_scale_input_label),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+}
+
+@Composable
+private fun CouiAppearanceSettingsContent(
+    appearance: AppearanceSettings,
+    onBack: () -> Unit,
+    uiStyles: List<AppearanceUiStyle>,
+    uiStyleLabels: List<String>,
+    themeModeLabels: List<String>,
+    accentColors: List<AppearanceAccentColor>,
+    accentLabels: List<String>,
+    foldLabels: List<String>,
+    scaleDraft: Float,
+    onScaleDraftChange: (Float) -> Unit,
+    onSelectUiStyle: (AppearanceUiStyle) -> Unit,
+    onUpdate: ((AppearanceSettings) -> AppearanceSettings) -> Unit,
+    onCommitScale: (Float) -> Unit,
+    onOpenScaleDialog: () -> Unit,
+) {
+    val themeModes = AppearanceThemeMode.entries
+    val foldLevels = AnswerFoldLevel.entries
+    val minPercent = MIN_INTERFACE_SCALE * 100f
+    val maxPercent = MAX_INTERFACE_SCALE * 100f
+    CouiScaffoldPage(
+        title = stringResource(R.string.appearance_title),
+        onBack = onBack,
+    ) {
+        Group(title = stringResource(R.string.appearance_group_color)) {
+            CouiDropdownPreference(
+                title = stringResource(R.string.appearance_ui_style),
+                items = uiStyleLabels,
+                selectedIndex = uiStyles.indexOf(appearance.uiStyle),
+                onSelectedIndexChange = { index -> uiStyles.getOrNull(index)?.let(onSelectUiStyle) },
             )
-            MiuixDialogActions(
-                confirmText = stringResource(R.string.action_confirm),
-                confirmEnabled = parsedScale != null && parsedScale in 80..110,
-                onCancel = { showScaleDialog = false },
-                onConfirm = {
-                    parsedScale?.let { commitScale(it.toFloat()) }
-                    showScaleDialog = false
+            Divider()
+            CouiDropdownPreference(
+                title = stringResource(R.string.appearance_theme_mode),
+                items = themeModeLabels,
+                selectedIndex = appearance.themeMode.ordinal,
+                onSelectedIndexChange = { index ->
+                    themeModes.getOrNull(index)?.let { mode -> onUpdate { it.copy(themeMode = mode) } }
                 },
-                modifier = Modifier.padding(top = 16.dp),
+            )
+            Divider()
+            CouiAccentColorPreference(
+                selected = appearance.accentColor,
+                accentColors = accentColors,
+                accentLabels = accentLabels,
+                onSelect = { accent ->
+                    onUpdate { it.copy(accentColor = accent) }
+                },
+            )
+        }
+
+        Group(title = stringResource(R.string.appearance_group_interface)) {
+            CouiSwitchPreference(
+                title = stringResource(R.string.appearance_message_timestamps),
+                summary = stringResource(R.string.appearance_message_timestamps_summary),
+                checked = appearance.messageTimestampsEnabled,
+                onCheckedChange = { enabled -> onUpdate { it.copy(messageTimestampsEnabled = enabled) } },
+            )
+            Divider()
+            CouiDropdownPreference(
+                title = stringResource(R.string.appearance_answer_fold),
+                summary = stringResource(R.string.appearance_answer_fold_summary),
+                items = foldLabels,
+                selectedIndex = appearance.answerFoldLevel.ordinal,
+                onSelectedIndexChange = { index ->
+                    foldLevels.getOrNull(index)?.let { level -> onUpdate { it.copy(answerFoldLevel = level) } }
+                },
+            )
+            Divider()
+            CouiSwitchPreference(
+                title = stringResource(R.string.appearance_morph_loading),
+                summary = stringResource(R.string.appearance_morph_loading_summary),
+                checked = appearance.morphLoadingIndicator,
+                onCheckedChange = { enabled -> onUpdate { it.copy(morphLoadingIndicator = enabled) } },
+            )
+            Divider()
+            CouiSwitchPreference(
+                title = stringResource(R.string.appearance_swipe_dismiss),
+                summary = stringResource(R.string.appearance_swipe_dismiss_summary),
+                checked = appearance.swipeDismissEnabled,
+                onCheckedChange = { enabled -> onUpdate { it.copy(swipeDismissEnabled = enabled) } },
+            )
+            Divider()
+            CouiSwitchPreference(
+                title = stringResource(R.string.appearance_predictive_back),
+                summary = stringResource(R.string.appearance_predictive_back_summary),
+                checked = appearance.predictiveBackEnabled,
+                onCheckedChange = { enabled -> onUpdate { it.copy(predictiveBackEnabled = enabled) } },
+            )
+            Divider()
+            CouiInterfaceScalePreference(
+                scaleDraft = scaleDraft.coerceIn(minPercent, maxPercent),
+                minPercent = minPercent,
+                maxPercent = maxPercent,
+                onScaleDraftChange = onScaleDraftChange,
+                onCommitScale = onCommitScale,
+                onOpenScaleDialog = onOpenScaleDialog,
+            )
+        }
+
+        CouiPageBottomSpacer()
+    }
+}
+
+@Composable
+private fun CouiAccentColorPreference(
+    selected: AppearanceAccentColor,
+    accentColors: List<AppearanceAccentColor>,
+    accentLabels: List<String>,
+    onSelect: (AppearanceAccentColor) -> Unit,
+) {
+    val view = LocalView.current
+    val dark = CouiTheme.isDark
+    val selectedLabel = if (selected == AppearanceAccentColor.SYSTEM) {
+        "默认"
+    } else {
+        accentLabels.getOrElse(selected.ordinal) { "" }
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = "主题色",
+                style = MiuixTheme.textStyles.headline1,
+                color = MiuixTheme.colorScheme.onSurface,
+            )
+            Text(
+                text = selectedLabel,
+                style = MiuixTheme.textStyles.body2,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            )
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            accentColors.forEach { accent ->
+                val isSelected = accent == selected
+                val swatchColor = if (accent == AppearanceAccentColor.SYSTEM) {
+                    if (dark) CouiPresets.Dark.accent else CouiPresets.Light.accent
+                } else {
+                    accent.seedColor()
+                }
+                val checkTint = if (swatchColor.luminance() > 0.55f) Color(0xE6000000) else Color.White
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .then(
+                            if (isSelected) {
+                                Modifier.border(2.dp, swatchColor, CircleShape)
+                            } else {
+                                Modifier
+                            },
+                        )
+                        .clickable {
+                            TouchHaptics.click(view)
+                            onSelect(accent)
+                        }
+                        .padding(3.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(30.dp)
+                            .clip(CircleShape)
+                            .background(swatchColor)
+                            .border(
+                                width = 0.5.dp,
+                                color = if (dark) Color(0x33FFFFFF) else Color(0x1F000000),
+                                shape = CircleShape,
+                            ),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        if (isSelected) {
+                            Icon(
+                                imageVector = Icons.Rounded.Check,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                                tint = checkTint,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CouiInterfaceScalePreference(
+    scaleDraft: Float,
+    minPercent: Float,
+    maxPercent: Float,
+    onScaleDraftChange: (Float) -> Unit,
+    onCommitScale: (Float) -> Unit,
+    onOpenScaleDialog: () -> Unit,
+) {
+    val view = LocalView.current
+    val currentPercent = scaleDraft.roundToInt()
+    val accent = CouiTheme.colorScheme.accent
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable {
+                TouchHaptics.click(view)
+                onOpenScaleDialog()
+            }
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.appearance_interface_scale),
+                    style = MiuixTheme.textStyles.headline1,
+                    color = MiuixTheme.colorScheme.onSurface,
+                )
+                Text(
+                    text = stringResource(R.string.appearance_interface_scale_summary),
+                    style = MiuixTheme.textStyles.footnote1,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                )
+            }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (currentPercent != 100) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(MiuixTheme.colorScheme.surfaceContainerHigh)
+                            .clickable {
+                                TouchHaptics.click(view)
+                                onCommitScale(100f)
+                            }
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                    ) {
+                        Text(
+                            text = "重置",
+                            style = MiuixTheme.textStyles.footnote1,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        )
+                    }
+                }
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(accent.copy(alpha = 0.14f))
+                        .clickable {
+                            TouchHaptics.click(view)
+                            onOpenScaleDialog()
+                        }
+                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                ) {
+                    Text(
+                        text = "$currentPercent%",
+                        style = MiuixTheme.textStyles.body2,
+                        fontWeight = FontWeight.SemiBold,
+                        color = accent,
+                    )
+                }
+            }
+        }
+        Slider(
+            value = scaleDraft,
+            onValueChange = onScaleDraftChange,
+            modifier = Modifier.fillMaxWidth(),
+            valueRange = minPercent..maxPercent,
+            onValueChangeFinished = { onCommitScale(scaleDraft) },
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = "${minPercent.roundToInt()}%",
+                style = MiuixTheme.textStyles.footnote2,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            )
+            Text(
+                text = "100%",
+                style = MiuixTheme.textStyles.footnote2,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            )
+            Text(
+                text = "${maxPercent.roundToInt()}%",
+                style = MiuixTheme.textStyles.footnote2,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
             )
         }
     }

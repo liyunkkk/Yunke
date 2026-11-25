@@ -18,8 +18,14 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.unit.dp
+import com.itos.coui.layout.CouiPageDefaults
+import com.itos.coui.shape.CouiCapsuleShape
+import com.itos.coui.theme.CouiTheme
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.app.LocalUiStyle
 
 // Material3 ButtonDefaults.MinHeight = 40dp; tuned to 48dp for touch
 // ergonomics on phones. IconButton family is unaffected (icon-sized).
@@ -35,6 +41,43 @@ val MinisSmallButtonHeight = 32.dp
 private val SmallButtonContentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp)
 
 @Composable
+private fun couiPrimaryButtonColors(defaultColors: ButtonColors, provided: ButtonColors): ButtonColors {
+    if (provided != defaultColors) return provided
+    val dark = CouiTheme.isDark
+    val accent = CouiPageDefaults.themeColors(dark).accent
+    return ButtonDefaults.buttonColors(
+        containerColor = accent,
+        contentColor = Color.White,
+        disabledContainerColor = accent.copy(alpha = 0.3f),
+        disabledContentColor = Color(0x4DFFFFFF),
+    )
+}
+
+@Composable
+private fun couiSecondaryButtonColors(defaultColors: ButtonColors, provided: ButtonColors): ButtonColors {
+    if (provided != defaultColors) return provided
+    val dark = CouiTheme.isDark
+    val scheme = CouiTheme.colorSchemeFor(dark)
+    return ButtonDefaults.buttonColors(
+        containerColor = if (dark) Color(0xFF353535) else Color(0xFFEBEBEB),
+        contentColor = scheme.onSurface,
+        disabledContainerColor = if (dark) Color(0x1AFFFFFF) else Color(0x14000000),
+        disabledContentColor = scheme.onSurface.copy(alpha = 0.35f),
+    )
+}
+
+@Composable
+private fun couiTextButtonColors(defaultColors: ButtonColors, provided: ButtonColors): ButtonColors {
+    if (provided != defaultColors) return provided
+    val dark = CouiTheme.isDark
+    val accent = CouiPageDefaults.themeColors(dark).accent
+    return ButtonDefaults.textButtonColors(
+        contentColor = accent,
+        disabledContentColor = accent.copy(alpha = 0.35f),
+    )
+}
+
+@Composable
 fun MinisButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
@@ -47,13 +90,15 @@ fun MinisButton(
     interactionSource: MutableInteractionSource? = null,
     content: @Composable RowScope.() -> Unit,
 ) {
+    val coui = LocalUiStyle.current == AppearanceUiStyle.COUI
+    val resolvedColors = if (coui) couiPrimaryButtonColors(ButtonDefaults.buttonColors(), colors) else colors
     Button(
         onClick = onClick,
         modifier = modifier.heightIn(min = MinisButtonHeight),
         enabled = enabled,
-        shape = shape,
-        colors = colors,
-        elevation = elevation,
+        shape = if (coui) CouiCapsuleShape else shape,
+        colors = resolvedColors,
+        elevation = if (coui) null else elevation,
         border = border,
         contentPadding = contentPadding,
         interactionSource = interactionSource ?: remember { MutableInteractionSource() },
@@ -74,6 +119,22 @@ fun MinisOutlinedButton(
     interactionSource: MutableInteractionSource? = null,
     content: @Composable RowScope.() -> Unit,
 ) {
+    if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
+        val resolvedColors = couiSecondaryButtonColors(ButtonDefaults.outlinedButtonColors(), colors)
+        Button(
+            onClick = onClick,
+            modifier = modifier.heightIn(min = MinisButtonHeight),
+            enabled = enabled,
+            shape = CouiCapsuleShape,
+            colors = resolvedColors,
+            elevation = null,
+            border = null,
+            contentPadding = contentPadding,
+            interactionSource = interactionSource ?: remember { MutableInteractionSource() },
+            content = content,
+        )
+        return
+    }
     OutlinedButton(
         onClick = onClick,
         modifier = modifier.heightIn(min = MinisButtonHeight),
@@ -101,12 +162,14 @@ fun MinisTextButton(
     interactionSource: MutableInteractionSource? = null,
     content: @Composable RowScope.() -> Unit,
 ) {
+    val coui = LocalUiStyle.current == AppearanceUiStyle.COUI
+    val resolvedColors = if (coui) couiTextButtonColors(ButtonDefaults.textButtonColors(), colors) else colors
     TextButton(
         onClick = onClick,
         modifier = modifier.heightIn(min = MinisButtonHeight),
         enabled = enabled,
-        shape = shape,
-        colors = colors,
+        shape = if (coui) CouiCapsuleShape else shape,
+        colors = resolvedColors,
         elevation = elevation,
         border = border,
         contentPadding = contentPadding,
@@ -131,15 +194,17 @@ fun MinisSmallButton(
     interactionSource: MutableInteractionSource? = null,
     content: @Composable RowScope.() -> Unit,
 ) {
+    val coui = LocalUiStyle.current == AppearanceUiStyle.COUI
+    val resolvedColors = if (coui) couiPrimaryButtonColors(ButtonDefaults.buttonColors(), colors) else colors
     Button(
         onClick = onClick,
         modifier = modifier
             .heightIn(min = MinisSmallButtonHeight)
             .defaultMinSize(minHeight = MinisSmallButtonHeight),
         enabled = enabled,
-        shape = shape,
-        colors = colors,
-        elevation = elevation,
+        shape = if (coui) CouiCapsuleShape else shape,
+        colors = resolvedColors,
+        elevation = if (coui) null else elevation,
         border = border,
         contentPadding = contentPadding,
         interactionSource = interactionSource ?: remember { MutableInteractionSource() },
@@ -160,6 +225,24 @@ fun MinisSmallOutlinedButton(
     interactionSource: MutableInteractionSource? = null,
     content: @Composable RowScope.() -> Unit,
 ) {
+    if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
+        val resolvedColors = couiSecondaryButtonColors(ButtonDefaults.outlinedButtonColors(), colors)
+        Button(
+            onClick = onClick,
+            modifier = modifier
+                .heightIn(min = MinisSmallButtonHeight)
+                .defaultMinSize(minHeight = MinisSmallButtonHeight),
+            enabled = enabled,
+            shape = CouiCapsuleShape,
+            colors = resolvedColors,
+            elevation = null,
+            border = null,
+            contentPadding = contentPadding,
+            interactionSource = interactionSource ?: remember { MutableInteractionSource() },
+            content = content,
+        )
+        return
+    }
     OutlinedButton(
         onClick = onClick,
         modifier = modifier
@@ -189,14 +272,16 @@ fun MinisSmallTextButton(
     interactionSource: MutableInteractionSource? = null,
     content: @Composable RowScope.() -> Unit,
 ) {
+    val coui = LocalUiStyle.current == AppearanceUiStyle.COUI
+    val resolvedColors = if (coui) couiTextButtonColors(ButtonDefaults.textButtonColors(), colors) else colors
     TextButton(
         onClick = onClick,
         modifier = modifier
             .heightIn(min = MinisSmallButtonHeight)
             .defaultMinSize(minHeight = MinisSmallButtonHeight),
         enabled = enabled,
-        shape = shape,
-        colors = colors,
+        shape = if (coui) CouiCapsuleShape else shape,
+        colors = resolvedColors,
         elevation = elevation,
         border = border,
         contentPadding = contentPadding,

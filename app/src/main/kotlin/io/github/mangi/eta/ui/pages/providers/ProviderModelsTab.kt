@@ -74,6 +74,9 @@ import androidx.navigationevent.compose.NavigationBackHandler
 import androidx.navigationevent.compose.rememberNavigationEventState
 import io.github.mangi.eta.EtaApp
 import io.github.mangi.eta.R
+import io.github.mangi.eta.data.model.GeminiProviderSetting
+import io.github.mangi.eta.data.provider.GeminiModelCapabilities
+import io.github.mangi.eta.data.provider.OfficialModelCatalog
 import io.github.mangi.eta.data.model.Model
 import io.github.mangi.eta.data.model.VisionChatModels
 import io.github.mangi.eta.data.model.ModelReasoningCapabilities
@@ -87,7 +90,6 @@ import io.github.mangi.eta.agent.model.oauth.OpenAiCodexOAuth
 import io.github.mangi.eta.data.repository.RemoteModelFetcher
 import io.github.mangi.eta.data.model.SpeechSynthesisModels
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
-import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import io.github.mangi.eta.ui.components.PreferenceIcon
 import io.github.mangi.eta.ui.components.StatusError
@@ -97,26 +99,31 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
-import top.yukonga.miuix.kmp.basic.Card
+import io.github.mangi.eta.ui.components.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
-import top.yukonga.miuix.kmp.basic.Checkbox
-import top.yukonga.miuix.kmp.basic.HorizontalDivider
+import io.github.mangi.eta.ui.components.Checkbox
+import io.github.mangi.eta.ui.components.HorizontalDivider
 import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.IconButton
-import top.yukonga.miuix.kmp.basic.InputField
+import io.github.mangi.eta.ui.components.IconButton
+import io.github.mangi.eta.ui.components.InputField
 import top.yukonga.miuix.kmp.basic.ScrollBehavior
-import top.yukonga.miuix.kmp.basic.SmallTitle
+import io.github.mangi.eta.ui.components.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextButton
-import top.yukonga.miuix.kmp.basic.TextField
-import top.yukonga.miuix.kmp.overlay.OverlayDialog
-import top.yukonga.miuix.kmp.preference.ArrowPreference
-import top.yukonga.miuix.kmp.preference.SwitchPreference
+import io.github.mangi.eta.ui.components.TextButton
+import io.github.mangi.eta.ui.components.TextField
+import io.github.mangi.eta.ui.components.ArrowPreference
+import io.github.mangi.eta.ui.components.SwitchPreference
 import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.LocalContentColor
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import top.yukonga.miuix.kmp.utils.scrollEndHaptic
+import io.github.mangi.eta.ui.components.AdaptiveConfirmDialog
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.components.coui.CouiNoticeDialog
+import io.github.mangi.eta.ui.components.coui.CouiConfirmDialog
+import io.github.mangi.eta.ui.components.coui.EtaMaterialCheckbox
 
 private val modelSearchSeparators = Regex("""[^\p{L}\p{N}]+""")
 private val allReasoningEffortTiers = listOf(
@@ -205,6 +212,7 @@ internal fun ProviderModelsTab(
     onSelectCurrent: ((String) -> Unit)? = null,
 ) {
     val context = LocalContext.current
+    val isVertex = provider is GeminiProviderSetting && provider.isVertexAi
     val storedModelId by RuntimeConfigRepository.selectedModelIdFlow().collectAsState(initial = null)
     val selectedTranslationProviderId by RuntimeConfigRepository
         .selectedTranslationProviderIdFlow().collectAsState(initial = null)
@@ -253,10 +261,32 @@ internal fun ProviderModelsTab(
         ) {
             item(key = "actions", contentType = "section") {
                 ProviderSection(title = stringResource(R.string.ui_model_management_183414)) {
+                    if (provider is GeminiProviderSetting) {
+                        ArrowPreference(
+                            title = "补入 Gemini 内置预设",
+                            summary = if (isVertex) "仅列出当前地域支持的 Gemini 4 模型；保留已有同 ID 配置" else "使用内置 Gemini 模型目录",
+                            enabled = !isFetching && !isMutatingModel,
+                            onClick = {
+                                scope.launch {
+                                    isMutatingModel = true
+                                    try {
+                                        val models = OfficialModelCatalog.modelsForProvider(provider)
+                                        val existing = provider.models.map { it.modelId.trim().lowercase() }.toSet()
+                                        val additions = models.filter { it.modelId.trim().lowercase() !in existing }
+                                        ModelRepository.addSelectedRemoteModels(provider.id, additions)
+                                        RuntimeConfigRepository.syncToRemotePreferences(EtaApp.serviceInstance)
+                                        message = "已补入 ${additions.size} 个内置模型"
+                                    } catch (cancelled: CancellationException) { throw cancelled }
+                                    catch (failure: Exception) { message = failure.message ?: "补入模型失败" }
+                                    finally { isMutatingModel = false }
+                                }
+                            },
+                        )
+                    }
                     ArrowPreference(
                         title = if (isFetching) context.getString(R.string.page_retrieving_a880c9) else context.getString(R.string.page_automatically_pull_from_remote_f883d0),
-                        summary = stringResource(R.string.provider_models_endpoint_summary, provider.baseUrl),
-                        enabled = !isFetching && !isMutatingModel && !SpeechSynthesisModels.isSpeechOnlyProvider(provider),
+                        summary = if (isVertex) "Vertex AI API Key 使用内置预设或手动添加模型" else stringResource(R.string.provider_models_endpoint_summary, provider.baseUrl),
+                        enabled = !isVertex && !isFetching && !isMutatingModel && !SpeechSynthesisModels.isSpeechOnlyProvider(provider),
                         startAction = {
                             PreferenceIcon(
                                 icon = Icons.Rounded.CloudDownload,
@@ -538,6 +568,7 @@ internal fun ProviderModelsTab(
 
     editingModel?.let { model ->
         ModelEditDialog(
+            provider = provider,
             model = model,
             isNew = isCreatingModel,
             isSaving = isMutatingModel,
@@ -574,19 +605,17 @@ internal fun ProviderModelsTab(
     }
 
     modelPendingDelete?.let { model ->
-        OverlayDialog(
+        AdaptiveConfirmDialog(
             show = true,
             title = stringResource(R.string.ui_delete_model_cf24da),
             summary = stringResource(R.string.provider_model_delete_summary, model.displayName),
             onDismissRequest = { if (!isMutatingModel) modelPendingDelete = null },
-        ) {
-            MiuixDialogActions(
-                confirmText = if (isMutatingModel) context.getString(R.string.page_deleting_6f941d) else context.getString(R.string.page_delete_3755f5),
-                cancelEnabled = !isMutatingModel,
-                confirmEnabled = !isMutatingModel,
-                destructive = true,
-                onCancel = { modelPendingDelete = null },
-                onConfirm = {
+            confirmText = if (isMutatingModel) context.getString(R.string.page_deleting_6f941d) else context.getString(R.string.page_delete_3755f5),
+            cancelEnabled = !isMutatingModel,
+            confirmEnabled = !isMutatingModel,
+            destructive = true,
+            onCancel = { modelPendingDelete = null },
+            onConfirm = {
                     scope.launch {
                         isMutatingModel = true
                         try {
@@ -607,8 +636,7 @@ internal fun ProviderModelsTab(
                         }
                     }
                 },
-            )
-        }
+        )
     }
 
     remoteCandidates?.let { candidates ->
@@ -645,7 +673,7 @@ internal fun ProviderModelsTab(
     }
 
     if (showBatchDeleteDialog) {
-        OverlayDialog(
+        AdaptiveConfirmDialog(
             show = true,
             title = stringResource(R.string.ui_delete_model_cf24da),
             summary = pluralStringResource(
@@ -654,14 +682,12 @@ internal fun ProviderModelsTab(
                 selectedModelIds.size,
             ),
             onDismissRequest = { if (!isMutatingModel) showBatchDeleteDialog = false },
-        ) {
-            MiuixDialogActions(
-                confirmText = if (isMutatingModel) context.getString(R.string.page_deleting_6f941d) else context.getString(R.string.page_delete_3755f5),
-                cancelEnabled = !isMutatingModel,
-                confirmEnabled = !isMutatingModel,
-                destructive = true,
-                onCancel = { showBatchDeleteDialog = false },
-                onConfirm = {
+            confirmText = if (isMutatingModel) context.getString(R.string.page_deleting_6f941d) else context.getString(R.string.page_delete_3755f5),
+            cancelEnabled = !isMutatingModel,
+            confirmEnabled = !isMutatingModel,
+            destructive = true,
+            onCancel = { showBatchDeleteDialog = false },
+            onConfirm = {
                     scope.launch {
                         val deletedCount = selectedModelIds.size
                         isMutatingModel = true
@@ -689,8 +715,7 @@ internal fun ProviderModelsTab(
                         }
                     }
                 },
-            )
-        }
+        )
     }
 }
 
@@ -909,6 +934,7 @@ private fun ModelListItem(
 
 @Composable
 private fun ModelEditDialog(
+    provider: ProviderSetting,
     model: Model,
     isNew: Boolean,
     isSaving: Boolean,
@@ -925,10 +951,12 @@ private fun ModelEditDialog(
         mutableStateOf(model.contextWindowOverride?.toString().orEmpty())
     }
     val automaticReasoning = remember(model.id, model.modelId, model.reasoning, model.reasoningCapabilities) {
-        ReasoningCapabilityResolver.automaticCapabilities(model)
+        if (provider is GeminiProviderSetting) GeminiModelCapabilities.reasoningCapabilities(model.modelId)
+        else ReasoningCapabilityResolver.automaticCapabilities(model)
     }
     val suggestedReasoning = remember(model.id, model.modelId, model.reasoning, model.reasoningCapabilities) {
-        ReasoningCapabilityResolver.suggestedCapabilities(model)
+        if (provider is GeminiProviderSetting) GeminiModelCapabilities.requestReasoningCapabilities(model.modelId)
+        else ReasoningCapabilityResolver.suggestedCapabilities(model)
     }
     var reasoningOverrideActive by remember(model.id, isNew) {
         mutableStateOf(
@@ -956,6 +984,8 @@ private fun ModelEditDialog(
     LaunchedEffect(automaticVision, visionOverrideActive) {
         if (!visionOverrideActive) visionEnabled = automaticVision
     }
+    val vertexModelError = if (provider is GeminiProviderSetting && provider.isVertexAi &&
+        modelId.isNotBlank() && !GeminiModelCapabilities.isGemini4(modelId)) "Vertex AI 对话仅支持 Gemini 4 系列模型" else null
     val contextError = contextWindowInputError(
         contextWindowOverrideText,
         context.getString(R.string.page_the_context_length_must_be_a_positive_integer_06ca7a),
@@ -978,25 +1008,36 @@ private fun ModelEditDialog(
         reasoningOverride = reasoningEnabled.takeIf { reasoningOverrideActive },
         reasoningCapabilitiesOverride = if (reasoningOverrideActive && reasoningEnabled) {
             (model.effectiveReasoningCapabilities ?: suggestedReasoning).copy(
-                supportedEfforts = allReasoningEffortTiers,
+                supportedEfforts = if (provider is GeminiProviderSetting) {
+                    if (provider.isVertexAi) GeminiModelCapabilities.requestReasoningCapabilities(modelId).supportedEfforts
+                    else GeminiModelCapabilities.configurableEfforts
+                } else allReasoningEffortTiers,
                 defaultEffort = model.effectiveReasoningCapabilities
                     ?.defaultEffort
                     ?.takeIf { it != ReasoningEffort.OFF }
                     ?: suggestedReasoning.defaultEffort
                     ?: ReasoningEffort.MEDIUM,
                 defaultEnabled = true,
-                mandatory = false,
-                canDisable = true,
+                mandatory = provider is GeminiProviderSetting,
+                canDisable = provider !is GeminiProviderSetting,
             )
         } else {
             null
         },
     )
 
-    OverlayDialog(
+    AdaptiveConfirmDialog(
         show = true,
         title = if (isNew) context.getString(R.string.page_add_model_532a64) else context.getString(R.string.page_edit_model_29e31e),
         onDismissRequest = { if (!isSaving) onDismiss() },
+        confirmText = if (isSaving) context.getString(R.string.page_saving_d70d42) else context.getString(R.string.page_save_fadf24),
+        confirmEnabled = !isSaving &&
+                displayName.isNotBlank() &&
+                modelId.isNotBlank() &&
+                contextError == null && vertexModelError == null,
+        cancelEnabled = !isSaving,
+        onCancel = onDismiss,
+        onConfirm = { onSubmit(updated()) },
     ) {
         Column {
             Column(
@@ -1038,7 +1079,7 @@ private fun ModelEditDialog(
                     ),
                     modifier = Modifier.fillMaxWidth(),
                 )
-                contextError?.let { validationError ->
+                (vertexModelError ?: contextError)?.let { validationError ->
                     Text(
                         text = validationError,
                         style = MiuixTheme.textStyles.footnote2,
@@ -1072,6 +1113,9 @@ private fun ModelEditDialog(
                         },
                         enabled = !isSaving,
                     )
+                    if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
+                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+                    }
                     SwitchPreference(
                         checked = visionEnabled,
                         onCheckedChange = { enabled ->
@@ -1134,17 +1178,6 @@ private fun ModelEditDialog(
                 }
             }
         }
-        MiuixDialogActions(
-            confirmText = if (isSaving) context.getString(R.string.page_saving_d70d42) else context.getString(R.string.page_save_fadf24),
-            confirmEnabled = !isSaving &&
-                displayName.isNotBlank() &&
-                modelId.isNotBlank() &&
-                contextError == null,
-            cancelEnabled = !isSaving,
-            onCancel = onDismiss,
-            onConfirm = { onSubmit(updated()) },
-            modifier = Modifier.padding(top = 16.dp),
-        )
     }
 }
 
@@ -1191,7 +1224,73 @@ private fun RemoteModelPickDialog(
         }
     }
     fun keyOf(model: Model) = model.modelId.trim().lowercase()
-    AlertDialog(
+    if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiConfirmDialog(
+        visible = true,
+        message = null,
+        title = stringResource(R.string.provider_remote_pick_title),
+        confirmText = stringResource(R.string.provider_remote_add),
+        cancelText = stringResource(R.string.action_cancel),
+        onConfirm = { onConfirm(models.filter { keyOf(it) in selectedKeys }) },
+        onDismissRequest = { onDismiss() },
+    ) {
+        Column(Modifier.fillMaxWidth().height(420.dp)) {
+                io.github.mangi.eta.ui.components.coui.CouiTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    singleLine = true,
+                    placeholder = stringResource(R.string.ui_search_model_df5586),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(onClick = {
+                        selectedKeys = selectedKeys + visible.map(::keyOf)
+                    }) { MaterialText(stringResource(R.string.provider_remote_select_all)) }
+                    TextButton(onClick = {
+                        val visibleKeys = visible.map(::keyOf).toSet()
+                        val kept = selectedKeys - visibleKeys
+                        val flipped = visibleKeys - selectedKeys
+                        selectedKeys = kept + flipped
+                    }) { MaterialText(stringResource(R.string.provider_remote_invert)) }
+                    Spacer(Modifier.weight(1f))
+                    MaterialText(
+                        "${selectedKeys.size}/${models.size}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
+                    items(visible, key = { keyOf(it) }) { model ->
+                        val key = keyOf(model)
+                        val checked = key in selectedKeys
+                        Row(
+                            Modifier.fillMaxWidth().clickable {
+                                selectedKeys = if (checked) selectedKeys - key else selectedKeys + key
+                            }.padding(vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            EtaMaterialCheckbox(checked = checked, onCheckedChange = { on ->
+                                selectedKeys = if (on) selectedKeys + key else selectedKeys - key
+                            })
+                            Column(Modifier.weight(1f)) {
+                                MaterialText(model.displayName.ifBlank { model.modelId }, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                if (model.displayName.isNotBlank() && model.displayName != model.modelId) {
+                                    MaterialText(
+                                        model.modelId,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+    } else AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = MaterialTheme.colorScheme.surface,
         title = { MaterialText(stringResource(R.string.provider_remote_pick_title)) },
@@ -1234,7 +1333,7 @@ private fun RemoteModelPickDialog(
                             }.padding(vertical = 2.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Checkbox(checked = checked, onCheckedChange = { on ->
+                            EtaMaterialCheckbox(checked = checked, onCheckedChange = { on ->
                                 selectedKeys = if (on) selectedKeys + key else selectedKeys - key
                             })
                             Column(Modifier.weight(1f)) {

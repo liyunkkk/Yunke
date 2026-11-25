@@ -233,6 +233,12 @@
   <string name="appearance_palette_monochrome">單色（Monochrome）</string>
   <string name="appearance_palette_fidelity">保真（Fidelity）</string>
   <string name="appearance_palette_content">內容（Content）</string>
+  <string name="appearance_ui_style">介面樣式</string>
+  <string name="appearance_ui_style_coui">COUI</string>
+  <string name="appearance_ui_style_miuix">Miuix</string>
+  <string name="appearance_palette_cmf">質感工藝（CMF）</string>
+  <string name="appearance_progressive_blur">漸進模糊</string>
+  <string name="appearance_progressive_blur_summary">為頂部列與側欄浮層啟用漸進模糊，關閉可提升流暢度</string>
   <string name="appearance_accent_color">強調色</string>
   <string name="appearance_accent_system">系統取色</string>
   <string name="appearance_accent_blue">藍色</string>
@@ -257,9 +263,9 @@
   <string name="appearance_predictive_back">預測性返回手勢</string>
   <string name="appearance_predictive_back_summary">啟用預測性返回動畫效果</string>
   <string name="appearance_interface_scale">介面縮放</string>
-  <string name="appearance_interface_scale_summary" formatted="false">調整全域顯示比例（80%–110%）</string>
+  <string name="appearance_interface_scale_summary" formatted="false">調整全域顯示比例（70%–130%）</string>
   <string name="appearance_interface_scale_dialog_title">介面縮放</string>
-  <string name="appearance_interface_scale_dialog_summary">請輸入 80 至 110 之間的整數</string>
+  <string name="appearance_interface_scale_dialog_summary">請輸入 70 至 130 之間的整數</string>
   <string name="appearance_interface_scale_input_label">百分比</string>
   <string name="appearance_morph_loading">圓形載入指示器</string>
   <string name="appearance_morph_loading_summary">送出訊息後顯示變形動畫</string>
@@ -392,6 +398,8 @@
   <string name="tool_launch_app">開啟應用程式</string>
   <string name="tool_open_uri">使用應用程式開啟</string>
   <string name="tool_browser_use">瀏覽網頁</string>
+  <string name="tool_subagent">執行子代理</string>
+  <string name="tool_subagent_profile">管理子代理</string>
   <string name="tool_terminal">終端機</string>
   <string name="tool_run_command">執行指令</string>
   <string name="tool_read_file">讀取檔案</string>
@@ -1595,4 +1603,24 @@
   <string name="settings_model_retry_summary">網路或中轉站不穩時可調高；0 表示不自動重試。</string>
   <string name="settings_about_version">版本</string>
   <string name="settings_about_feedback">問題反饋</string>
+  <string name="image_gen_settings_title">AI 生圖</string>
+  <string name="image_gen_gallery_title">已生成圖片</string>
+  <string name="image_gen_configure_action">設定生圖</string>
+  <string name="tool_generate_image">AI 生圖</string>
+  <string name="tool_generate_image_description">使用已設定的生圖模型根據文字描述創作圖片，或依據參考圖進行圖像編輯與風格遷移。</string>
+  <string name="route_scheduled_tasks">排程任務</string>
+  <string name="route_scheduled_task_detail">任務詳情</string>
+  <string name="route_scheduled_task_new">新增排程任務</string>
+  <string name="route_scheduled_task_edit">編輯排程任務</string>
+  <string name="scheduled_notification_channel_results">排程任務結果</string>
+  <string name="scheduled_notification_channel_results_desc">排程任務完成後的簡報與變動提醒</string>
+  <string name="scheduled_notification_channel_alerts">排程任務告警</string>
+  <string name="scheduled_notification_channel_alerts_desc">任務執行失敗、連續失敗自動暫停及待解鎖提醒</string>
+  <string name="scheduled_notification_completed_fallback">排程任務已完成，點按檢視完整對話。</string>
+  <string name="scheduled_notification_failed_title">排程任務失敗：%1$s</string>
+  <string name="scheduled_notification_auto_disabled_title">排程任務已暫停：%1$s</string>
+  <string name="scheduled_notification_failed_fallback">任務執行失敗，點按檢視詳情。</string>
+  <string name="scheduled_notification_gui_ready_title">排程任務就緒：%1$s</string>
+  <string name="scheduled_action_run_now">立即試跑</string>
+  <string name="scheduled_action_stop">停止執行</string>
 </resources>

@@ -29,6 +29,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import com.itos.coui.icons.CouiIcons
 import io.github.mangi.eta.agent.mcp.McpServerManager
 import io.github.mangi.eta.agent.mcp.validateMcpEndpoint
 import io.github.mangi.eta.data.model.McpAuthorizationType
@@ -37,24 +40,23 @@ import io.github.mangi.eta.data.model.McpServerSetting
 import io.github.mangi.eta.data.model.McpToolDefinition
 import io.github.mangi.eta.data.repository.McpServerRepository
 import io.github.mangi.eta.ui.components.ListEmptyState
-import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import io.github.mangi.eta.ui.navigation.AppRoute
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import top.yukonga.miuix.kmp.basic.BasicComponent
-import top.yukonga.miuix.kmp.basic.Card
+import io.github.mangi.eta.ui.components.BasicComponent
+import io.github.mangi.eta.ui.components.Card
 import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.IconButton
-import top.yukonga.miuix.kmp.basic.SmallTitle
+import io.github.mangi.eta.ui.components.IconButton
+import io.github.mangi.eta.ui.components.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextButton
-import top.yukonga.miuix.kmp.basic.TextField
-import top.yukonga.miuix.kmp.preference.ArrowPreference
-import top.yukonga.miuix.kmp.preference.SwitchPreference
+import io.github.mangi.eta.ui.components.TextButton
+import io.github.mangi.eta.ui.components.TextField
+import io.github.mangi.eta.ui.components.ArrowPreference
+import io.github.mangi.eta.ui.components.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import top.yukonga.miuix.kmp.window.WindowDialog
+import io.github.mangi.eta.ui.components.AdaptiveConfirmDialog
 
 @Composable
 internal fun McpServersScreen(
@@ -76,9 +78,10 @@ internal fun McpServersScreen(
         title = stringResource(R.string.route_mcp_servers),
         onBack = onBack,
         actions = {
+            val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
             IconButton(onClick = { showAdd = true }) {
                 Icon(
-                    imageVector = Icons.Rounded.Add,
+                    imageVector = if (isCoui) CouiIcons.Outlined.Add else Icons.Rounded.Add,
                     contentDescription = stringResource(R.string.mcp_add_server),
                 )
             }
@@ -115,61 +118,18 @@ internal fun McpServersScreen(
         }
     }
 
-    WindowDialog(
+    AdaptiveConfirmDialog(
         show = showAdd,
         title = stringResource(R.string.mcp_add_server),
         onDismissRequest = { if (!working) showAdd = false },
-    ) {
-        Column(
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(max = 520.dp)
-                .verticalScroll(rememberScrollState()),
-        ) {
-            TextField(
-                value = name,
-                onValueChange = { name = it },
-                label = stringResource(R.string.mcp_server_name),
-                singleLine = true,
-                enabled = !working,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            TextField(
-                value = url,
-                onValueChange = { url = it },
-                label = stringResource(R.string.mcp_server_url),
-                singleLine = true,
-                enabled = !working,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                modifier = Modifier.fillMaxWidth(),
-            )
-            TextField(
-                value = token,
-                onValueChange = { token = it },
-                label = stringResource(R.string.mcp_bearer_optional),
-                singleLine = true,
-                enabled = !working,
-                visualTransformation = PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                modifier = Modifier.fillMaxWidth(),
-            )
-            error?.let {
-                Text(
-                    text = it,
-                    style = MiuixTheme.textStyles.body2,
-                    color = MiuixTheme.colorScheme.error,
-                )
-            }
-            MiuixDialogActions(
-                confirmText = if (working) {
+        confirmText = if (working) {
                     stringResource(R.string.mcp_connecting)
                 } else {
                     stringResource(R.string.mcp_add_server)
                 },
-                confirmEnabled = !working,
-                onCancel = { showAdd = false },
-                onConfirm = {
+        confirmEnabled = !working,
+        onCancel = { showAdd = false },
+        onConfirm = {
                     val normalizedName = name.trim()
                     val normalizedUrl = url.trim()
                     error = when {
@@ -213,7 +173,48 @@ internal fun McpServersScreen(
                         }
                     }
                 },
+    ) {
+        Column(
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 520.dp)
+                .verticalScroll(rememberScrollState()),
+        ) {
+            TextField(
+                value = name,
+                onValueChange = { name = it },
+                label = stringResource(R.string.mcp_server_name),
+                singleLine = true,
+                enabled = !working,
+                modifier = Modifier.fillMaxWidth(),
             )
+            TextField(
+                value = url,
+                onValueChange = { url = it },
+                label = stringResource(R.string.mcp_server_url),
+                singleLine = true,
+                enabled = !working,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            TextField(
+                value = token,
+                onValueChange = { token = it },
+                label = stringResource(R.string.mcp_bearer_optional),
+                singleLine = true,
+                enabled = !working,
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            error?.let {
+                Text(
+                    text = it,
+                    style = MiuixTheme.textStyles.body2,
+                    color = MiuixTheme.colorScheme.error,
+                )
+            }
         }
     }
 }
@@ -382,62 +383,44 @@ internal fun McpServerDetailScreen(
         }
     }
 
-    WindowDialog(
+    AdaptiveConfirmDialog(
         show = pendingBulkEnable,
         title = "开启全部 MCP 工具",
         summary = "此操作包含未标记为只读的工具。确认后将开启此服务器全部工具。",
         onDismissRequest = { pendingBulkEnable = false },
-    ) {
-        MiuixDialogActions(
-            confirmText = "全部开启",
-            destructive = true,
-            onCancel = { pendingBulkEnable = false },
-            onConfirm = {
-                pendingBulkEnable = false
-                server?.let { changeTools(it.tools.map { tool -> tool.name }, true) }
-            },
-        )
-    }
+        confirmText = "全部开启",
+        destructive = true,
+        onCancel = { pendingBulkEnable = false },
+        onConfirm = {
+            pendingBulkEnable = false
+            server?.let { changeTools(it.tools.map { tool -> tool.name }, true) }
+        },
+    )
 
     pendingRiskyTool?.let { tool ->
-        WindowDialog(
+        AdaptiveConfirmDialog(
             show = true,
             title = stringResource(R.string.mcp_enable_risky_tool),
             summary = stringResource(R.string.mcp_enable_risky_tool_summary, tool.name, server?.name.orEmpty()),
             onDismissRequest = { pendingRiskyTool = null },
-        ) {
-            MiuixDialogActions(
-                confirmText = stringResource(R.string.mcp_enable_tool),
-                destructive = true,
-                onCancel = { pendingRiskyTool = null },
-                onConfirm = {
-                    changeTools(listOf(tool.name), true)
-                    pendingRiskyTool = null
-                },
-            )
-        }
+            confirmText = stringResource(R.string.mcp_enable_tool),
+            destructive = true,
+            onCancel = { pendingRiskyTool = null },
+            onConfirm = {
+                changeTools(listOf(tool.name), true)
+                pendingRiskyTool = null
+            },
+        )
     }
 
-    WindowDialog(
+    AdaptiveConfirmDialog(
         show = showToken,
         title = stringResource(R.string.mcp_update_token),
         summary = stringResource(R.string.mcp_update_token_summary),
         onDismissRequest = { showToken = false },
-    ) {
-        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            TextField(
-                value = token,
-                onValueChange = { token = it },
-                label = stringResource(R.string.mcp_bearer_token),
-                singleLine = true,
-                visualTransformation = PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                modifier = Modifier.fillMaxWidth(),
-            )
-            MiuixDialogActions(
-                confirmText = stringResource(R.string.action_save),
-                onCancel = { showToken = false },
-                onConfirm = {
+        confirmText = stringResource(R.string.action_save),
+        onCancel = { showToken = false },
+        onConfirm = {
                     server?.let { current ->
                         scope.launch(Dispatchers.IO) {
                             McpServerRepository.update(
@@ -455,28 +438,35 @@ internal fun McpServerDetailScreen(
                         showToken = false
                     }
                 },
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            TextField(
+                value = token,
+                onValueChange = { token = it },
+                label = stringResource(R.string.mcp_bearer_token),
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                modifier = Modifier.fillMaxWidth(),
             )
         }
     }
 
-    WindowDialog(
+    AdaptiveConfirmDialog(
         show = showDelete,
         title = stringResource(R.string.mcp_delete_server),
         summary = stringResource(R.string.mcp_delete_confirm, server?.name.orEmpty()),
         onDismissRequest = { showDelete = false },
-    ) {
-        MiuixDialogActions(
-            confirmText = stringResource(R.string.ui_delete_3755f5),
-            destructive = true,
-            onCancel = { showDelete = false },
-            onConfirm = {
-                scope.launch {
-                    withContext(Dispatchers.IO) { McpServerRepository.delete(serverId) }
-                    onBack()
-                }
-            },
-        )
-    }
+        confirmText = stringResource(R.string.ui_delete_3755f5),
+        destructive = true,
+        onCancel = { showDelete = false },
+        onConfirm = {
+            scope.launch {
+                withContext(Dispatchers.IO) { McpServerRepository.delete(serverId) }
+                onBack()
+            }
+        },
+    )
 }
 
 @Composable

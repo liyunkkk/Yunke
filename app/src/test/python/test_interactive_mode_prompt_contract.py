@@ -50,12 +50,23 @@ class InteractiveModePromptContractTest(unittest.TestCase):
         self.assertEqual(2, len(re.findall(r'\binteractiveModeEnabled\b', arguments)))
         self.assertNotIn('InteractiveModePreference', arguments)
 
-    def test_false_is_last_optional_argument_for_pure_prompt_builders_and_client(self):
+    def test_false_default_is_preserved_before_independent_prompt_options(self):
         for text, name in ((self.builder, 'buildInitialMessages'),
                            (self.builder, 'buildSystemMessages'), (self.client, 'complete')):
             signatures = argument_groups(text, r'\bfun\s+' + name)
             self.assertEqual(1, len(signatures))
-            self.assertRegex(signatures[0][1], r'interactiveModeEnabled\s*:\s*Boolean\s*=\s*false\s*,\s*$')
+            arguments = signatures[0][1]
+            self.assertEqual(1, len(re.findall(r'\binteractiveModeEnabled\b', arguments)))
+            # New independent options follow the frozen interactive flag; keep their
+            # exact defaults and reject a default derived from another setting.
+            tail = (r'toolFilter\s*:\s*\(\(JSONArray\)\s*->\s*JSONArray\)\?\s*=\s*null\s*,\s*'
+                    if name == 'complete' else '')
+            self.assertRegex(arguments,
+                r'interactiveModeEnabled\s*:\s*Boolean\s*=\s*false\s*,\s*'
+                r'scheduledTaskTools\s*:\s*Boolean\s*=\s*false\s*,\s*'
+                r'extraSystemContext\s*:\s*String\s*=\s*,\s*' + tail + r'$')
+            # code_mask removes string literals, so check the empty default separately.
+            self.assertRegex(text, r'extraSystemContext\s*:\s*String\s*=\s*""\s*,')
         self.assertNotIn('InteractiveModePreference', code_mask(self.builder))
         self.assertNotIn('InteractiveModePreference', code_mask(self.client))
 
@@ -148,7 +159,14 @@ class InteractiveModePromptContractTest(unittest.TestCase):
             self.assertNotIn('AgentTaskSurface.save', text)
             self.assertNotIn('Prefs.putBoolean', text)
         self.assertEqual(1, self.builder.count('interactiveModePromptClause(interactiveModeEnabled)'))
-        self.assertIn('"不要改用坐标或 Shell 重放 GUI 动作。" +\n                    interactiveModePromptClause(interactiveModeEnabled)', self.builder)
+        # The scheduling hint may sit between the GUI rule and interactive clause,
+        # but the interactive clause must remain outside that conditional.
+        self.assertRegex(self.builder,
+            r'"不要改用坐标或 Shell 重放 GUI 动作。"\s*\+\s*'
+            r'\(if\s*\(scheduledTaskTools\)\s*\{\s*'
+            r'"[^"\n]*"\s*\+\s*"[^"\n]*"\s*'
+            r'\}\s*else\s*""\)\s*\+\s*'
+            r'interactiveModePromptClause\(interactiveModeEnabled\)')
 
 
 if __name__ == '__main__':

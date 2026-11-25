@@ -83,6 +83,7 @@ import io.github.mangi.eta.agent.browser.ported.browser.BrowserTabPool
 import io.github.mangi.eta.agent.browser.ported.browser.UserAgentProfile
 import io.github.mangi.eta.agent.browser.ported.ui.chat.StandardChatSheet
 import kotlinx.coroutines.launch
+import io.github.mangi.eta.ui.components.coui.EtaLinearProgressIndicator
 
 /**
  * Bottom sheet presenting the browser tab pool with tab bar, URL bar,
@@ -295,7 +296,7 @@ fun BrowserSheet(
             }
 
             if (isLoading) {
-                LinearProgressIndicator(
+                EtaLinearProgressIndicator(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(2.dp),
@@ -367,12 +368,12 @@ fun BrowserSheet(
                         overflow = TextOverflow.Ellipsis,
                     )
                     if (dl.progress >= 0f) {
-                        LinearProgressIndicator(
+                        EtaLinearProgressIndicator(
                             progress = { dl.progress },
                             modifier = Modifier.weight(1f).height(3.dp),
                         )
                     } else {
-                        LinearProgressIndicator(
+                        EtaLinearProgressIndicator(
                             modifier = Modifier.weight(1f).height(3.dp),
                         )
                     }

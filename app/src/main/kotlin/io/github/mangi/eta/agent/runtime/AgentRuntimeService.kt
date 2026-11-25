@@ -37,6 +37,7 @@ import io.github.mangi.eta.EtaApp
 import io.github.mangi.eta.agent.accessibility.AgentAccessibilityService
 import io.github.mangi.eta.agent.device.RootAccess
 import io.github.mangi.eta.agent.media.AgentImageCodec
+import io.github.mangi.eta.agent.device.AgentTaskSurfaceMode
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.overlay.AgentOverlayCapsule
 import io.github.mangi.eta.agent.overlay.AgentOverlayGlow
@@ -51,6 +52,7 @@ import io.github.mangi.eta.agent.overlay.AgentOverlayStatus
 import io.github.mangi.eta.agent.overlay.AgentOverlayVisibilityPolicy
 import io.github.mangi.eta.agent.overlay.applyControlledEvent
 import io.github.mangi.eta.agent.overlay.applyEvent
+import io.github.mangi.eta.agent.scheduler.ScheduledTaskRunContext
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.core.ModuleConfig
@@ -150,6 +152,10 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     private val capsuleYielded = mutableStateOf(false)
     /** 副屏实时快照，由 YunkeVirtualDisplayBridge 供给。 */
     private val virtualDisplayState = mutableStateOf(VirtualDisplaySnapshot.Inactive)
+    /** 当前浮层会话是否为后台虚拟屏模式（用于全程关闭四边流光，仅保留前台物理屏四边流光）。 */
+    private val overlayUsesBackgroundSurface = mutableStateOf(false)
+    /** 当前是否存在关闭了运行通知的静默定时任务（用于抑制流体云上岛）。 */
+    @Volatile private var activeSilentScheduledRuns = 0
     /** 快照订阅只挂一次，避免重复 collect。 */
     private var virtualDisplaySubscribed = false
 
@@ -623,29 +629,56 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             supplementsByRunId[request.runId] = extras
         }
 
-        val notificationTracker = AgentExecutionNotificationTracker(
-            context = this,
-            handler = mainHandler,
-            onStateChanged = { executionState ->
-                AgentExecutionService.updateExecutionState(executionState)
-            },
-        )
+        val silentScheduled = isSilentScheduledRun(request)
+        if (silentScheduled) {
+            activeSilentScheduledRuns++
+            syncNotificationSuppression()
+        }
+        val activeConversationKey = when (request.handoff?.source) {
+            AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE ->
+                AgentUiHandoffPayload.from(request.handoff.payload).conversationId
+            else ->
+                request.handoff?.payload?.let(AgentExternalArchivePayload::from)?.conversationKey
+        }
+        AgentExecutionService.setConversationKey(activeConversationKey)
+        val notificationTracker = if (silentScheduled) {
+            null
+        } else {
+            AgentExecutionNotificationTracker(
+                context = this,
+                handler = mainHandler,
+                taskTitle = request.prompt,
+                onStateChanged = { executionState ->
+                    AgentExecutionService.updateExecutionState(executionState)
+                },
+            )
+        }
         executionNotificationTracker = notificationTracker
         try {
             thread(name = "agent-runtime") {
                 try {
                     executeRun(session, request)
                 } finally {
-                    notificationTracker.reset()
-                    if (executionNotificationTracker === notificationTracker) {
+                    if (silentScheduled) {
+                        activeSilentScheduledRuns = (activeSilentScheduledRuns - 1).coerceAtLeast(0)
+                        syncNotificationSuppression()
+                    }
+                    notificationTracker?.reset()
+                    if (notificationTracker != null && executionNotificationTracker === notificationTracker) {
                         executionNotificationTracker = null
                     }
-                    AgentExecutionService.resetExecutionState()
+                    if (notificationTracker != null) {
+                        AgentExecutionService.resetExecutionState()
+                    }
                     AgentChildRunControl.finish(session)
                     AgentExecutionService.release(runLease.id)
                 }
             }
         } catch (failure: Throwable) {
+            if (silentScheduled) {
+                activeSilentScheduledRuns = (activeSilentScheduledRuns - 1).coerceAtLeast(0)
+                syncNotificationSuppression()
+            }
             AgentChildRunControl.finish(session)
             AgentExecutionService.release(runLease.id)
             val result = AgentRuntimeWire.RunResult(
@@ -982,7 +1015,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         val handoff = request.handoff ?: return
         AgentExternalArchivePayload.from(handoff.payload) ?: return
         val userImagePreviews = if (
-            handoff.source == AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE
+            handoff.source == AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE ||
+            handoff.source == AgentRuntimeWire.SCHEDULED_TASK_HANDOFF_SOURCE
         ) {
             request.images
                 .asSequence()
@@ -1236,24 +1270,29 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         val wm = overlayContext().getSystemService(Context.WINDOW_SERVICE) as? WindowManager ?: return
         windowManager = wm
 
-        // ── 氛围光窗口：全屏触摸穿透，彩虹光圈（后台虚拟屏运行时隐藏流光，仅承载破壁动画） ──
-        val glow = createOverlayComposeView {
-            AgentOverlayGlow(
-                state = state.value,
-                corners = screenCornerRadii(),
-                // 只传布尔量与「仅动画期非空」的快照：避免 glow 窗口跟着每一帧重组。
-                virtualDisplayActive = virtualDisplayState.value.active,
-                materializeSnapshot = virtualDisplayState.value.takeIf { it.materializingToMain },
-            )
-        }
-        val glowLp = glowLayoutParams()
-        runCatching { wm.addView(glow, glowLp) }.onFailure { throwable ->
-            AndroidAgentLogger.warnThrottled("runtime_glow_add_view_failed") {
-                "Agent runtime glow addView failed: type=${throwable.safeLogType()}"
+        val isBackgroundSurface = session.overlaySurfaceMode == AgentTaskSurfaceMode.BACKGROUND
+        overlayUsesBackgroundSurface.value = isBackgroundSurface
+
+        // ── 氛围光窗口：仅前台物理屏操控时挂载四边流光；虚拟屏无感后台模式全程不挂载、不闪彩光 ──
+        if (!isBackgroundSurface) {
+            val glow = createOverlayComposeView {
+                AgentOverlayGlow(
+                    state = state.value,
+                    corners = screenCornerRadii(),
+                    // 只传布尔量与「仅动画期非空」的快照：避免 glow 窗口跟着每一帧重组。
+                    virtualDisplayActive = virtualDisplayState.value.active || overlayUsesBackgroundSurface.value,
+                    materializeSnapshot = virtualDisplayState.value.takeIf { it.materializingToMain },
+                )
             }
+            val glowLp = glowLayoutParams()
+            runCatching { wm.addView(glow, glowLp) }.onFailure { throwable ->
+                AndroidAgentLogger.warnThrottled("runtime_glow_add_view_failed") {
+                    "Agent runtime glow addView failed: type=${throwable.safeLogType()}"
+                }
+            }
+            glowView = glow
+            glowParams = glowLp
         }
-        glowView = glow
-        glowParams = glowLp
 
         // ── 状态胶囊窗口：状态栏下方居中，收起时一句状态（含微缩镜），点击展开控制与画廊视窗 ──
         val capsule = createOverlayComposeView {
@@ -1296,6 +1335,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         }
         capsuleView = capsule
         capsuleParams = capsuleLp
+        // 悬浮胶囊接管顶部视觉位后立即抑制系统流体云/灵动岛提升，避免顶部双胶囊冲突。
+        syncNotificationSuppression()
         // 胶囊真正挂上就立刻开启取帧（放在末尾会被任何提前 return 漏掉）。
         YunkeVirtualDisplayBridge.setOverlayVisible(true)
 
@@ -1324,6 +1365,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                 // VirtualDisplaySession（那把锁会被截图工具长时间持有）。
                 if (previous.active != snapshot.active) {
                     AgentExecutionService.setVirtualDisplayActive(snapshot.active)
+                    if (snapshot.active) overlayUsesBackgroundSurface.value = true
+                    syncNotificationSuppression()
                 }
                 // 只有「外观相关」字段变化才动窗口；帧更新不动窗口，
                 // 否则每 250ms 一次 updateViewLayout 会和 Compose 的展开动画打架。
@@ -1362,18 +1405,18 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     private fun updateCapsuleWindowBounds(expanding: Boolean = capsuleExpanded.value) {
         val vdActive = virtualDisplayState.value.active
         val focusable = capsuleSupplementFocusable.value
-        val widthDp = if (vdActive && expanding && !focusable) {
+        // 虚拟屏激活/后台副屏模式期间，WindowManager 窗口宽度全程锁定为展开档 324dp，
+        // 避免展开/收起改宽引发 CENTER_HORIZONTAL 居中水平跳帧（对齐 Eta 639eeb2）。
+        val widthDp = if (vdActive || overlayUsesBackgroundSurface.value) {
             CAPSULE_STAGE_WINDOW_WIDTH_DP
-        } else if (vdActive) {
-            CAPSULE_MICRO_WINDOW_WIDTH_DP
         } else {
             CAPSULE_WINDOW_WIDTH_DP
         }
         // 注意：展开态不能用 WRAP_CONTENT。实测它让 WindowManager 在动画的每一帧
-        // 重新测量窗口（内容逐帧变化），展开/收起会明显掉帧——v37 的回归。
+        // 重新测量窗口（内容逐帧变化），展开/收起会明显掉帧。
         // 用固定档位（与 Eta 一致）：装裱 480 / 控制 124 / 补充输入 260。
         val heightPx = when {
-            focusable -> dpToPx(CAPSULE_SUPPLEMENT_HEIGHT_DP)
+            focusable && expanding -> dpToPx(CAPSULE_SUPPLEMENT_HEIGHT_DP)
             expanding && vdActive -> dpToPx(CAPSULE_STAGE_HEIGHT_DP)
             expanding -> dpToPx(CAPSULE_CONTROLS_HEIGHT_DP)
             else -> dpToPx(CAPSULE_COLLAPSED_HEIGHT_DP)
@@ -1399,6 +1442,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
 
     /** 补充输入模式：切换窗口可获焦与尺寸，让输入法能落到胶囊里。 */
     private fun setCapsuleInputMode(focusable: Boolean) {
+        capsuleSupplementFocusable.value = focusable
+        if (capsuleExpanded.value) updateCapsuleWindowBounds(expanding = true)
         val wm = windowManager ?: return
         val capsule = capsuleView ?: return
         val lp = capsuleParams ?: return
@@ -1411,8 +1456,6 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             lp.flags = nextFlags
             runCatching { wm.updateViewLayout(capsule, lp) }
         }
-        capsuleSupplementFocusable.value = focusable
-        updateCapsuleWindowBounds()
     }
 
     private fun showResultCard(wm: WindowManager, session: AgentRuntimeSession) {
@@ -1458,7 +1501,13 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     /** 顶部状态胶囊窗口：状态栏下方居中，收起/展开/装裱三档尺寸由 updateCapsuleWindowBounds 决定。 */
     private fun capsuleLayoutParams(): WindowManager.LayoutParams =
         WindowManager.LayoutParams(
-            dpToPx(if (virtualDisplayState.value.active) CAPSULE_MICRO_WINDOW_WIDTH_DP else CAPSULE_WINDOW_WIDTH_DP),
+            dpToPx(
+                if (virtualDisplayState.value.active || overlayUsesBackgroundSurface.value) {
+                    CAPSULE_STAGE_WINDOW_WIDTH_DP
+                } else {
+                    CAPSULE_WINDOW_WIDTH_DP
+                },
+            ),
             dpToPx(CAPSULE_COLLAPSED_HEIGHT_DP),
             overlayType(),
             WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED or
@@ -1510,9 +1559,9 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         lifecycleScope.launch {
             val result = runCatching {
                 withContext(Dispatchers.IO) {
-                    // finish 内部会先把接管过的 task 原位移回主屏，再关闭副屏。
+                    // 用户手动点「移至主屏」时显式移交当前存活任务到物理主屏，再关闭副屏。
                     io.github.mangi.eta.agent.device.VirtualDisplaySession
-                        .finish(runId, this@AgentRuntimeService)
+                        .handoffLiveAndFinish(runId, this@AgentRuntimeService)
                 }
             }
             YunkeVirtualDisplayBridge.setMaterializingToMain(false)
@@ -1635,6 +1684,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         capsuleParams = null
         glowParams = null
         capsuleExpanded.value = false
+        syncNotificationSuppression()
         // 不停 bridge（副屏可能还在跑，之后还要用），但必须立刻停止取帧：
         // viewerFrame 与 executeGui 共用同一把锁，没有 UI 却持续取帧会把 Agent 拖慢。
         YunkeVirtualDisplayBridge.setOverlayVisible(false)
@@ -1654,8 +1704,10 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         resultCardParams = null
         capsuleParams = null
         glowParams = null
+        overlayUsesBackgroundSurface.value = false
         mainHandler.removeCallbacks(overlayWatchdog)
         AgentExecutionService.setVirtualDisplayActive(false)
+        syncNotificationSuppression()
         YunkeVirtualDisplayBridge.setOverlayVisible(false)
         YunkeVirtualDisplayBridge.stop()
         windowManager = null
@@ -1664,6 +1716,13 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         if (sessions.isEmpty() && pendingStartRequests.isEmpty() && !AgentChildTaskGroups.hasAnyActive()) {
             stopSelf()
         }
+    }
+
+    private fun syncNotificationSuppression() {
+        val suppressed = capsuleView != null ||
+            virtualDisplayState.value.active ||
+            activeSilentScheduledRuns > 0
+        AgentExecutionService.setSuppressLiveUpdate(suppressed)
     }
 
     private fun isMessageSenderAllowed(msg: Message): Boolean {
@@ -1678,6 +1737,16 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     private fun isNightMode(): Boolean {
         val mode = resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
         return mode == Configuration.UI_MODE_NIGHT_YES
+    }
+
+    private fun isSilentScheduledRun(request: AgentRuntimeWire.RunRequest): Boolean {
+        val handoff = request.handoff ?: return false
+        if (handoff.source != AgentRuntimeWire.SCHEDULED_TASK_HANDOFF_SOURCE) return false
+        val scheduled = AgentExternalArchivePayload.from(handoff.payload)
+            ?.adapterPayload
+            ?.let(ScheduledTaskRunContext::fromAdapterPayload)
+            ?: return false
+        return !scheduled.showRunningNotification
     }
 
     private fun currentRuntimePermissions(): AgentRuntimePolicy.Permissions =
@@ -1728,6 +1797,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         if (!wantsOverlay) return current == null
         if (current != null && sessions.contains(current) && !current.isTerminal) return false
         overlaySession = session
+        overlayUsesBackgroundSurface.value = session.overlaySurfaceMode == AgentTaskSurfaceMode.BACKGROUND
         state.value = AgentOverlayState.Initial
         collapsed.value = true
         hasExecutedForegroundTool = false

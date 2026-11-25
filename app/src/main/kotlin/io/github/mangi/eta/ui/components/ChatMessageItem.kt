@@ -160,6 +160,7 @@ import io.github.mangi.eta.R
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import io.github.mangi.eta.agent.browser.AgentBrowserSession
 import io.github.mangi.eta.agent.browser.BrowserSessionSnapshot
+import io.github.mangi.eta.agent.imagegen.ImageGenToolCatalog
 import io.github.mangi.eta.agent.model.AgentFileReferencePromptCodec
 import io.github.mangi.eta.agent.overlay.toolDisplayName
 import io.github.mangi.eta.ui.markdown.NumericCitationMarkup
@@ -205,11 +206,13 @@ import org.intellij.markdown.flavours.gfm.GFMTokenTypes.CHECK_BOX
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TooltipBox
 import top.yukonga.miuix.kmp.squircle.squircleBorder
 import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import com.itos.coui.theme.CouiTheme
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.app.LocalUiStyle
 
 /**
  * 返回 true 前先让出一帧。用于点击展开：点击那一帧只重组标题并启动展开动画，
@@ -259,6 +262,56 @@ internal fun rememberDataUrlBitmap(
     }
     return loaded.value ?: cached
 }
+
+/** 高清原图按目标尺寸在 IO 线程采样，复用已有聊天预览缓存而不改变附件预览路径。 */
+@Composable
+internal fun rememberChatImageBitmap(
+    source: String,
+    maxDimensionPx: Int = 1600,
+): ImageBitmap? {
+    val context = LocalContext.current
+    val limit = maxDimensionPx.coerceAtLeast(256)
+    val cacheKey = remember(source, limit) { "image:$limit|$source" }
+    val cached = remember(cacheKey) { ChatPreviewBitmapCache.get(cacheKey) }
+    val loaded = produceState(initialValue = cached, cacheKey, context) {
+        if (cached != null || source.isBlank()) return@produceState
+        value = kotlinx.coroutines.withContext(Dispatchers.IO) {
+            decodeSampledChatImage(context, source, limit)?.also {
+                ChatPreviewBitmapCache.put(cacheKey, it)
+            }
+        }
+    }
+    return loaded.value
+}
+
+private fun decodeSampledChatImage(
+    context: android.content.Context,
+    source: String,
+    maxDimensionPx: Int,
+): ImageBitmap? = runCatching {
+    val data = if (source.startsWith("data:image/", ignoreCase = true)) {
+        source.substringAfter("base64,", "").takeIf(String::isNotBlank)
+            ?.let { Base64.decode(it, Base64.DEFAULT) } ?: return null
+    } else null
+    fun decode(options: BitmapFactory.Options): android.graphics.Bitmap? = when {
+        data != null -> BitmapFactory.decodeByteArray(data, 0, data.size, options)
+        source.startsWith("content://", ignoreCase = true) ->
+            context.contentResolver.openInputStream(android.net.Uri.parse(source))?.use {
+                BitmapFactory.decodeStream(it, null, options)
+            }
+        else -> BitmapFactory.decodeFile(android.net.Uri.parse(source).let {
+            if (it.scheme == "file") it.path else source
+        }, options)
+    }
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    decode(bounds)
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+    var sampleSize = 1
+    while (bounds.outWidth / sampleSize > maxDimensionPx || bounds.outHeight / sampleSize > maxDimensionPx) {
+        sampleSize *= 2
+    }
+    decode(BitmapFactory.Options().apply { inSampleSize = sampleSize })?.asImageBitmap()
+}.getOrNull()
 
 private fun loadPreviewBitmap(context: android.content.Context, source: String): ImageBitmap? {
     if (source.isBlank()) return null
@@ -330,6 +383,7 @@ internal class ChatMessageActions {
     var onDeleteMessage: (String) -> Unit by mutableStateOf<(String) -> Unit>({})
     var onRegenerateMessage: (String) -> Unit by mutableStateOf<(String) -> Unit>({})
     var onBranchMessage: (String) -> Unit by mutableStateOf<(String) -> Unit>({})
+    var onEditGeneratedImage: ((String) -> Unit)? by mutableStateOf<((String) -> Unit)?>(null)
 }
 
 /**
@@ -440,14 +494,23 @@ internal fun ChatMessageItem(
             onToggle = onThinkingToggle,
         )
         is RunTraceMessageUi -> RunTraceRow(message = message, onClick = actions.onRunTraceClick, modifier = modifier)
-        is ToolActivityMessageUi -> ToolActivityInline(
-            message = message,
-            onOpenBrowser = actions.onOpenBrowser,
-            showBrowserShortcut = showBrowserShortcut,
-            enableLivePreview = enableLivePreview,
-            modifier = modifier,
-            compact = compact,
-        )
+        is ToolActivityMessageUi -> if (message.toolName == ImageGenToolCatalog.TOOL_NAME) {
+            GeneratedImageMessageCard(
+                message = message,
+                assistantOverlay = compact,
+                onEditImage = actions.onEditGeneratedImage.takeIf { messageActionsEnabled },
+                modifier = modifier,
+            )
+        } else {
+            ToolActivityInline(
+                message = message,
+                onOpenBrowser = actions.onOpenBrowser,
+                showBrowserShortcut = showBrowserShortcut,
+                enableLivePreview = enableLivePreview,
+                modifier = modifier,
+                compact = compact,
+            )
+        }
         is ToolSummaryMessageUi -> ToolSummaryInline(message = message, modifier = modifier, compact = compact)
         is ContextCompactedMessageUi -> ContextCompactedDivider(message = message, modifier = modifier)
         is SuggestionChipsMessageUi -> SuggestionChipsRow(message = message, onSuggestionClick = actions.onSuggestionClick, modifier = modifier)
@@ -635,25 +698,47 @@ private fun UserMessageBubble(
             .padding(horizontal = 20.dp, vertical = 7.dp),
         horizontalAlignment = Alignment.End,
     ) {
+        val isCouiBubble = LocalUiStyle.current == AppearanceUiStyle.COUI
+        val isDarkBubble = com.itos.coui.theme.LocalCouiDarkTheme.current ?: CouiTheme.isDark
+        val bubblePrimary = MiuixTheme.colorScheme.primary
+        val hasCustomAccent = LocalAppearanceSettings.current.accentColor != io.github.mangi.eta.data.model.AppearanceAccentColor.SYSTEM
+        val bubbleFillColor = when {
+            isCouiBubble -> androidx.compose.ui.graphics.lerp(
+                if (isDarkBubble) Color(0xFF1E2024) else Color.White,
+                bubblePrimary,
+                if (isDarkBubble) 0.22f else 0.13f,
+            )
+            hasCustomAccent -> androidx.compose.ui.graphics.lerp(
+                MiuixTheme.colorScheme.surfaceContainerHigh,
+                bubblePrimary,
+                if (isDarkBubble) 0.18f else 0.11f,
+            )
+            else -> MiuixTheme.colorScheme.surfaceContainerHigh
+        }
         Column(
             modifier = Modifier
                 .widthIn(max = 320.dp)
                 .squircleSurface(
-                    color = MiuixTheme.colorScheme.surfaceContainerHigh,
+                    // 气泡底色同步跟随主题强调色，浅/深色模式下与文字保持清晰对比度。
+                    color = bubbleFillColor,
                     topStart = 20.dp,
                     topEnd = 20.dp,
                     bottomEnd = 6.dp,
                     bottomStart = 20.dp,
                 )
                 .then(
-                    if (isEditing) {
-                        Modifier.squircleBorder(
+                    when {
+                        isEditing -> Modifier.squircleBorder(
                             width = 1.dp,
-                            color = MiuixTheme.colorScheme.primary,
+                            color = bubblePrimary,
                             cornerRadius = 20.dp,
                         )
-                    } else {
-                        Modifier
+                        isCouiBubble -> Modifier.squircleBorder(
+                            width = 0.5.dp,
+                            color = bubblePrimary.copy(alpha = if (isDarkBubble) 0.22f else 0.14f),
+                            cornerRadius = 20.dp,
+                        )
+                        else -> Modifier
                     }
                 )
                 .padding(horizontal = 16.dp, vertical = 11.dp),
