@@ -568,6 +568,18 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         } else {
             AgentNotificationTrampolineActivity.SOURCE_MAIN
         }
+        val silentScheduled = isSilentScheduledRun(request)
+        if (silentScheduled) {
+            activeSilentScheduledRuns++
+            syncNotificationSuppression()
+        }
+        val activeConversationKey = when (request.handoff?.source) {
+            AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE ->
+                AgentUiHandoffPayload.from(request.handoff.payload).conversationId
+            else ->
+                request.handoff?.payload?.let(AgentExternalArchivePayload::from)?.conversationKey
+        }
+        AgentExecutionService.setConversationKey(activeConversationKey)
         val runLease = AgentRuntimeRunLease.create(request.runId)
         val executionHeld = AgentExecutionService.acquire(
             this, runLease.id, allowBoundFallback = allowBoundFallback,
@@ -579,6 +591,10 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             }
         }
         if (!executionHeld && (!allowBoundFallback || AgentExecutionService.backupMaintenance)) {
+            if (silentScheduled) {
+                activeSilentScheduledRuns = (activeSilentScheduledRuns - 1).coerceAtLeast(0)
+                syncNotificationSuppression()
+            }
             session.complete(AgentRuntimeWire.RunResult(
                 runId = request.runId, ok = false, content = "",
                 error = "无法启动后台执行服务，请返回 YUNKe 后重试",
@@ -629,18 +645,6 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             supplementsByRunId[request.runId] = extras
         }
 
-        val silentScheduled = isSilentScheduledRun(request)
-        if (silentScheduled) {
-            activeSilentScheduledRuns++
-            syncNotificationSuppression()
-        }
-        val activeConversationKey = when (request.handoff?.source) {
-            AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE ->
-                AgentUiHandoffPayload.from(request.handoff.payload).conversationId
-            else ->
-                request.handoff?.payload?.let(AgentExternalArchivePayload::from)?.conversationKey
-        }
-        AgentExecutionService.setConversationKey(activeConversationKey)
         val notificationTracker = if (silentScheduled) {
             null
         } else {

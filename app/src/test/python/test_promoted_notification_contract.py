@@ -105,5 +105,14 @@ class PromotedNotificationContract(unittest.TestCase):
             self.assertIn("result.content.trim()", text)
 
 
+    def test_execution_channel_is_low_importance_and_migrates_legacy_high_channel(self):
+        source = squeeze(SERVICE)
+        # 对齐 Eta：执行通知渠道必须使用 IMPORTANCE_LOW，避免 HyperOS 每次启动任务自动展开灵动岛。
+        self.assertIn('const val CHANNEL = "eta_execution_v2"', source)
+        self.assertIn('manager.deleteNotificationChannel(LEGACY_CHANNEL)', source)
+        self.assertIn("NotificationManager.IMPORTANCE_LOW", source)
+        self.assertNotIn("NotificationManager.IMPORTANCE_HIGH", source)
+
+
 if __name__ == "__main__":
     unittest.main()
