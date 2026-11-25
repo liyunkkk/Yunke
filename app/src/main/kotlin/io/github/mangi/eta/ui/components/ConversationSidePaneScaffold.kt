@@ -113,6 +113,7 @@ import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.data.repository.AssistantRepository
 import io.github.mangi.eta.ui.app.LocalUiStyle
 import com.itos.coui.icons.CouiIcons
+import com.itos.coui.layout.CouiPageDefaults
 import com.itos.coui.theme.CouiTheme
 import androidx.compose.material3.HorizontalDivider
 import io.github.mangi.eta.ui.model.ConversationFolderUi
@@ -386,7 +387,7 @@ private fun ConversationPanePanel(
     val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
     val couiDark = if (isCoui) CouiTheme.isDark else false
     val paneBg = if (isCoui) {
-        if (couiDark) Color(0xFF141519) else Color(0xFFF6F6FA)
+        CouiPageDefaults.themeColors(couiDark).background
     } else {
         MiuixTheme.colorScheme.surface
     }
@@ -534,12 +535,12 @@ private fun PaneSearchRow(
     val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
     val couiDark = if (isCoui) CouiTheme.isDark else false
     val searchBg = if (isCoui) {
-        if (couiDark) Color(0xFF202227) else Color.White
+        CouiPageDefaults.themeColors(couiDark).card
     } else {
         MiuixTheme.colorScheme.surfaceContainerHigh
     }
     val searchBorder = if (isCoui) {
-        if (couiDark) Color(0x1EFFFFFF) else Color(0x12000000)
+        if (couiDark) Color(0x1EFFFFFF) else Color(0x0F000000)
     } else {
         Color.Transparent
     }
@@ -615,12 +616,12 @@ private fun PaneDrawerActions(
     val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
     val couiDark = if (isCoui) CouiTheme.isDark else false
     val circleBg = if (isCoui) {
-        if (couiDark) Color(0xFF22242A) else Color.White
+        CouiPageDefaults.themeColors(couiDark).card
     } else {
         MiuixTheme.colorScheme.surfaceContainerHigh
     }
     val circleBorder = if (isCoui) {
-        if (couiDark) Color(0x20FFFFFF) else Color(0x14000000)
+        if (couiDark) Color(0x1EFFFFFF) else Color(0x0F000000)
     } else {
         Color.Transparent
     }
@@ -1115,15 +1116,22 @@ private fun DrawerChip(
     onClick: () -> Unit,
     onLongClick: (() -> Unit)? = null,
 ) {
-    val background = if (selected) {
-        MiuixTheme.colorScheme.onSurface
-    } else {
-        MiuixTheme.colorScheme.surfaceContainerHigh
+    val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
+    val couiDark = if (isCoui) CouiTheme.isDark else false
+    val background = when {
+        selected -> MiuixTheme.colorScheme.primary
+        isCoui -> CouiPageDefaults.themeColors(couiDark).card
+        else -> MiuixTheme.colorScheme.surfaceContainerHigh
     }
     val contentColor = if (selected) {
-        MiuixTheme.colorScheme.surface
+        MiuixTheme.colorScheme.onPrimary
     } else {
         MiuixTheme.colorScheme.onSurfaceVariantSummary
+    }
+    val chipBorder = if (!selected && isCoui) {
+        if (couiDark) Color(0x1EFFFFFF) else Color(0x0F000000)
+    } else {
+        Color.Transparent
     }
     val view = LocalView.current
     Row(
@@ -1131,6 +1139,7 @@ private fun DrawerChip(
             .heightIn(min = 32.dp)
             .clip(CircleShape)
             .background(background)
+            .then(if (chipBorder != Color.Transparent) Modifier.border(0.5.dp, chipBorder, CircleShape) else Modifier)
             .pointerInput(onClick, onLongClick) {
                 detectTapGestures(
                     onTap = {
@@ -1202,6 +1211,22 @@ private fun ConversationTextRow(
 ) {
     var showActionMenu by remember { mutableStateOf(false) }
     val view = LocalView.current
+    val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
+    val couiDark = if (isCoui) CouiTheme.isDark else false
+    val selectedBg = if (isCoui) {
+        androidx.compose.ui.graphics.lerp(
+            CouiPageDefaults.themeColors(couiDark).card,
+            MiuixTheme.colorScheme.primary,
+            if (couiDark) 0.22f else 0.11f,
+        )
+    } else {
+        MiuixTheme.colorScheme.primaryContainer
+    }
+    val selectedBorder = if (selected && isCoui) {
+        MiuixTheme.colorScheme.primary.copy(alpha = if (couiDark) 0.24f else 0.16f)
+    } else {
+        Color.Transparent
+    }
 
     Box(modifier = Modifier.fillMaxWidth()) {
         Row(
@@ -1209,11 +1234,16 @@ private fun ConversationTextRow(
                 .fillMaxWidth()
                 .heightIn(min = DrawerMetrics.RowMinHeight)
                 .clip(RoundedCornerShape(DrawerMetrics.RowCornerRadius))
-                .background(
-                    if (selected) {
-                        MiuixTheme.colorScheme.surfaceContainerHigh
+                .background(if (selected) selectedBg else Color.Transparent)
+                .then(
+                    if (selectedBorder != Color.Transparent) {
+                        Modifier.border(
+                            0.5.dp,
+                            selectedBorder,
+                            RoundedCornerShape(DrawerMetrics.RowCornerRadius),
+                        )
                     } else {
-                        Color.Transparent
+                        Modifier
                     },
                 )
                 .combinedClickable(
@@ -1235,7 +1265,7 @@ private fun ConversationTextRow(
         ) {
             Text(
                 text = conversation.title.ifBlank { conversation.preview },
-                color = MiuixTheme.colorScheme.onSurface,
+                color = if (selected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurface,
                 style = MiuixTheme.textStyles.body1,
                 fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
                 maxLines = 1,
@@ -1416,12 +1446,12 @@ private fun PaneFooterBar(
     val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
     val couiDark = if (isCoui) CouiTheme.isDark else false
     val circleBg = if (isCoui) {
-        if (couiDark) Color(0xFF22242A) else Color.White
+        CouiPageDefaults.themeColors(couiDark).card
     } else {
         MiuixTheme.colorScheme.primaryContainer
     }
     val circleBorder = if (isCoui) {
-        if (couiDark) Color(0x20FFFFFF) else Color(0x14000000)
+        if (couiDark) Color(0x1EFFFFFF) else Color(0x0F000000)
     } else {
         Color.Transparent
     }

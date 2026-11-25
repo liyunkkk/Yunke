@@ -439,8 +439,8 @@ internal fun AgentChatInputBar(
             animationSpec = tween(durationMillis = 160),
             label = "composer_corner",
         )
-        // COUI 下使用固定超椭圆形状 + 硬件阴影，避免展开/收起动画每帧重建超椭圆路径与 18dp 模糊阴影蒙版。
-        val couiInputShape = remember { CouiShape(26.dp, 2.3f) }
+        // COUI 下采用原生 RoundedCornerShape（Outline.Rounded），确保 HWUI 硬件阴影在四角圆滑无伪影。
+        val couiInputShape = remember(containerCorner) { RoundedCornerShape(containerCorner) }
         val softCircleTint = if (isCoui) {
             if (couiDark) Color(0x18FFFFFF) else Color(0x0D000000)
         } else {
@@ -472,11 +472,12 @@ internal fun AgentChatInputBar(
                     .animateContentSize(animationSpec = tween(durationMillis = 160))
                     .then(
                         if (isCoui) {
-                            val shadowTint = Color.Black.copy(alpha = if (couiDark) 0.36f else 0.14f)
+                            val shadowTint = Color.Black.copy(alpha = if (couiDark) 0.28f else 0.10f)
                             Modifier
                                 .shadow(
-                                    elevation = if (couiDark) 6.dp else 4.dp,
+                                    elevation = if (couiDark) 4.dp else 2.5.dp,
                                     shape = couiInputShape,
+                                    clip = false,
                                     ambientColor = shadowTint,
                                     spotColor = shadowTint,
                                 )

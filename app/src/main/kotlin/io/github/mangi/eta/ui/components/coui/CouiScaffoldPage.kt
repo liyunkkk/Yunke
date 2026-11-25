@@ -533,10 +533,10 @@ internal fun CouiTopAppBarSlotButton(
 ) {
     // 统一采用纯 HWUI 圆形悬浮按钮 + COUI 按压回弹，避免 API 34+ 每次切页同步编译 3 个 AGSL RuntimeShader 导致掉帧。
     val source = remember { MutableInteractionSource() }
-    val circleShape = CouiTopAppBarButtonDefaults.circleShape
+    val circleShape = androidx.compose.foundation.shape.CircleShape
     val surfaceColor = if (dark) Color(0xFF2A2B2F) else Color.White
     val borderColor = if (dark) Color(0x24FFFFFF) else Color(0x14000000)
-    val shadowTint = Color.Black.copy(alpha = if (dark) 0.34f else 0.14f)
+    val shadowTint = Color.Black.copy(alpha = if (dark) 0.30f else 0.10f)
     Box(
         modifier = modifier
             .size(48.dp)
@@ -556,6 +556,7 @@ internal fun CouiTopAppBarSlotButton(
                 .shadow(
                     elevation = if (dark) 3.dp else 2.dp,
                     shape = circleShape,
+                    clip = false,
                     ambientColor = shadowTint,
                     spotColor = shadowTint,
                 )
@@ -616,24 +617,26 @@ internal fun CouiTopAppBarTextButton(
     colors: CouiPageColors = CouiPageDefaults.themeColors(dark),
 ) {
     val source = remember { MutableInteractionSource() }
+    val pillShape = androidx.compose.foundation.shape.CircleShape
     val textStyle = rememberCouiTextStyle(CouiTextKind.ItemValue)
     val textColor = if (enabled) colors.title else colors.disabled
     val surfaceColor = if (dark) Color(0xFF2A2B2F) else Color.White
     val borderColor = if (dark) Color(0x24FFFFFF) else Color(0x14000000)
-    val shadowTint = Color.Black.copy(alpha = if (dark) 0.34f else 0.14f)
+    val shadowTint = Color.Black.copy(alpha = if (dark) 0.30f else 0.10f)
     Box(
         modifier = modifier
             .widthIn(min = 60.dp)
             .heightIn(min = 40.dp)
             .shadow(
                 elevation = if (dark) 3.dp else 2.dp,
-                shape = CouiCapsuleShape,
+                shape = pillShape,
+                clip = false,
                 ambientColor = shadowTint,
                 spotColor = shadowTint,
             )
-            .clip(CouiCapsuleShape)
-            .background(surfaceColor, CouiCapsuleShape)
-            .border(0.5.dp, borderColor, CouiCapsuleShape)
+            .clip(pillShape)
+            .background(surfaceColor, pillShape)
+            .border(0.5.dp, borderColor, pillShape)
             .couiButtonFeedback(dark, source, enabled)
             .clickable(source, indication = null, enabled = enabled, role = Role.Button, onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 8.dp),

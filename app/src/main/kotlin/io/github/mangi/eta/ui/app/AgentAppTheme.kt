@@ -19,14 +19,14 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import com.itos.coui.text.rememberCouiTextStyle
-import com.itos.coui.text.CouiTextKind
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.sp
 import io.github.mangi.eta.ui.haptics.ApplyTouchHapticFeedbackEnabled
 import com.itos.coui.effect.LocalCouiContourGlowEnabled
 import com.itos.coui.menu.ProvideCouiMenuBackdrop
@@ -212,30 +212,21 @@ fun AgentAppTheme(
             }
         }
 
-        // COUI 风格下全局文字改用 COUI-Kit 的字号/字重（列表标题 16 中粗、说明 13、分组标题 12、顶栏 18 等），
-        // 页面里所有 MiuixTheme.textStyles.* 一次生效；Miuix 风格保持原样。
+        // COUI 风格下保持系统默认字体族（完整继承系统自定义字体与字重补偿），并以 sp 统一定义字号阶梯；
+        // 避免使用 CouiTextKind.ItemValue 的固定 dp 字号与硬编码无衬线细体导致正文与步骤/推理字体割裂或大小倒挂。
         val baseTextStyles = MiuixTheme.textStyles
-        val couiItemTitle = rememberCouiTextStyle(CouiTextKind.ItemTitle)
-        val couiItemSummary = rememberCouiTextStyle(CouiTextKind.ItemSummary)
-        val couiItemValue = rememberCouiTextStyle(CouiTextKind.ItemValue)
-        val couiGroupTitle = rememberCouiTextStyle(CouiTextKind.GroupTitle)
-        val couiGroupFooter = rememberCouiTextStyle(CouiTextKind.GroupFooter)
-        val couiTopBar = rememberCouiTextStyle(CouiTextKind.TopBar)
-        val couiSearch = rememberCouiTextStyle(CouiTextKind.Search)
         val themedTextStyles = if (appearance.uiStyle == AppearanceUiStyle.COUI) {
-            remember(baseTextStyles, couiItemTitle, couiItemSummary, couiItemValue, couiGroupTitle, couiGroupFooter, couiTopBar, couiSearch) {
-                fun pick(base: androidx.compose.ui.text.TextStyle, coui: androidx.compose.ui.text.TextStyle) =
-                    base.copy(fontFamily = coui.fontFamily, fontWeight = coui.fontWeight, fontSize = coui.fontSize)
+            remember(baseTextStyles) {
                 baseTextStyles.copy(
-                    main = pick(baseTextStyles.main, couiSearch.copy(fontSize = couiItemTitle.fontSize)),
-                    body1 = pick(baseTextStyles.body1, couiItemTitle.copy(fontWeight = couiSearch.fontWeight)),
-                    body2 = pick(baseTextStyles.body2, couiItemValue),
-                    headline1 = pick(baseTextStyles.headline1, couiItemTitle),
-                    headline2 = pick(baseTextStyles.headline2, couiItemTitle),
-                    subtitle = pick(baseTextStyles.subtitle, couiGroupTitle),
-                    footnote1 = pick(baseTextStyles.footnote1, couiItemSummary),
-                    footnote2 = pick(baseTextStyles.footnote2, couiGroupFooter),
-                    title4 = pick(baseTextStyles.title4, couiTopBar),
+                    main = baseTextStyles.main.copy(fontSize = 15.sp, fontWeight = FontWeight.Normal),
+                    body1 = baseTextStyles.body1.copy(fontSize = 15.sp, fontWeight = FontWeight.Normal),
+                    body2 = baseTextStyles.body2.copy(fontSize = 13.5.sp, fontWeight = FontWeight.Normal),
+                    headline1 = baseTextStyles.headline1.copy(fontSize = 16.sp, fontWeight = FontWeight.Medium),
+                    headline2 = baseTextStyles.headline2.copy(fontSize = 15.sp, fontWeight = FontWeight.Medium),
+                    subtitle = baseTextStyles.subtitle.copy(fontSize = 12.sp, fontWeight = FontWeight.Medium),
+                    footnote1 = baseTextStyles.footnote1.copy(fontSize = 12.5.sp, fontWeight = FontWeight.Normal),
+                    footnote2 = baseTextStyles.footnote2.copy(fontSize = 11.5.sp, fontWeight = FontWeight.Normal),
+                    title4 = baseTextStyles.title4.copy(fontSize = 18.sp, fontWeight = FontWeight.Medium),
                 )
             }
         } else {
