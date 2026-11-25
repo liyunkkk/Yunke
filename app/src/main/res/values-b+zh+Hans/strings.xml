@@ -404,6 +404,8 @@
   <string name="tool_launch_app">打开应用</string>
   <string name="tool_open_uri">用应用打开</string>
   <string name="tool_browser_use">浏览网页</string>
+  <string name="tool_subagent">运行子代理</string>
+  <string name="tool_subagent_profile">管理子代理</string>
   <string name="tool_terminal">终端</string>
   <string name="tool_run_command">执行命令</string>
   <string name="tool_read_file">读取文件</string>

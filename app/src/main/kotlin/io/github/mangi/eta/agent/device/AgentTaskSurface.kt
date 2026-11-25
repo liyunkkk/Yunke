@@ -174,7 +174,7 @@ internal object AgentTaskSurface {
             "普通URI、系统面板、HOME/RECENTS、闹钟/计时器不继承自身例外；已有副屏仍按原后台生命周期收尾，自身不是副屏交付任务。"
 
     private const val BACKGROUND_CLAUSE =
-            "本次普通应用选择实验性后台副屏。除上述代鱼自身片段外，其它应用GUI 不得回退主屏；先 launch_app 精确包名、observe_screen 截图再坐标操作。节点、系统面板及不支持的工具会明确拒绝。要切回本次副屏已打开的应用，直接对同一包名再次 launch_app（返回 reused=true），不要强制停止应用。任务完成前用 keep_virtual_result 标记交付任务，再 finish_virtual_session，只有返回 handedOff=true 且 released=true 才可声称交付完成。没有可交付结果时也要调用 finish_virtual_session，它会清理本次中间任务并关闭副屏（handedOff=false）。收尾失败保留副屏，禁止杀进程或用终端绕过关闭。提示用户期间不要从桌面启动或清理正在操作的应用。" +
+            "本次普通应用选择实验性后台副屏。除上述代鱼自身片段外，其它应用GUI 不得回退主屏；先 launch_app 精确包名、observe_screen 截图再坐标操作。节点、系统面板及不支持的工具会明确拒绝。要切回本次副屏已打开的应用，直接对同一包名再次 launch_app（返回 reused=true），不要强制停止应用。后台副屏默认为无感静默执行：任务完成后直接调用 finish_virtual_session 清理本次中间任务并静默关闭副屏（handedOff=false 且 released=true），不要主动把操作过的应用切到用户主屏；仅当用户明确要求完成后打开/保留到主屏时，才先用 keep_virtual_result 标记交付任务，再 finish_virtual_session，只有返回 handedOff=true 且 released=true 才可声称交付完成。收尾失败保留副屏，禁止杀进程或用终端绕过关闭。提示用户期间不要从桌面启动或清理正在操作的应用。" +
             "副屏的 observe_screen 会带 ui_nodes，可直接用 tap_element / long_press_element / scroll_element；" +
             "成功的 GUI 动作结果已附带 after_action（含新 ui_nodes 与 screen_changed），据此继续，不要每步都重新观察；" +
             "副屏文本用 replace_text（传 index 或先把光标放进输入框）与 paste_text，clear_text 清空；" +

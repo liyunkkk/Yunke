@@ -396,6 +396,8 @@
   <string name="tool_launch_app">Launch app</string>
   <string name="tool_open_uri">Open with app</string>
   <string name="tool_browser_use">Browse web</string>
+  <string name="tool_subagent">Run subagent</string>
+  <string name="tool_subagent_profile">Manage subagent</string>
   <string name="tool_terminal">Terminal</string>
   <string name="tool_run_command">Run command</string>
   <string name="tool_read_file">Read file</string>

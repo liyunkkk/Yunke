@@ -722,10 +722,10 @@ internal fun AgentResultCard(
             visible = visible,
             enter = slideInVertically(
                 initialOffsetY = { it },
-                animationSpec = spring(
-                    dampingRatio = Spring.DampingRatioLowBouncy,
-                    stiffness = Spring.StiffnessMediumLow,
-                )
+                animationSpec = tween(
+                    durationMillis = 260,
+                    easing = androidx.compose.animation.core.CubicBezierEasing(0.2f, 0f, 0f, 1f),
+                ),
             ) + fadeIn(animationSpec = tween(durationMillis = 200)),
             exit = slideOutVertically(
                 targetOffsetY = { it },

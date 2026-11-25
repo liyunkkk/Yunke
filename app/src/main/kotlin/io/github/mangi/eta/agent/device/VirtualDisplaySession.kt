@@ -996,30 +996,42 @@ internal object VirtualDisplaySession {
         } catch (_: Exception) { fail(s, "AUTO_CLEANUP_FAILED") }
     }
 
-    /** Called once when the owning run closes; explicit delivery choices are preserved. */
+    /**
+     * 仅在用户主动点击「移至主屏」时显式把当前副屏存活任务移交回主屏并释放副屏。
+     */
+    @Synchronized fun handoffLiveAndFinish(runId: String, context: Context? = null): JSONObject {
+        val ctx = context ?: recoveryContext
+        val s = sessions[runId] ?: return finish(runId, ctx)
+        if (s.phase != "finished" && s.kept.isEmpty() && !s.cleanupOnly) {
+            val live = s.client?.let { freshHandoffState(it)?.liveTaskIds }
+            if (live != null) {
+                val owned = s.packages.values.flatten().toSet()
+                val promoted = owned.intersect(live)
+                if (promoted.isNotEmpty() && ctx != null) {
+                    val persisted = runCatching {
+                        recoveryPrefs(ctx).edit().putString("kept", JSONArray(promoted).toString()).commit()
+                    }.getOrDefault(false)
+                    if (persisted) {
+                        s.kept.addAll(promoted)
+                    }
+                }
+            }
+        }
+        return finish(runId, ctx)
+    }
+
+    /**
+     * 任务自然结束时的无感收尾：
+     * - 保留显式 keep_virtual_result 选择（仅当用户明确要求打开到主屏时模型才会调用）；
+     * - 未显式标记交付任务时，默认静默清理本次副屏中间任务并释放副屏（cleanupOnly = true），
+     *   绝不自动把目标 App 弹到主屏前台打断用户当前界面。
+     */
     @Synchronized fun onRunClosed(context: Context, runId: String) {
         val s = sessions[runId] ?: return
         s.closedRun = true
         if (s.phase == "finished") return
         if (s.kept.isEmpty() && !s.cleanupOnly) {
-            // Only tasks this run launched and that status still shows as live are delivery tasks.
-            // An unknown live inventory must not promote every package task.
-            val live = s.client?.let { freshHandoffState(it)?.liveTaskIds }
-            if (live != null) {
-                val owned = s.packages.values.flatten().toSet()
-                val promoted = owned.intersect(live)
-                // Persist before use, like keep(): a restart must not turn this delivery into cleanup.
-                if (promoted.isNotEmpty()) {
-                    val persisted = runCatching { recoveryPrefs(context).edit()
-                        .putString("kept", JSONArray(promoted).toString()).commit() }.getOrDefault(false)
-                    if (!persisted) {
-                        s.receipt = reply(false, "RECOVERY_STATE_UNWRITABLE")
-                        AndroidAgentLogger.warn("Virtual display auto-finish failed; recovery retained")
-                        return
-                    }
-                    s.kept.addAll(promoted)
-                }
-            }
+            s.cleanupOnly = true
         }
         if (s.client == null) {
             failPreservingPrior(s, "RECOVERY_UNCERTAIN")

@@ -398,6 +398,8 @@
   <string name="tool_launch_app">開啟應用程式</string>
   <string name="tool_open_uri">使用應用程式開啟</string>
   <string name="tool_browser_use">瀏覽網頁</string>
+  <string name="tool_subagent">執行子代理</string>
+  <string name="tool_subagent_profile">管理子代理</string>
   <string name="tool_terminal">終端機</string>
   <string name="tool_run_command">執行指令</string>
   <string name="tool_read_file">讀取檔案</string>

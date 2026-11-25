@@ -94,6 +94,9 @@ internal class AgentExecutionService : Service() {
     private fun notification(): Notification {
         val openIntent = Intent(this, AgentNotificationTrampolineActivity::class.java).apply {
             putExtra(AgentNotificationTrampolineActivity.EXTRA_SOURCE, currentSource)
+            currentConversationKey?.takeIf(String::isNotBlank)?.let { key ->
+                putExtra(io.github.mangi.eta.agent.voice.EtaAssistantOverlayService.EXTRA_CONVERSATION_KEY, key)
+            }
         }
         val open = PendingIntent.getActivity(
             this, 0, openIntent,
@@ -103,9 +106,12 @@ internal class AgentExecutionService : Service() {
             this, 1, Intent(this, AgentExecutionService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val state = executionState
-        val appTitle = state.subtitle ?: getString(R.string.app_name)
-        val actionText = state.title ?: getString(R.string.execution_phase_thinking)
+        val state = if (suppressLiveUpdateFlag) executionState.copy(suppressLiveUpdate = true) else executionState
+        val cleanAction = state.title?.let(AgentExecutionState::stripCapsulePrefix)?.takeIf { it.isNotEmpty() }
+        val appTitle = state.subtitle?.takeIf { it.isNotBlank() }
+            ?: cleanAction
+            ?: getString(R.string.app_name)
+        val actionText = cleanAction ?: getString(R.string.execution_phase_thinking)
         val detailText = state.detail ?: if (leases.executingSessionCount() == 0) {
             getString(R.string.execution_summary_idle)
         } else {
@@ -114,9 +120,7 @@ internal class AgentExecutionService : Service() {
         // 副屏存活时在既有常驻通知上补一行状态，不新增通知渠道。
         // 注意：这里绝不能调 VirtualDisplaySession.viewerStatus()——它是 @Synchronized，
         // 而本函数在主线程被 publishExecutionState 调用。工具线程正在做全分辨率截图时
-        // 会长时间持锁，主线程就跟着卡在 futex 上：实测连续阻塞 18 秒，
-        // 期间胶囊不动、手机整体无法滑动（我们可触摸的浮窗收不了事件）。
-        // 改读运行时服务推送过来的非阻塞缓存标记。
+        // 会长时间持锁，主线程就跟着卡在 futex 上；改读运行时服务推送过来的非阻塞缓存标记。
         val virtualDisplayActive = virtualDisplayActiveFlag
         val detailWithVirtualDisplay = if (virtualDisplayActive) {
             detailText + " · " + getString(R.string.execution_virtual_display_active)
@@ -130,7 +134,14 @@ internal class AgentExecutionService : Service() {
             .setContentIntent(open)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
-            .addAction(Notification.Action.Builder(null, getString(R.string.execution_stop), stop).build())
+
+        if (state.isRunning) {
+            builder
+                .addAction(Notification.Action.Builder(null, getString(R.string.execution_action_open), open).build())
+                .addAction(Notification.Action.Builder(null, getString(R.string.execution_action_stop), stop).build())
+        } else {
+            builder.addAction(Notification.Action.Builder(null, getString(R.string.execution_stop), stop).build())
+        }
 
         if (state.showChronometer && state.startedAtElapsedRealtime > 0L) {
             val baseTimeMillis = System.currentTimeMillis() - (SystemClock.elapsedRealtime() - state.startedAtElapsedRealtime)
@@ -172,19 +183,6 @@ internal class AgentExecutionService : Service() {
             promoteToLiveUpdate(builder, state.shortText())
         }
 
-        // 浅色半透明自定义卡片：HyperOS 的原生实时活动模板会把背景画成深色，
-        // 与壁纸混在一起后正文几乎看不清。这里自绘一层浅色底，标题/状态/正文都够对比度；
-        // 系统若不接受自定义内容视图，会回落到上面的标准模板。
-        val executionCard = agentNotificationCard(
-            context = this,
-            title = appTitle,
-            status = actionText,
-            body = expanded ?: detailWithVirtualDisplay,
-            actionLabel = getString(R.string.execution_stop),
-            actionIntent = stop,
-        )
-        builder.setCustomContentView(executionCard)
-        builder.setCustomBigContentView(executionCard)
         return builder.build()
     }
 
@@ -211,20 +209,24 @@ internal class AgentExecutionService : Service() {
         appTitle: String,
         actionText: String,
     ) {
+        // 顶部虚拟屏悬浮胶囊或静默定时任务接管视觉位时，HyperOS 焦点岛同样退避，避免顶部双胶囊打架。
+        if (suppressLiveUpdateFlag) return
+        val capsuleShort = executionState.islandShortText()
+            .ifBlank { AgentExecutionState.clampCapsuleText(actionText, AgentExecutionState.ISLAND_RIGHT_MAX_CHARS) }
         for (key in keys) {
             when (key) {
                 ExecutionNotificationPlan.MIUI_FOCUS_NOTIFICATION ->
                     builder.extras.putBoolean(key, true)
                 ExecutionNotificationPlan.MIUI_FOCUS_NOTIFICATION_SUBTITLE ->
-                    builder.extras.putString(key, actionText)
+                    builder.extras.putString(key, capsuleShort)
                 ExecutionNotificationPlan.MIUI_FOCUS_IS_FOCUS ->
                     builder.extras.putBoolean(key, true)
                 ExecutionNotificationPlan.MIUI_FOCUS_TICKER ->
-                    builder.extras.putString(key, actionText)
+                    builder.extras.putString(key, capsuleShort)
                 ExecutionNotificationPlan.MIUI_ENABLE_FLOAT ->
                     builder.extras.putBoolean(key, false)
                 ExecutionNotificationPlan.MIUI_FOCUS_PARAM ->
-                    builder.extras.putString(key, focusParamJson(appTitle, actionText))
+                    builder.extras.putString(key, focusParamJson(appTitle, actionText, capsuleShort))
                 ExecutionNotificationPlan.MIUI_FOCUS_PICS ->
                     builder.extras.putBundle(key, focusPics())
                 ExecutionNotificationPlan.MIUI_FOCUS_ACTIONS ->
@@ -250,26 +252,26 @@ internal class AgentExecutionService : Service() {
         builder.extras.putBoolean(PROMOTED_ONGOING_EXTRA, true)
     }
 
-    /** HyperOS 4 焦点通知 protocol 3 参数；结构对齐系统实测样本，只保留文字与一个图标。 */
-    private fun focusParamJson(title: String, content: String): String {
+    /**
+     * HyperOS 4 焦点通知 protocol 3 参数：
+     * - 状态栏大岛左侧仅展示图标（不再重复写 YUNKe 挤占宽度），右侧仅展示 ≤6 字的动作短词，杜绝半截截断；
+     * - 展开卡标题展示任务/会话名，正文展示当前精准动作。
+     */
+    private fun focusParamJson(title: String, content: String, islandRight: String): String {
         val picInfo = JSONObject()
             .put("type", 1)
             .put("pic", FOCUS_PIC_ICON)
             .put("loop", false)
             .put("autoplay", false)
             .put("number", 0)
-        val leftText = JSONObject()
-            .put("title", title)
-            .put("showHighlightColor", false)
-            .put("narrowFont", false)
         val rightText = JSONObject()
-            .put("title", content)
+            .put("title", islandRight)
             .put("showHighlightColor", false)
             .put("narrowFont", false)
         val bigIslandArea = JSONObject()
             .put(
                 "imageTextInfoLeft",
-                JSONObject().put("type", 1).put("picInfo", picInfo).put("textInfo", leftText),
+                JSONObject().put("type", 1).put("picInfo", picInfo),
             )
             .put("imageTextInfoRight", JSONObject().put("type", 2).put("textInfo", rightText))
         val paramIsland = JSONObject()
@@ -287,7 +289,7 @@ internal class AgentExecutionService : Service() {
             .put("protocol", 3)
             .put("business", "hyper_island_dispatch")
             .put("updatable", true)
-            .put("ticker", content)
+            .put("ticker", islandRight)
             .put("enableFloat", false)
             .put("isShowNotification", false)
             .put("islandFirstFloat", false)
@@ -303,7 +305,7 @@ internal class AgentExecutionService : Service() {
                     .put("content", content),
             )
             .put("outEffectSrc", "outer_glow")
-            .put("aodTitle", content)
+            .put("aodTitle", islandRight)
             .put("aodPic", FOCUS_PIC_ICON)
         return JSONObject().put("param_v2", paramV2).put("isShowNotification", true).toString()
     }
@@ -351,9 +353,26 @@ internal class AgentExecutionService : Service() {
          * 通知构建路径只读这个标记，避免在主线程上抢 VirtualDisplaySession 的监视器锁。
          */
         @Volatile private var virtualDisplayActiveFlag = false
+        @Volatile private var suppressLiveUpdateFlag = false
+        @Volatile private var currentConversationKey: String? = null
 
         fun setVirtualDisplayActive(active: Boolean) {
             virtualDisplayActiveFlag = active
+        }
+
+        /**
+         * 顶部悬浮胶囊（GUI/虚拟屏）显示期间或静默定时任务执行期间，抑制流体云/灵动岛提升，
+         * 避免屏幕顶部同时出现两个胶囊冲突（对齐 Eta 639eeb2 & 90d2191）。
+         */
+        fun setSuppressLiveUpdate(suppressed: Boolean) {
+            if (suppressLiveUpdateFlag == suppressed) return
+            suppressLiveUpdateFlag = suppressed
+            publishedExecutionState = null
+            mainHandler.post { instance?.refreshNotification() }
+        }
+
+        fun setConversationKey(conversationKey: String?) {
+            currentConversationKey = conversationKey?.takeIf(String::isNotBlank)
         }
         @Volatile private var currentSource: String = AgentNotificationTrampolineActivity.SOURCE_MAIN
 
@@ -536,6 +555,8 @@ internal class AgentExecutionService : Service() {
             if (leases.count() == 0) {
                 executionState = AgentExecutionState()
                 publishedExecutionState = null
+                suppressLiveUpdateFlag = false
+                currentConversationKey = null
                 currentSource = AgentNotificationTrampolineActivity.SOURCE_MAIN
             }
             mainHandler.post { instance?.refreshNotification() }

@@ -18,6 +18,8 @@ internal data class AgentExecutionState(
     val startedAtElapsedRealtime: Long = 0L,
     val showChronometer: Boolean = false,
     val expandedSnippet: String? = null,
+    /** GUI 悬浮胶囊或静默定时任务接管视觉位时抑制上岛提升，避免顶部双胶囊冲突（对齐 Eta 639eeb2）。 */
+    val suppressLiveUpdate: Boolean = false,
 ) {
     /** 是否有前台任务在跑。IDLE 表示通知只剩常驻的空闲文案。 */
     val isRunning: Boolean get() = phase != AgentExecutionPhase.IDLE
@@ -28,9 +30,16 @@ internal data class AgentExecutionState(
      */
     fun shortText(): String = capsuleText(phase, title)
 
+    /**
+     * HyperOS 灵动岛右侧窄槽位文案：严格限制在 6 个字符内，杜绝「正在梳理推」类硬截断。
+     */
+    fun islandShortText(): String = clampCapsuleText(shortText(), ISLAND_RIGHT_MAX_CHARS)
+
     companion object {
         /** 胶囊口径：Eta 侧约 7 个字符可完整显示，这里按 12 个码点留余量。 */
         const val SHORT_TEXT_MAX_CHARS = 12
+        /** HyperOS 灵动岛右侧文本最大展示字符数。 */
+        const val ISLAND_RIGHT_MAX_CHARS = 6
 
         /** Live Update（提升式常驻通知）从 Android 16 / API 36 开始可用。 */
         const val LIVE_UPDATE_MIN_SDK = 36
@@ -38,12 +47,11 @@ internal data class AgentExecutionState(
         /**
          * 是否把当前通知提升为 Live Update。
          *
-         * 只有运行态（非 IDLE）才提升；终端会话、PRoot/Linux 启动等长驻任务不发布
-         * [AgentExecutionState]，因此永远不会进入提升分支。SDK 判断抽成纯函数，便于单测覆盖
-         * 低版本路径（低版本恒为 false，通知构建走原有分支）。
+         * 只有运行态（非 IDLE）且未被悬浮胶囊/静默定时任务抑制时才提升；
+         * 终端会话、PRoot/Linux 启动等长驻任务不发布 [AgentExecutionState]，因此永远不会进入提升分支。
          */
         internal fun shouldPromoteToLiveUpdate(state: AgentExecutionState, sdkInt: Int): Boolean =
-            sdkInt >= LIVE_UPDATE_MIN_SDK && state.isRunning
+            sdkInt >= LIVE_UPDATE_MIN_SDK && state.isRunning && !state.suppressLiveUpdate
 
         internal fun capsuleText(phase: AgentExecutionPhase, title: String?): String {
             if (phase == AgentExecutionPhase.IDLE) return ""

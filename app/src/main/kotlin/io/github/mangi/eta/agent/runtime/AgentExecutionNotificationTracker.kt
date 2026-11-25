@@ -8,16 +8,23 @@ import io.github.mangi.eta.R
 internal class AgentExecutionNotificationTracker(
     private val context: Context,
     private val handler: Handler,
+    private val taskTitle: String? = null,
     private val onStateChanged: (AgentExecutionState) -> Unit,
 ) {
     private var runStartedAt: Long = 0L
-    private var phaseStartedAt: Long = 0L
     private var currentPhase: AgentExecutionPhase = AgentExecutionPhase.IDLE
     private var lastUpdateTime: Long = 0L
     private var pendingUpdateRunnable: Runnable? = null
 
     private val thinkingBuffer = StringBuilder()
     private val generatingBuffer = StringBuilder()
+
+    private fun normalizedTaskTitle(): String? = taskTitle
+        ?.replace("\n", " ")
+        ?.replace("\r", " ")
+        ?.trim()
+        ?.takeIf { it.isNotEmpty() }
+        ?.let { if (it.length > 26) it.take(25) + "…" else it }
 
     companion object {
         private const val MIN_UPDATE_INTERVAL_MS = 1000L
@@ -42,6 +49,8 @@ internal class AgentExecutionNotificationTracker(
             "get_current_context" -> "获取系统状态"
             "open_uri" -> "打开网页链接"
             "browser_use" -> "自动化浏览器"
+            "subagent" -> "运行子代理"
+            "subagent_profile" -> "管理子代理"
             else -> name
         }
 
@@ -79,10 +88,10 @@ internal class AgentExecutionNotificationTracker(
     }
 
     fun onEvent(event: AgentEvent) {
+        val taskSubtitle = normalizedTaskTitle()
         when (event) {
             is AgentEvent.RunStarted -> {
                 runStartedAt = SystemClock.elapsedRealtime()
-                phaseStartedAt = runStartedAt
                 currentPhase = AgentExecutionPhase.PREPARING
                 thinkingBuffer.clear()
                 generatingBuffer.clear()
@@ -90,6 +99,7 @@ internal class AgentExecutionNotificationTracker(
                     AgentExecutionState(
                         phase = AgentExecutionPhase.PREPARING,
                         title = context.getString(R.string.execution_phase_preparing),
+                        subtitle = taskSubtitle,
                         detail = context.getString(R.string.execution_phase_preparing_detail),
                         startedAtElapsedRealtime = runStartedAt,
                         showChronometer = true,
@@ -97,22 +107,23 @@ internal class AgentExecutionNotificationTracker(
                 )
             }
             is AgentEvent.RoundStarted -> {
+                if (runStartedAt == 0L) runStartedAt = SystemClock.elapsedRealtime()
                 if (currentPhase == AgentExecutionPhase.IDLE || currentPhase == AgentExecutionPhase.PREPARING) {
-                    phaseStartedAt = SystemClock.elapsedRealtime()
                     currentPhase = AgentExecutionPhase.THINKING
                     emitImmediate(
                         AgentExecutionState(
                             phase = AgentExecutionPhase.THINKING,
                             title = context.getString(R.string.execution_phase_thinking),
+                            subtitle = taskSubtitle,
                             detail = context.getString(R.string.execution_phase_thinking_detail),
-                            startedAtElapsedRealtime = phaseStartedAt,
+                            startedAtElapsedRealtime = runStartedAt,
                             showChronometer = true,
                         ),
                     )
                 }
             }
             is AgentEvent.AssistantBlockStart -> {
-                phaseStartedAt = SystemClock.elapsedRealtime()
+                if (runStartedAt == 0L) runStartedAt = SystemClock.elapsedRealtime()
                 if (event.kind == AgentEvent.AssistantBlockKind.THINKING) {
                     currentPhase = AgentExecutionPhase.THINKING
                     thinkingBuffer.clear()
@@ -120,8 +131,9 @@ internal class AgentExecutionNotificationTracker(
                         AgentExecutionState(
                             phase = AgentExecutionPhase.THINKING,
                             title = context.getString(R.string.execution_phase_thinking),
+                            subtitle = taskSubtitle,
                             detail = context.getString(R.string.execution_phase_thinking_detail),
-                            startedAtElapsedRealtime = phaseStartedAt,
+                            startedAtElapsedRealtime = runStartedAt,
                             showChronometer = true,
                         ),
                     )
@@ -132,14 +144,16 @@ internal class AgentExecutionNotificationTracker(
                         AgentExecutionState(
                             phase = AgentExecutionPhase.GENERATING,
                             title = context.getString(R.string.execution_phase_generating),
+                            subtitle = taskSubtitle,
                             detail = context.getString(R.string.execution_phase_generating_detail),
-                            startedAtElapsedRealtime = phaseStartedAt,
-                            showChronometer = false,
+                            startedAtElapsedRealtime = runStartedAt,
+                            showChronometer = true,
                         ),
                     )
                 }
             }
             is AgentEvent.AssistantBlockDelta -> {
+                if (runStartedAt == 0L) runStartedAt = SystemClock.elapsedRealtime()
                 if (event.kind == AgentEvent.AssistantBlockKind.THINKING) {
                     thinkingBuffer.append(event.delta)
                     val preview = extractSingleLinePreview(thinkingBuffer)
@@ -147,8 +161,9 @@ internal class AgentExecutionNotificationTracker(
                         AgentExecutionState(
                             phase = AgentExecutionPhase.THINKING,
                             title = context.getString(R.string.execution_phase_thinking),
+                            subtitle = taskSubtitle,
                             detail = preview.ifBlank { context.getString(R.string.execution_phase_thinking_detail) },
-                            startedAtElapsedRealtime = phaseStartedAt,
+                            startedAtElapsedRealtime = runStartedAt,
                             showChronometer = true,
                             expandedSnippet = extractTail(thinkingBuffer),
                         ),
@@ -160,17 +175,18 @@ internal class AgentExecutionNotificationTracker(
                         AgentExecutionState(
                             phase = AgentExecutionPhase.GENERATING,
                             title = context.getString(R.string.execution_phase_generating),
+                            subtitle = taskSubtitle,
                             detail = preview.ifBlank { context.getString(R.string.execution_phase_generating_detail) },
-                            startedAtElapsedRealtime = phaseStartedAt,
-                            showChronometer = false,
+                            startedAtElapsedRealtime = runStartedAt,
+                            showChronometer = true,
                             expandedSnippet = extractTail(generatingBuffer),
                         ),
                     )
                 }
             }
             is AgentEvent.ToolStarted -> {
+                if (runStartedAt == 0L) runStartedAt = SystemClock.elapsedRealtime()
                 currentPhase = AgentExecutionPhase.TOOL_EXECUTING
-                phaseStartedAt = SystemClock.elapsedRealtime()
                 val friendlyName = resolveToolDisplayName(event.name)
                 val inputPreview = formatToolPreview(event.command, event.argsPreview)
                 val detailText = inputPreview.ifBlank { context.getString(R.string.execution_phase_tool_generic) }
@@ -186,23 +202,25 @@ internal class AgentExecutionNotificationTracker(
                     AgentExecutionState(
                         phase = AgentExecutionPhase.TOOL_EXECUTING,
                         title = context.getString(R.string.execution_phase_tool, friendlyName),
+                        subtitle = taskSubtitle,
                         detail = detailText,
-                        startedAtElapsedRealtime = phaseStartedAt,
+                        startedAtElapsedRealtime = runStartedAt,
                         showChronometer = true,
                         expandedSnippet = expandedText,
                     ),
                 )
             }
             is AgentEvent.HostedToolStarted -> {
+                if (runStartedAt == 0L) runStartedAt = SystemClock.elapsedRealtime()
                 currentPhase = AgentExecutionPhase.TOOL_EXECUTING
-                phaseStartedAt = SystemClock.elapsedRealtime()
                 val friendlyName = resolveToolDisplayName(event.name)
                 emitImmediate(
                     AgentExecutionState(
                         phase = AgentExecutionPhase.TOOL_EXECUTING,
                         title = context.getString(R.string.execution_phase_tool, friendlyName),
+                        subtitle = taskSubtitle,
                         detail = context.getString(R.string.execution_phase_tool_generic),
-                        startedAtElapsedRealtime = phaseStartedAt,
+                        startedAtElapsedRealtime = runStartedAt,
                         showChronometer = true,
                         expandedSnippet = context.getString(R.string.execution_phase_tool, friendlyName),
                     ),
