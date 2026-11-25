@@ -15,6 +15,9 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
+import android.text.SpannableString
+import android.text.Spanned
+import android.text.style.ForegroundColorSpan
 import androidx.annotation.RequiresApi
 import io.github.mangi.eta.R
 import io.github.mangi.eta.core.AndroidAgentLogger
@@ -127,10 +130,13 @@ internal class AgentExecutionService : Service() {
         } else {
             detailText
         }
+        val styledTitle = lightNotificationText(appTitle, LIGHT_TEXT_PRIMARY)
+        val styledDetail = lightNotificationText(detailWithVirtualDisplay, LIGHT_TEXT_BODY)
+        val styledAction = lightNotificationText(actionText, LIGHT_TEXT_SECONDARY)
         val builder = Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle(appTitle)
-            .setContentText(detailWithVirtualDisplay)
+            .setContentTitle(styledTitle)
+            .setContentText(styledDetail)
             .setContentIntent(open)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
@@ -157,17 +163,17 @@ internal class AgentExecutionService : Service() {
         // 提升态不设 subText：Eta 的构建链里只有 title/contentText，没有 subText；而且 subText 与
         // BigTextStyle().setSummaryText(actionText) 是同一句话，展开卡上会重复一行。非提升态保持原样。
         if (!promote) {
-            builder.setSubText(actionText)
+            builder.setSubText(styledAction)
         }
         // 一律 BigTextStyle：刻意不用无进度的 ProgressStyle，否则提升卡下方会渲染出一条空进度白条。
         // 不设 setColor：用户实测这台机器会把品牌色渲染成深色不透明卡片（纯黑底看不清字），
-        // 去掉后由系统按液态玻璃样式着色。
+        // 去掉后由系统按液态玻璃样式着色；文字通过 ForegroundColorSpan 固定浅白色，兼顾透明玻璃与暗底展开岛。
         if (ExecutionNotificationPlan.style(promote, expanded != null) == ExecutionNotificationStyle.BIG_TEXT) {
             builder.setStyle(
                 Notification.BigTextStyle()
-                    .setBigContentTitle(appTitle)
-                    .bigText(expanded ?: detailWithVirtualDisplay)
-                    .setSummaryText(actionText),
+                    .setBigContentTitle(styledTitle)
+                    .bigText(lightNotificationText(expanded ?: detailWithVirtualDisplay, LIGHT_TEXT_BODY))
+                    .setSummaryText(styledAction),
             )
         }
 
@@ -322,6 +328,22 @@ internal class AgentExecutionService : Service() {
         private const val ACTION_STOP = "io.github.mangi.eta.action.STOP_USER_EXECUTION"
         /** API 36 系统读取的提升标记；公开的 requestPromotedOngoing() 到 36.1 才存在。 */
         private const val PROMOTED_ONGOING_EXTRA = "android.requestPromotedOngoing"
+        /** 运行中通知固定浅色字体（透明液态玻璃锁屏卡片与深色超级岛展开面板均清晰可读）。 */
+        private val LIGHT_TEXT_PRIMARY: Int = 0xFFFFFFFF.toInt()
+        private val LIGHT_TEXT_BODY: Int = 0xF2FFFFFF.toInt()
+        private val LIGHT_TEXT_SECONDARY: Int = 0xD9FFFFFF.toInt()
+
+        private fun lightNotificationText(text: String, color: Int): CharSequence {
+            if (text.isEmpty()) return text
+            return SpannableString(text).apply {
+                setSpan(
+                    ForegroundColorSpan(color),
+                    0,
+                    length,
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+                )
+            }
+        }
         private val leases = ExecutionLeaseRegistry()
         private val ownerSequence = AtomicLong()
         private val mainHandler = Handler(Looper.getMainLooper())

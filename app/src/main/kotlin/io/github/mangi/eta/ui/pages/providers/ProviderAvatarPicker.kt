@@ -169,9 +169,7 @@ private fun ProviderAvatarPreview(providerId: String, value: String) {
                 }
             value.startsWith("file:") -> {
                 val bitmap = remember(value) {
-                    runCatching {
-                        android.graphics.BitmapFactory.decodeFile(value.removePrefix("file:"))
-                    }.getOrNull()
+                    decodeSampledAvatar(value.removePrefix("file:"), targetPx = 128)
                 }
                 if (bitmap != null) {
                     Image(
@@ -184,6 +182,21 @@ private fun ProviderAvatarPreview(providerId: String, value: String) {
         }
     }
 }
+
+private fun decodeSampledAvatar(path: String, targetPx: Int): android.graphics.Bitmap? =
+    runCatching {
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeFile(path, bounds)
+        val maxSide = maxOf(bounds.outWidth, bounds.outHeight)
+        var sample = 1
+        while (maxSide > 0 && maxSide / (sample * 2) >= targetPx) {
+            sample *= 2
+        }
+        android.graphics.BitmapFactory.decodeFile(
+            path,
+            android.graphics.BitmapFactory.Options().apply { inSampleSize = sample },
+        )
+    }.getOrNull()
 
 /** 把选中的图片拷进应用私有目录，返回绝对路径；失败返回 null。 */
 private fun copyPickedImage(context: Context, providerId: String, uri: android.net.Uri): String? =

@@ -25,21 +25,25 @@ internal data class AgentExecutionState(
     val isRunning: Boolean get() = phase != AgentExecutionPhase.IDLE
 
     /**
-     * 状态栏胶囊（Live Update 的短文本）用的文案：优先当前动作（工具显示名 / 思考中 / 生成中），
-     * 按 [SHORT_TEXT_MAX_CHARS] 个码点截断，IDLE 返回空串。
+     * 状态栏胶囊（Live Update 的短文本）用的文案：
+     * 统一锁定为 6 个全角汉字视觉宽度（对齐「执行终端命令」的胶囊长度），
+     * 避免思考/生成/不同工具切换时灵动岛胶囊忽长忽短；IDLE 返回空串。
      */
     fun shortText(): String = capsuleText(phase, title)
 
     /**
-     * HyperOS 灵动岛右侧窄槽位文案：严格限制在 6 个字符内，杜绝「正在梳理推」类硬截断。
+     * HyperOS 灵动岛右侧窄槽位文案：与 [shortText] 同口径，固定 6 全角字宽度。
      */
-    fun islandShortText(): String = clampCapsuleText(shortText(), ISLAND_RIGHT_MAX_CHARS)
+    fun islandShortText(): String = shortText()
 
     companion object {
-        /** 胶囊口径：Eta 侧约 7 个字符可完整显示，这里按 12 个码点留余量。 */
+        /** 胶囊最大码点上限（全角 6 字 / 半角 12 字均在此范围内）。 */
         const val SHORT_TEXT_MAX_CHARS = 12
-        /** HyperOS 灵动岛右侧文本最大展示字符数。 */
+        /** 灵动岛右侧固定宽度：6 个全角汉字 = 12 个半角视觉单位（与「执行终端命令」完全一致）。 */
         const val ISLAND_RIGHT_MAX_CHARS = 6
+        private const val TARGET_ISLAND_UNITS = ISLAND_RIGHT_MAX_CHARS * 2
+        private const val FULL_WIDTH_SPACE = '\u3000'
+        private const val HALF_WIDTH_SPACE = '\u2002'
 
         /** Live Update（提升式常驻通知）从 Android 16 / API 36 开始可用。 */
         const val LIVE_UPDATE_MIN_SDK = 36
@@ -55,26 +59,35 @@ internal data class AgentExecutionState(
 
         internal fun capsuleText(phase: AgentExecutionPhase, title: String?): String {
             if (phase == AgentExecutionPhase.IDLE) return ""
-            // 工具阶段胶囊显示具体工具（当前动作最有信息量）；其余阶段用固定短词，
-            // 不受标题措辞（emoji、省略号、模板串）影响，长度天然可控。
+            // 工具阶段展示具体工具名（≤4 字中文工具名自动补「正在」凑齐自然 6 字）；
+            // 非工具阶段统一使用自然 6 字动作词，保证胶囊长度恒定不跳动。
             val base = if (phase == AgentExecutionPhase.TOOL_EXECUTING) {
-                title?.let { stripCapsulePrefix(it) }?.takeIf { it.isNotEmpty() }
-                    ?: defaultCapsuleText(phase)
+                val clean = title?.let { stripCapsulePrefix(it) }?.takeIf { it.isNotEmpty() }
+                if (clean != null) {
+                    val units = visualUnits(clean)
+                    if (units in 1..8 && !clean.startsWith("正在")) {
+                        "正在$clean"
+                    } else {
+                        clean
+                    }
+                } else {
+                    defaultCapsuleText(phase)
+                }
             } else {
                 defaultCapsuleText(phase)
             }
-            return clampCapsuleText(base, SHORT_TEXT_MAX_CHARS)
+            return fixedIslandWidth(base)
         }
 
-        /** 非工具阶段（以及工具标题缺失时）的胶囊文案，口径对齐 Eta 的 execution_chip_* / overlay_*。 */
+        /** 非工具阶段（以及工具标题缺失时）的固定 6 字胶囊文案，保证与「执行终端命令」视觉等宽。 */
         internal fun defaultCapsuleText(phase: AgentExecutionPhase): String = when (phase) {
             AgentExecutionPhase.IDLE -> ""
-            AgentExecutionPhase.PREPARING -> "准备中"
-            AgentExecutionPhase.THINKING -> "思考中"
-            AgentExecutionPhase.TOOL_EXECUTING -> "操作中"
-            AgentExecutionPhase.GENERATING -> "生成中"
-            AgentExecutionPhase.TRANSLATING -> "翻译中"
-            AgentExecutionPhase.GENERIC_RUNNING -> "运行中"
+            AgentExecutionPhase.PREPARING -> "准备执行任务"
+            AgentExecutionPhase.THINKING -> "正在深度思考"
+            AgentExecutionPhase.TOOL_EXECUTING -> "正在执行操作"
+            AgentExecutionPhase.GENERATING -> "正在生成回复"
+            AgentExecutionPhase.TRANSLATING -> "正在翻译屏幕"
+            AgentExecutionPhase.GENERIC_RUNNING -> "任务正在运行"
         }
 
         /**
@@ -87,6 +100,65 @@ internal data class AgentExecutionState(
             // 代理对两半都不是字母数字，逐字符跳过不会停在半个 emoji 上。
             while (index < text.length && !text[index].isLetterOrDigit()) index++
             return text.substring(index).trim().trimEnd('…', '.', '。', '，', ',', ' ')
+        }
+
+        /**
+         * 把文案归一化到固定 [TARGET_ISLAND_UNITS]（6 个全角汉字）视觉宽度：
+         * - 超宽时按码点截断并在末尾补省略号（绝不切断代理对）；
+         * - 不足时在左侧补不可被 trim 吃掉的全角/半角空格，使右侧文字紧贴岛右缘且胶囊宽度恒定。
+         */
+        internal fun fixedIslandWidth(text: String, targetUnits: Int = TARGET_ISLAND_UNITS): String {
+            val trimmed = text.trim()
+            if (trimmed.isEmpty() || targetUnits <= 0) return ""
+            val units = visualUnits(trimmed)
+            if (units == targetUnits) return trimmed
+            if (units > targetUnits) {
+                val limit = (targetUnits - 2).coerceAtLeast(0)
+                val out = StringBuilder()
+                var used = 0
+                var i = 0
+                while (i < trimmed.length) {
+                    val cp = trimmed.codePointAt(i)
+                    val w = codePointUnits(cp)
+                    if (used + w > limit) break
+                    out.appendCodePoint(cp)
+                    used += w
+                    i += Character.charCount(cp)
+                }
+                val clipped = out.toString().trimEnd() + "…"
+                return padLeftToWidth(clipped, targetUnits)
+            }
+            return padLeftToWidth(trimmed, targetUnits)
+        }
+
+        private fun padLeftToWidth(text: String, targetUnits: Int): String {
+            val deficit = targetUnits - visualUnits(text)
+            if (deficit <= 0) return text
+            val fullSpaces = deficit / 2
+            val halfSpaces = deficit % 2
+            val prefix = buildString(fullSpaces + halfSpaces) {
+                repeat(fullSpaces) { append(FULL_WIDTH_SPACE) }
+                repeat(halfSpaces) { append(HALF_WIDTH_SPACE) }
+            }
+            return prefix + text
+        }
+
+        internal fun visualUnits(text: String): Int {
+            var total = 0
+            var i = 0
+            while (i < text.length) {
+                val cp = text.codePointAt(i)
+                total += codePointUnits(cp)
+                i += Character.charCount(cp)
+            }
+            return total
+        }
+
+        private fun codePointUnits(cp: Int): Int = when {
+            cp == HALF_WIDTH_SPACE.code -> 1
+            cp == FULL_WIDTH_SPACE.code -> 2
+            cp <= 0x7F -> 1
+            else -> 2
         }
 
         /** 按码点截断（不切断代理对），超长时补省略号，结果长度恒为 [maxChars] 个码点。 */

@@ -27,6 +27,7 @@ import io.github.mangi.eta.ui.layout.horizontalCutoutPadding
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.ScrollBehavior
+import top.yukonga.miuix.kmp.basic.rememberTopAppBarState
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import top.yukonga.miuix.kmp.utils.scrollEndHaptic
 
@@ -129,7 +130,13 @@ fun MiuixScaffold(
     ) -> Unit,
 ) {
     if (LocalUiStyle.current == AppearanceUiStyle.COUI) {
-        val dummyScrollBehavior = MiuixScrollBehavior()
+        // COUI 下顶栏折叠由外层 CouiScaffold 自己的 collapsingState 负责；
+        // 这里的占位 ScrollBehavior 未绑定 Miuix TopAppBar，若用默认 -Float.MAX_VALUE 限位与 canScroll={true}，
+        // 会在顶栏折叠后通过 nestedScroll.onPreScroll 永久吞掉子 LazyColumn 的全部下滑手势导致页面卡死。
+        val dummyScrollBehavior = MiuixScrollBehavior(
+            state = rememberTopAppBarState(initialHeightOffsetLimit = 0f),
+            canScroll = { false },
+        )
         CouiScaffold(
             title = title,
             onBack = onBack,
