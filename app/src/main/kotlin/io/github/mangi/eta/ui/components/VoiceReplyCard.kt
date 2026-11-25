@@ -10,6 +10,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -27,8 +28,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.DesktopWindows
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -64,12 +65,12 @@ import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.blur.LayerBackdrop
 
 /**
- * 语音输入态（voice mode）顶部弹出的「AI 实时聆听与回复卡片」（Liquid Glass V1）。
+ * 语音输入态（voice mode）顶部弹出的「AI 实时聆听与回复卡片」（iOS 26 极简无色液态玻璃 V2）。
  *
  * 设计要点：
  * - 无状态内容展示：[statusText] / [reply] / [streaming] 均由宿主提供，回复完成后宿主继续传入即保留原文。
  * - 动态高度：外层走 [Modifier.animateContentSize] 弹簧动效，正文区受 [maxHeightFraction] 限高并支持自动贴底滚动。
- * - 第一版液态玻璃视觉：紧凑通透卡片 + 顶部拖拽条 + 极光紫状态角标与实时计时 + 多频呼吸声纹（替代灰骨架）+ 可选屏幕上下文芯片。
+ * - V2 极简视觉：100% 无色通透玻璃卡片 + 极细居中抓手 + 中性呼吸微点状态胶囊 + 纯黑白渐隐声学波形 + 极简屏幕感知标签。
  */
 @Composable
 internal fun VoiceReplyCard(
@@ -151,11 +152,11 @@ internal fun VoiceReplyCard(
     val bodyMaxHeight = (LocalConfiguration.current.screenHeightDp.dp * maxHeightFraction)
         .coerceAtLeast(MinBodyMaxHeight)
 
-    val handleColor = if (dark) Color.White.copy(alpha = 0.28f) else Color(0xFF242C3E).copy(alpha = 0.24f)
-    val primaryTextColor = if (dark) Color(0xFFF4F7FF) else Color(0xFF141824)
-    val secondaryTextColor = if (dark) Color(0xFFA8B3CC) else Color(0xFF566078)
-    val badgeBg = if (dark) Color(0xFF7C5CFA).copy(alpha = 0.28f) else Color(0xFF6C4CF6).copy(alpha = 0.14f)
-    val badgeFg = if (dark) Color(0xFFE0D7FF) else Color(0xFF5C3EE6)
+    val handleColor = if (dark) Color.White.copy(alpha = 0.28f) else Color(0xFF14171F).copy(alpha = 0.20f)
+    val primaryTextColor = if (dark) LiquidGlassInkDark else LiquidGlassInkLight
+    val secondaryTextColor = if (dark) LiquidGlassInkSecondaryDark else LiquidGlassInkSecondaryLight
+    val badgeBg = if (dark) Color.White.copy(alpha = 0.11f) else Color(0xFF14171F).copy(alpha = 0.06f)
+    val badgeBorder = if (dark) Color.White.copy(alpha = 0.16f) else Color.White.copy(alpha = 0.62f)
 
     Column(
         modifier = modifier
@@ -166,23 +167,23 @@ internal fun VoiceReplyCard(
                     stiffness = Spring.StiffnessMediumLow,
                 ),
             )
-            .voiceGlassShadow(shape, elevation = 18.dp)
+            .voiceGlassShadow(shape, elevation = 14.dp)
             .voiceGlass(backdrop, shape, surfaceAlpha = VoiceGlassSurfaceAlpha)
-            .voiceGlassRim(shape, alpha = VoiceGlassRimAlpha, width = 1.2.dp)
+            .voiceGlassRim(shape, alpha = VoiceGlassRimAlpha, width = 1.1.dp)
             .padding(horizontal = 18.dp, vertical = 14.dp),
     ) {
-        // 顶部拖拽指示条
+        // 顶部极细抓手条
         Box(
             modifier = Modifier
                 .align(Alignment.CenterHorizontally)
                 .padding(bottom = 10.dp)
-                .width(38.dp)
-                .height(4.dp)
+                .width(34.dp)
+                .height(3.5.dp)
                 .clip(CircleShape)
                 .background(handleColor),
         )
 
-        // 状态角标行：左极光紫玻璃胶囊 + 右实时计时器
+        // 状态行：左侧极简无色中性微胶囊 + 呼吸圆点，右侧等宽数字计时器
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -194,19 +195,20 @@ internal fun VoiceReplyCard(
                 modifier = Modifier
                     .clip(CircleShape)
                     .background(badgeBg)
+                    .border(width = 0.75.dp, color = badgeBorder, shape = CircleShape)
                     .padding(horizontal = 11.dp, vertical = 5.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                VoiceReplyStatusSparkle(
+                VoiceReplyStatusDot(
                     active = (streaming || listening) && !paused,
-                    tint = badgeFg,
+                    tint = primaryTextColor,
                 )
-                Spacer(Modifier.width(6.dp))
+                Spacer(Modifier.width(7.dp))
                 Text(
                     text = statusText,
-                    fontSize = 13.sp,
+                    fontSize = 12.5.sp,
                     fontWeight = FontWeight.SemiBold,
-                    color = badgeFg,
+                    color = primaryTextColor,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -215,7 +217,7 @@ internal fun VoiceReplyCard(
             if (elapsedSeconds > 0 || timerRunning) {
                 Text(
                     text = timerText,
-                    fontSize = 13.sp,
+                    fontSize = 12.5.sp,
                     fontWeight = FontWeight.Medium,
                     color = secondaryTextColor,
                     style = TextStyle(fontFeatureSettings = "tnum"),
@@ -245,7 +247,7 @@ internal fun VoiceReplyCard(
                     level = level,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(42.dp),
+                        .height(44.dp),
                 )
             } else {
                 Column(
@@ -254,7 +256,7 @@ internal fun VoiceReplyCard(
                 ) {
                     Text(
                         text = bodyText,
-                        fontSize = 17.sp,
+                        fontSize = 16.5.sp,
                         lineHeight = 25.sp,
                         fontWeight = FontWeight.Medium,
                         color = primaryTextColor,
@@ -276,14 +278,10 @@ internal fun VoiceReplyCard(
             Spacer(Modifier.height(10.dp))
             Row(
                 modifier = Modifier
-                    .height(30.dp)
-                    .liquidGlassSurface(
-                        shape = CircleShape,
-                        surfaceAlpha = if (dark) 0.48f else 0.56f,
-                        rimAlpha = 0.72f,
-                        rimWidth = 0.9.dp,
-                        elevation = 3.dp,
-                    )
+                    .height(28.dp)
+                    .clip(CircleShape)
+                    .background(badgeBg)
+                    .border(width = 0.75.dp, color = badgeBorder, shape = CircleShape)
                     .then(
                         if (onRemoveScreenContext != null) {
                             Modifier.clickable(onClick = onRemoveScreenContext)
@@ -291,16 +289,16 @@ internal fun VoiceReplyCard(
                             Modifier
                         },
                     )
-                    .padding(horizontal = 11.dp),
+                    .padding(horizontal = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(7.dp)
-                        .clip(CircleShape)
-                        .background(Color(0xFF16A34A)),
+                Icon(
+                    imageVector = Icons.Rounded.DesktopWindows,
+                    contentDescription = null,
+                    modifier = Modifier.size(13.dp),
+                    tint = secondaryTextColor,
                 )
-                Spacer(Modifier.width(7.dp))
+                Spacer(Modifier.width(6.dp))
                 Text(
                     text = stringResource(R.string.voice_screen_title),
                     fontSize = 12.sp,
@@ -323,7 +321,7 @@ internal fun VoiceReplyCard(
 }
 
 @Composable
-private fun VoiceReplyStatusSparkle(
+private fun VoiceReplyStatusDot(
     active: Boolean,
     tint: Color,
 ) {
@@ -331,23 +329,22 @@ private fun VoiceReplyStatusSparkle(
         initialValue = 0f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 900, easing = LinearEasing),
+            animation = tween(durationMillis = 1100, easing = LinearEasing),
             repeatMode = RepeatMode.Reverse,
         ),
         label = "voice_reply_status_pulse",
     )
-    Icon(
-        imageVector = Icons.Rounded.AutoAwesome,
-        contentDescription = null,
+    Box(
         modifier = Modifier
-            .size(14.dp)
+            .size(6.5.dp)
             .graphicsLayer {
                 val t = if (active) pulse else 0f
-                scaleX = 1f + t * 0.18f
-                scaleY = 1f + t * 0.18f
-                alpha = if (active) 0.76f + t * 0.24f else 1f
-            },
-        tint = tint,
+                scaleX = if (active) 0.88f + t * 0.24f else 0.9f
+                scaleY = if (active) 0.88f + t * 0.24f else 0.9f
+                alpha = if (active) 0.42f + t * 0.54f else 0.36f
+            }
+            .clip(CircleShape)
+            .background(tint),
     )
 }
 
@@ -375,4 +372,4 @@ private val MinBodyHeight = 104.dp
 
 private val MinBodyMaxHeight = 56.dp
 
-private val VoiceReplyCardCorner = 28.dp
+private val VoiceReplyCardCorner = 30.dp

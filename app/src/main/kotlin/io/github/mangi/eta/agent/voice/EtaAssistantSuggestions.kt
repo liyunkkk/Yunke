@@ -9,63 +9,64 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Description
+import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.TouchApp
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.github.mangi.eta.ui.components.LiquidGlassInkDark
+import io.github.mangi.eta.ui.components.LiquidGlassInkLight
 import io.github.mangi.eta.ui.components.isLiquidGlassDark
 import io.github.mangi.eta.ui.components.liquidGlassSurface
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Text
 
 private data class AssistantSuggestionItem(
-    val tag: String,
+    val icon: ImageVector,
     val prompt: String,
-    val accentLight: Color,
-    val accentDark: Color,
 )
 
 private val assistantSuggestions = listOf(
     AssistantSuggestionItem(
-        tag = "摘要",
+        icon = Icons.Rounded.Description,
         prompt = "帮我总结当前屏幕内容",
-        accentLight = Color(0xFF6C4CF6),
-        accentDark = Color(0xFFC4B5FD),
     ),
     AssistantSuggestionItem(
-        tag = "引导",
+        icon = Icons.Rounded.TouchApp,
         prompt = "这个页面怎么操作",
-        accentLight = Color(0xFF0E91D6),
-        accentDark = Color(0xFF7DD3FC),
     ),
     AssistantSuggestionItem(
-        tag = "重点",
+        icon = Icons.Rounded.Info,
         prompt = "屏幕上有什么值得注意的信息",
-        accentLight = Color(0xFF10A36C),
-        accentDark = Color(0xFF6EE7B7),
     ),
 )
 
@@ -96,7 +97,7 @@ internal fun EtaAssistantSuggestions(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(start = sidePadding, end = sidePadding, bottom = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(9.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             assistantSuggestions.forEachIndexed { index, item ->
                 val transform = remember(item.prompt) { Animatable(0f) }
@@ -128,11 +129,9 @@ internal fun EtaAssistantSuggestions(
                         }
                     }
                 }
-                val accent = if (dark) item.accentDark else item.accentLight
-                val badgeBg = (if (dark) item.accentLight else item.accentLight).copy(
-                    alpha = if (dark) 0.28f else 0.15f,
-                )
-                val textColor = if (dark) Color(0xF2F4F7FF) else Color(0xF0141826)
+                val inkColor = if (dark) LiquidGlassInkDark else LiquidGlassInkLight
+                val leadingIconTint = inkColor.copy(alpha = 0.62f)
+                val trailingArrowTint = inkColor.copy(alpha = 0.36f)
                 Row(
                     modifier = Modifier
                         .height(38.dp)
@@ -144,43 +143,68 @@ internal fun EtaAssistantSuggestions(
                         }
                         .liquidGlassSurface(
                             shape = CircleShape,
-                            surfaceAlpha = if (dark) 0.56f else 0.62f,
-                            rimAlpha = 0.84f,
+                            surfaceAlpha = if (dark) 0.46f else 0.44f,
+                            rimAlpha = 0.88f,
                             rimWidth = 1.dp,
                             elevation = 8.dp,
                         )
                         .clickable(enabled = visible) { onSuggestionClick(item.prompt) }
-                        .padding(start = 7.dp, end = 14.dp),
+                        .padding(start = 13.dp, end = 13.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .height(24.dp)
-                            .clip(CircleShape)
-                            .background(badgeBg)
-                            .padding(horizontal = 9.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            text = item.tag,
-                            color = accent,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                        )
-                    }
-                    Spacer(Modifier.width(8.dp))
+                    Icon(
+                        imageVector = item.icon,
+                        contentDescription = null,
+                        modifier = Modifier.size(15.dp),
+                        tint = leadingIconTint,
+                    )
+                    Spacer(Modifier.width(9.dp))
                     Text(
                         text = item.prompt,
-                        color = textColor,
-                        fontSize = 13.sp,
+                        color = inkColor,
+                        fontSize = 13.5.sp,
                         fontWeight = FontWeight.Medium,
                         lineHeight = 18.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                    Spacer(Modifier.width(8.dp))
+                    MinimalDiagonalArrow(tint = trailingArrowTint)
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun MinimalDiagonalArrow(tint: Color) {
+    Canvas(modifier = Modifier.size(11.dp)) {
+        val stroke = 1.6.dp.toPx()
+        val pad = stroke * 0.7f
+        val left = pad
+        val top = pad
+        val right = size.width - pad
+        val bottom = size.height - pad
+        drawLine(
+            color = tint,
+            start = Offset(left, bottom),
+            end = Offset(right, top),
+            strokeWidth = stroke,
+            cap = StrokeCap.Round,
+        )
+        drawLine(
+            color = tint,
+            start = Offset(left + size.width * 0.24f, top),
+            end = Offset(right, top),
+            strokeWidth = stroke,
+            cap = StrokeCap.Round,
+        )
+        drawLine(
+            color = tint,
+            start = Offset(right, top),
+            end = Offset(right, bottom - size.height * 0.24f),
+            strokeWidth = stroke,
+            cap = StrokeCap.Round,
+        )
     }
 }

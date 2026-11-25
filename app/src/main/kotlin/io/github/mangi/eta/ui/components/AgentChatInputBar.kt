@@ -89,7 +89,6 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.SolidColor
@@ -459,12 +458,12 @@ internal fun AgentChatInputBar(
                 .background(softCircleTint)
         }
         val overlayTextColor = if (overlayMode) {
-            if (overlayDark) Color(0xFFF4F7FF) else Color(0xFF141824)
+            if (overlayDark) LiquidGlassInkDark else LiquidGlassInkLight
         } else {
             MiuixTheme.colorScheme.onSurface
         }
         val overlayHintColor = if (overlayMode) {
-            if (overlayDark) Color(0xBDC4CEE0) else Color(0xBA2C3446)
+            if (overlayDark) LiquidGlassInkSecondaryDark else LiquidGlassInkSecondaryLight
         } else {
             MiuixTheme.colorScheme.onSurfaceVariantSummary
         }
@@ -497,10 +496,10 @@ internal fun AgentChatInputBar(
                             overlayMode -> {
                                 Modifier.liquidGlassSurface(
                                     shape = couiInputShape,
-                                    surfaceAlpha = if (overlayDark) 0.64f else 0.66f,
-                                    rimAlpha = 0.88f,
-                                    rimWidth = 1.2.dp,
-                                    elevation = 16.dp,
+                                    surfaceAlpha = if (overlayDark) 0.54f else 0.48f,
+                                    rimAlpha = 0.90f,
+                                    rimWidth = 1.15.dp,
+                                    elevation = 14.dp,
                                 )
                             }
                             isCoui -> {
@@ -589,7 +588,7 @@ internal fun AgentChatInputBar(
                                 ),
                                 cursorBrush = SolidColor(
                                     if (overlayMode) {
-                                        if (overlayDark) LiquidGlassAuroraVioletDark else LiquidGlassAuroraViolet
+                                        overlayTextColor
                                     } else {
                                         MiuixTheme.colorScheme.primary
                                     },
@@ -645,10 +644,10 @@ internal fun AgentChatInputBar(
                         null
                     },
                     voiceSlot = {
-                        val useAuroraVoiceOrb = overlayMode && !isExpandedComposer
+                        val usePearlVoiceOrb = overlayMode && !isExpandedComposer
                         Box(
                             modifier = when {
-                                useAuroraVoiceOrb -> Modifier.size(40.dp)
+                                usePearlVoiceOrb -> Modifier.size(40.dp)
                                 !isExpandedComposer -> Modifier
                                     .size(40.dp)
                                     .clip(CircleShape)
@@ -657,9 +656,9 @@ internal fun AgentChatInputBar(
                             },
                             contentAlignment = Alignment.Center,
                         ) {
-                            val orbVisual: (@Composable (Boolean) -> Unit)? = if (useAuroraVoiceOrb) {
+                            val orbVisual: (@Composable (Boolean) -> Unit)? = if (usePearlVoiceOrb) {
                                 { active ->
-                                    AuroraVoiceOrb(
+                                    LiquidGlassVoiceOrb(
                                         size = 38.dp,
                                         active = active,
                                     )
@@ -785,44 +784,12 @@ internal fun AgentChatInputBar(
                                 )
                                 val sendCircleModifier = if (overlayMode) {
                                     when (sendMode) {
-                                        "send", "continue" -> Modifier
+                                        "send", "continue", "stop" -> Modifier
                                             .size(38.dp)
-                                            .clip(CircleShape)
-                                            .background(
-                                                brush = Brush.linearGradient(
-                                                    listOf(
-                                                        LiquidGlassAuroraCyan,
-                                                        LiquidGlassAuroraViolet,
-                                                        LiquidGlassAuroraPink,
-                                                    ),
-                                                ),
-                                                shape = CircleShape,
-                                            )
-                                            .border(
-                                                width = 1.2.dp,
-                                                color = Color.White.copy(alpha = 0.85f),
-                                                shape = CircleShape,
-                                            )
-                                        "stop" -> Modifier
-                                            .size(38.dp)
-                                            .clip(CircleShape)
-                                            .background(
-                                                brush = Brush.linearGradient(
-                                                    listOf(
-                                                        LiquidGlassStopRoseLight,
-                                                        LiquidGlassStopRose,
-                                                    ),
-                                                ),
-                                                shape = CircleShape,
-                                            )
-                                            .border(
-                                                width = 1.2.dp,
-                                                color = Color.White.copy(alpha = 0.80f),
-                                                shape = CircleShape,
-                                            )
+                                            .liquidGlassPearlActionCircle(rimWidth = 1.15.dp)
                                         else -> Modifier
                                             .size(38.dp)
-                                            .liquidGlassCircle(rimWidth = 0.9.dp)
+                                            .liquidGlassCircle(rimWidth = 0.95.dp)
                                     }
                                 } else {
                                     Modifier
@@ -866,7 +833,8 @@ internal fun AgentChatInputBar(
                                             ),
                                             tint = if (overlayMode) {
                                                 when (mode) {
-                                                    "send", "continue", "stop" -> Color.White
+                                                    "send", "continue" -> LiquidGlassInkLight
+                                                    "stop" -> LiquidGlassStopRedLight
                                                     else -> overlayHintColor
                                                 }
                                             } else {

@@ -5,8 +5,13 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.LinearOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -53,7 +58,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Chat
 import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.CancelPresentation
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
@@ -115,9 +119,10 @@ import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.ui.components.AgentChatInputBar
 import io.github.mangi.eta.ui.components.EtaDropdownMenu
 import io.github.mangi.eta.ui.components.AgentConversationMessages
-import io.github.mangi.eta.ui.components.LiquidGlassAuroraCyan
-import io.github.mangi.eta.ui.components.LiquidGlassAuroraViolet
-import io.github.mangi.eta.ui.components.LiquidGlassAuroraVioletDark
+import io.github.mangi.eta.ui.components.LiquidGlassInkDark
+import io.github.mangi.eta.ui.components.LiquidGlassInkLight
+import io.github.mangi.eta.ui.components.LiquidGlassInkSecondaryDark
+import io.github.mangi.eta.ui.components.LiquidGlassInkSecondaryLight
 import io.github.mangi.eta.ui.components.VoiceControlCapsule
 import io.github.mangi.eta.ui.components.VoiceReplyCard
 import io.github.mangi.eta.ui.components.isLiquidGlassDark
@@ -249,27 +254,27 @@ private fun rememberEtaVoicePanelColors(): EtaVoicePanelColors {
     return remember(dark) {
         if (dark) {
             EtaVoicePanelColors(
-                content = Color(0xDB171C2E),
-                contentGradientEnd = Color(0xCF121626),
-                borderHighlight = Color(0x66EAE4FF),
-                input = Color(0x8A1E243A),
-                inputPrimary = Color(0xF5F4F7FF),
-                inputSecondary = Color(0xBDA8B4CE),
-                inputTertiary = Color(0x7A8D99B5),
-                tertiary = Color(0x4DFFFFFF),
-                scrim = Color(0x48080B14),
+                content = Color(0xD41B1D23),
+                contentGradientEnd = Color(0xC914161B),
+                borderHighlight = Color(0x52FFFFFF),
+                input = Color(0x78202228),
+                inputPrimary = LiquidGlassInkDark,
+                inputSecondary = LiquidGlassInkSecondaryDark,
+                inputTertiary = Color(0x7A9AA0AE),
+                tertiary = Color(0x47FFFFFF),
+                scrim = Color(0x3A000000),
             )
         } else {
             EtaVoicePanelColors(
-                content = Color(0xC9F9FAFF),
-                contentGradientEnd = Color(0xBCECE8FF),
-                borderHighlight = Color(0xE8FFFFFF),
-                input = Color(0xA6FFFFFF),
-                inputPrimary = Color(0xF0141824),
-                inputSecondary = Color(0xB83C445C),
-                inputTertiary = Color(0x663C445C),
-                tertiary = Color(0x45242C3E),
-                scrim = Color(0x1C0A1024),
+                content = Color(0xCCFFFFFF),
+                contentGradientEnd = Color(0xB8FFFFFF),
+                borderHighlight = Color(0xF0FFFFFF),
+                input = Color(0x88FFFFFF),
+                inputPrimary = LiquidGlassInkLight,
+                inputSecondary = LiquidGlassInkSecondaryLight,
+                inputTertiary = Color(0x66282E3A),
+                tertiary = Color(0x3814171F),
+                scrim = Color(0x16000000),
             )
         }
     }
@@ -382,44 +387,14 @@ internal fun EtaVoicePanel(
         }
     }
 
-    val darkGlass = isLiquidGlassDark()
-    val showBottomAurora = voiceMode || state.messages.isNotEmpty()
     Box(
         modifier = Modifier
             .fillMaxSize()
             .graphicsLayer { alpha = exitAlpha }
-            // 语音态只叠很轻的 scrim（配 55 的轻模糊），保证文字可读性又不糊成一片。
+            // 仅保留极轻中性暗角，无任何紫蓝底雾，完整透出下层模糊桌面色彩。
             .drawBehind {
                 val scrimAlpha = if (voiceMode) colors.scrim.alpha * 0.45f else colors.scrim.alpha
                 drawRect(colors.scrim.copy(alpha = scrimAlpha * scrimProgress.value))
-                if (showBottomAurora) {
-                    val glowStrength = scrimProgress.value * (if (darkGlass) 0.24f else 0.18f)
-                    val radius = size.width * 0.72f
-                    drawCircle(
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                LiquidGlassAuroraViolet.copy(alpha = glowStrength),
-                                Color.Transparent,
-                            ),
-                            center = Offset(size.width * 0.42f, size.height * 0.94f),
-                            radius = radius,
-                        ),
-                        radius = radius,
-                        center = Offset(size.width * 0.42f, size.height * 0.94f),
-                    )
-                    drawCircle(
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                LiquidGlassAuroraCyan.copy(alpha = glowStrength * 0.78f),
-                                Color.Transparent,
-                            ),
-                            center = Offset(size.width * 0.78f, size.height * 0.96f),
-                            radius = radius * 0.78f,
-                        ),
-                        radius = radius * 0.78f,
-                        center = Offset(size.width * 0.78f, size.height * 0.96f),
-                    )
-                }
             },
     ) {
         Box(
@@ -756,19 +731,19 @@ private fun BoxScope.AssistantPanel(
                 if (bgAlpha <= 0.001f) return@drawBehind
                 val glassBrush = Brush.verticalGradient(
                     0.0f to colors.content.copy(alpha = colors.content.alpha * bgAlpha),
-                    0.58f to colors.contentGradientEnd.copy(alpha = colors.contentGradientEnd.alpha * bgAlpha),
-                    1.0f to (if (darkSheet) Color(0xDD1A1730) else Color(0xCBECE8FF)).copy(
-                        alpha = (if (darkSheet) 0.88f else 0.82f) * bgAlpha,
+                    0.56f to colors.contentGradientEnd.copy(alpha = colors.contentGradientEnd.alpha * bgAlpha),
+                    1.0f to (if (darkSheet) Color(0xD217191E) else Color(0xC6FFFFFF)).copy(
+                        alpha = (if (darkSheet) 0.84f else 0.78f) * bgAlpha,
                     ),
                 )
                 drawRect(brush = glassBrush)
 
-                // 顶部液态玻璃弧面高光层
-                val specHeight = (size.height * 0.24f).coerceAtLeast(48.dp.toPx())
+                // 顶部无色液态玻璃镜面弧光
+                val specHeight = (size.height * 0.22f).coerceAtLeast(44.dp.toPx())
                 drawRect(
                     brush = Brush.verticalGradient(
                         colors = listOf(
-                            Color.White.copy(alpha = (if (darkSheet) 0.14f else 0.42f) * bgAlpha),
+                            Color.White.copy(alpha = (if (darkSheet) 0.14f else 0.38f) * bgAlpha),
                             Color.Transparent,
                         ),
                         startY = 0f,
@@ -777,29 +752,12 @@ private fun BoxScope.AssistantPanel(
                     size = Size(size.width, specHeight),
                 )
 
-                // 底部轻极光漫反射
-                val bounceHeight = (size.height * 0.22f).coerceAtLeast(40.dp.toPx())
-                drawRect(
-                    brush = Brush.verticalGradient(
-                        colors = listOf(
-                            Color.Transparent,
-                            (if (darkSheet) LiquidGlassAuroraVioletDark else LiquidGlassAuroraViolet).copy(
-                                alpha = (if (darkSheet) 0.10f else 0.07f) * bgAlpha,
-                            ),
-                        ),
-                        startY = size.height - bounceHeight,
-                        endY = size.height,
-                    ),
-                    topLeft = Offset(0f, size.height - bounceHeight),
-                    size = Size(size.width, bounceHeight),
-                )
-
-                // 顶部圆弧折射亮边（延伸底边至画布外，只呈现自然连续的顶部圆角亮边）
+                // 顶部圆弧纯白折射亮边（延伸底边至画布外，只呈现自然连续的顶部圆角亮边）
                 val cornerPx = sheetCornerDp.toPx()
-                val strokePx = 1.3.dp.toPx()
+                val strokePx = 1.2.dp.toPx()
                 val rimBrush = Brush.verticalGradient(
                     0.0f to colors.borderHighlight.copy(alpha = colors.borderHighlight.alpha * bgAlpha),
-                    0.35f to colors.borderHighlight.copy(alpha = colors.borderHighlight.alpha * 0.42f * bgAlpha),
+                    0.35f to colors.borderHighlight.copy(alpha = colors.borderHighlight.alpha * 0.40f * bgAlpha),
                     1.0f to Color.Transparent,
                     startY = 0f,
                     endY = size.height * 0.72f,
@@ -1257,8 +1215,8 @@ private fun ScreenContextAttachment(
                         .height(35.dp)
                         .liquidGlassSurface(
                             shape = CircleShape,
-                            surfaceAlpha = if (dark) 0.58f else 0.62f,
-                            rimAlpha = 0.84f,
+                            surfaceAlpha = if (dark) 0.48f else 0.44f,
+                            rimAlpha = 0.88f,
                             rimWidth = 1.dp,
                             elevation = 7.dp,
                         )
@@ -1316,8 +1274,8 @@ private fun ScreenTranslationCapsule(
             .height(35.dp)
             .liquidGlassSurface(
                 shape = CircleShape,
-                surfaceAlpha = if (dark) 0.58f else 0.62f,
-                rimAlpha = 0.84f,
+                surfaceAlpha = if (dark) 0.48f else 0.44f,
+                rimAlpha = 0.88f,
                 rimWidth = 1.dp,
                 elevation = 7.dp,
             )
@@ -1457,18 +1415,19 @@ private fun ConversationCapsule(
     onClick: () -> Unit,
 ) {
     val dark = isLiquidGlassDark()
-    val accent = if (dark) LiquidGlassAuroraVioletDark else LiquidGlassAuroraViolet
     Row(
         modifier = Modifier
             .height(35.dp)
             .liquidGlassSurface(
                 shape = CircleShape,
-                surfaceAlpha = if (dark) 0.58f else 0.64f,
-                rimAlpha = 0.86f,
+                surfaceAlpha = if (dark) {
+                    if (isMenuVisible) 0.56f else 0.48f
+                } else {
+                    if (isMenuVisible) 0.54f else 0.44f
+                },
+                rimAlpha = 0.88f,
                 rimWidth = 1.dp,
                 elevation = 7.dp,
-                accentTint = LiquidGlassAuroraViolet,
-                accentAlpha = if (isMenuVisible) 0.24f else 0.14f,
             )
             .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 13.dp),
@@ -1478,7 +1437,7 @@ private fun ConversationCapsule(
             imageVector = Icons.AutoMirrored.Rounded.Chat,
             contentDescription = null,
             modifier = Modifier.size(15.dp),
-            tint = if (enabled) accent else colors.inputTertiary,
+            tint = if (enabled) colors.inputPrimary.copy(alpha = 0.84f) else colors.inputTertiary,
         )
         Spacer(Modifier.size(6.dp))
         Text(
@@ -1870,7 +1829,7 @@ private fun AssistantRoundButton(
 }
 
 /**
- * 第一版顶部轻盈液态玻璃感知/交回胶囊：
+ * V2 顶部极简无色液态玻璃感知/交回胶囊：
  * - 空态：显示「Yunke · 已感知当前屏幕」（点按快捷附加屏幕上下文）；
  * - 对话流式面板态：显示「上拉可交回主界面」（完成后点按可直接进入主界面）。
  */
@@ -1884,8 +1843,7 @@ private fun AssistantTopGlassPill(
     modifier: Modifier = Modifier,
 ) {
     val dark = isLiquidGlassDark()
-    val sparkleTint = if (dark) LiquidGlassAuroraVioletDark else LiquidGlassAuroraViolet
-    val textColor = if (dark) Color(0xF2F4F7FF) else Color(0xF0181E2E)
+    val textColor = if (dark) LiquidGlassInkDark else LiquidGlassInkLight
     val label = when {
         hasMessages -> "上拉可交回主界面"
         screenContext.phase == EtaScreenContextPhase.CAPTURING -> "Yunke · 正在感知当前屏幕"
@@ -1895,6 +1853,16 @@ private fun AssistantTopGlassPill(
     val interactive = (hasMessages && canOpenConversation) ||
         (!hasMessages && screenContext.phase == EtaScreenContextPhase.AVAILABLE && !screenContext.selected)
 
+    val dotPulse by rememberInfiniteTransition(label = "top_pill_pulse").animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1200, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "top_pill_dot_pulse",
+    )
+
     AnimatedVisibility(
         visible = visible,
         modifier = modifier,
@@ -1903,30 +1871,35 @@ private fun AssistantTopGlassPill(
     ) {
         Row(
             modifier = Modifier
-                .height(34.dp)
+                .height(33.dp)
                 .liquidGlassSurface(
                     shape = CircleShape,
-                    surfaceAlpha = if (dark) 0.56f else 0.62f,
-                    rimAlpha = 0.86f,
+                    surfaceAlpha = if (dark) 0.46f else 0.42f,
+                    rimAlpha = 0.90f,
                     rimWidth = 1.dp,
                     elevation = 10.dp,
                 )
                 .then(if (interactive) Modifier.clickable(onClick = onClick) else Modifier)
-                .padding(horizontal = 14.dp),
+                .padding(horizontal = 13.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(
-                imageVector = Icons.Rounded.AutoAwesome,
-                contentDescription = null,
-                modifier = Modifier.size(14.dp),
-                tint = sparkleTint,
+            Box(
+                modifier = Modifier
+                    .size(6.dp)
+                    .graphicsLayer {
+                        scaleX = 0.88f + dotPulse * 0.24f
+                        scaleY = 0.88f + dotPulse * 0.24f
+                        alpha = 0.42f + dotPulse * 0.52f
+                    }
+                    .clip(CircleShape)
+                    .background(textColor),
             )
             Spacer(Modifier.width(7.dp))
             Text(
                 text = label,
                 color = textColor,
-                fontSize = 12.5.sp,
-                fontWeight = FontWeight.Medium,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
