@@ -137,6 +137,9 @@ android {
 // CI must identify the last started test even if the worker never finishes a report.
 if (providers.environmentVariable("GITHUB_ACTIONS").orNull == "true") {
     tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+        // GitHub Actions shared IPs frequently hit Maven Central HTTP 429 when Robolectric fetches android-all jars;
+        // use Google's official Maven Central mirror instead.
+        systemProperty("robolectric.dependency.repo.url", "https://maven-central.storage-download.googleapis.com/maven2")
         testLogging {
             events("started", "passed", "skipped", "failed")
             exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
