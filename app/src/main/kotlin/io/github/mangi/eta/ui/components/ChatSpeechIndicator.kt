@@ -58,6 +58,7 @@ internal fun ChatSpeechIndicator(
     onIdleClick: (() -> Unit)? = null,
     idleDescription: String? = null,
     onStartRequested: () -> Unit = {},
+    customVisual: (@Composable (active: Boolean) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -213,7 +214,11 @@ internal fun ChatSpeechIndicator(
                 ) else Modifier),
             contentAlignment = Alignment.Center,
         ) {
-            ContainedMorphLoadingIndicator(indicatorSize = diameter, animate = showGeneration || active)
+            if (customVisual != null) {
+                customVisual(showGeneration || active)
+            } else {
+                ContainedMorphLoadingIndicator(indicatorSize = diameter, animate = showGeneration || active)
+            }
         }
     }
 }

@@ -2393,6 +2393,8 @@ private fun AgentChatBottomBar(
                         },
                         streaming = voiceStreaming,
                         backdrop = voiceGlassBackdrop,
+                        listening = voiceState.phase == VoiceModePhase.Listening,
+                        level = voiceLevel,
                         modifier = Modifier.padding(bottom = 20.dp),
                     )
                     VoiceControlCapsule(

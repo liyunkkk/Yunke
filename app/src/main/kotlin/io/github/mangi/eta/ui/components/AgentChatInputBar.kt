@@ -89,6 +89,7 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.SolidColor
@@ -441,10 +442,31 @@ internal fun AgentChatInputBar(
         )
         // COUI 下采用原生 RoundedCornerShape（Outline.Rounded），确保 HWUI 硬件阴影在四角圆滑无伪影。
         val couiInputShape = remember(containerCorner) { RoundedCornerShape(containerCorner) }
+        val overlayDark = isLiquidGlassDark()
         val softCircleTint = if (isCoui) {
             if (couiDark) Color(0x18FFFFFF) else Color(0x0D000000)
         } else {
             MiuixTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.72f)
+        }
+        val overlayAttachCircleModifier = if (overlayMode) {
+            Modifier
+                .size(38.dp)
+                .liquidGlassCircle(rimWidth = 0.9.dp)
+        } else {
+            Modifier
+                .size(38.dp)
+                .clip(CircleShape)
+                .background(softCircleTint)
+        }
+        val overlayTextColor = if (overlayMode) {
+            if (overlayDark) Color(0xFFF4F7FF) else Color(0xFF141824)
+        } else {
+            MiuixTheme.colorScheme.onSurface
+        }
+        val overlayHintColor = if (overlayMode) {
+            if (overlayDark) Color(0xBDC4CEE0) else Color(0xBA2C3446)
+        } else {
+            MiuixTheme.colorScheme.onSurfaceVariantSummary
         }
         val sendMode = resolveChatComposerSendMode(
             isStreaming = isStreaming,
@@ -471,48 +493,60 @@ internal fun AgentChatInputBar(
                     .graphicsLayer {}
                     .animateContentSize(animationSpec = tween(durationMillis = 160))
                     .then(
-                        if (isCoui) {
-                            val shadowTint = Color.Black.copy(alpha = if (couiDark) 0.28f else 0.10f)
-                            Modifier
-                                .shadow(
-                                    elevation = if (couiDark) 4.dp else 2.5.dp,
+                        when {
+                            overlayMode -> {
+                                Modifier.liquidGlassSurface(
                                     shape = couiInputShape,
-                                    clip = false,
-                                    ambientColor = shadowTint,
-                                    spotColor = shadowTint,
+                                    surfaceAlpha = if (overlayDark) 0.64f else 0.66f,
+                                    rimAlpha = 0.88f,
+                                    rimWidth = 1.2.dp,
+                                    elevation = 16.dp,
                                 )
-                                .clip(couiInputShape)
-                                .background(
-                                    if (couiDark) Color(0xFF1E2024) else Color.White,
-                                    couiInputShape,
-                                )
-                                .border(
-                                    width = 0.5.dp,
-                                    color = if (couiDark) Color(0x22FFFFFF) else Color(0x12000000),
-                                    shape = couiInputShape,
-                                )
-                        } else {
-                            Modifier
-                                .dropShadow(
-                                    shape = RoundedCornerShape(containerCorner),
-                                    shadow = Shadow(
-                                        radius = 8.dp,
-                                        color = Color.Black,
-                                        alpha = 0.08f,
-                                    ),
-                                )
-                                // Q2-A：半透明输入框底色，让浮窗 blurBehindRadius 透出来（本体与浮窗统一）。
-                                .squircleSurface(
-                                    color = MiuixTheme.colorScheme.surfaceContainer.copy(
-                                        alpha = 0.35f,
-                                    ),
-                                    cornerRadius = containerCorner,
-                                )
-                                .squircleBorder(
-                                    width = 0.5.dp,
-                                    color = MiuixTheme.colorScheme.outline.copy(alpha = 0.30f),
-                                    cornerRadius = containerCorner,
-                                )
+                            }
+                            isCoui -> {
+                                val shadowTint = Color.Black.copy(alpha = if (couiDark) 0.28f else 0.10f)
+                                Modifier
+                                    .shadow(
+                                        elevation = if (couiDark) 4.dp else 2.5.dp,
+                                        shape = couiInputShape,
+                                        clip = false,
+                                        ambientColor = shadowTint,
+                                        spotColor = shadowTint,
+                                    )
+                                    .clip(couiInputShape)
+                                    .background(
+                                        if (couiDark) Color(0xFF1E2024) else Color.White,
+                                        couiInputShape,
+                                    )
+                                    .border(
+                                        width = 0.5.dp,
+                                        color = if (couiDark) Color(0x22FFFFFF) else Color(0x12000000),
+                                        shape = couiInputShape,
+                                    )
+                            }
+                            else -> {
+                                Modifier
+                                    .dropShadow(
+                                        shape = RoundedCornerShape(containerCorner),
+                                        shadow = Shadow(
+                                            radius = 8.dp,
+                                            color = Color.Black,
+                                            alpha = 0.08f,
+                                        ),
+                                    )
+                                    // Q2-A：半透明输入框底色，让浮窗 blurBehindRadius 透出来（本体与浮窗统一）。
+                                    .squircleSurface(
+                                        color = MiuixTheme.colorScheme.surfaceContainer.copy(
+                                            alpha = 0.35f,
+                                        ),
+                                        cornerRadius = containerCorner,
+                                    )
+                                    .squircleBorder(
+                                        width = 0.5.dp,
+                                        color = MiuixTheme.colorScheme.outline.copy(alpha = 0.30f),
+                                        cornerRadius = containerCorner,
+                                    )
+                            }
                         },
                     )
                     .padding(
@@ -537,7 +571,7 @@ internal fun AgentChatInputBar(
                                 Text(
                                     text = if (isStreaming) stringResource(R.string.chat_eta_working) else stringResource(R.string.chat_input_hint),
                                     style = MiuixTheme.textStyles.body1,
-                                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                    color = overlayHintColor,
                                     maxLines = 1,
                                 )
                             }
@@ -549,11 +583,17 @@ internal fun AgentChatInputBar(
                                     .focusProperties { canFocus = !drawerBlocksIme },
                                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
                                 textStyle = TextStyle(
-                                    color = MiuixTheme.colorScheme.onSurface,
+                                    color = overlayTextColor,
                                     fontSize = 16.sp,
                                     lineHeight = 22.sp,
                                 ),
-                                cursorBrush = SolidColor(MiuixTheme.colorScheme.primary),
+                                cursorBrush = SolidColor(
+                                    if (overlayMode) {
+                                        if (overlayDark) LiquidGlassAuroraVioletDark else LiquidGlassAuroraViolet
+                                    } else {
+                                        MiuixTheme.colorScheme.primary
+                                    },
+                                ),
                                 lineLimits = TextFieldLineLimits.MultiLine(
                                     minHeightInLines = 1,
                                     maxHeightInLines = 6,
@@ -564,10 +604,7 @@ internal fun AgentChatInputBar(
                     attachSlot = {
                         if (isEditingMessage) {
                             Box(
-                                modifier = Modifier
-                                    .size(38.dp)
-                                    .clip(CircleShape)
-                                    .background(softCircleTint),
+                                modifier = overlayAttachCircleModifier,
                                 contentAlignment = Alignment.Center,
                             ) {
                                 IconButton(
@@ -579,16 +616,13 @@ internal fun AgentChatInputBar(
                                         imageVector = Icons.Rounded.Close,
                                         contentDescription = stringResource(R.string.ui_cancel_edit_c698df),
                                         modifier = Modifier.size(ChatInputActionIconSize),
-                                        tint = MiuixTheme.colorScheme.onSurface,
+                                        tint = overlayTextColor,
                                     )
                                 }
                             }
                         } else {
                             Box(
-                                modifier = Modifier
-                                    .size(38.dp)
-                                    .clip(CircleShape)
-                                    .background(softCircleTint),
+                                modifier = overlayAttachCircleModifier,
                                 contentAlignment = Alignment.Center,
                             ) {
                                 AgentAttachmentPickerButton(
@@ -611,23 +645,35 @@ internal fun AgentChatInputBar(
                         null
                     },
                     voiceSlot = {
+                        val useAuroraVoiceOrb = overlayMode && !isExpandedComposer
                         Box(
-                            modifier = if (!isExpandedComposer) {
-                                Modifier
+                            modifier = when {
+                                useAuroraVoiceOrb -> Modifier.size(40.dp)
+                                !isExpandedComposer -> Modifier
                                     .size(40.dp)
                                     .clip(CircleShape)
                                     .background(softCircleTint)
-                            } else {
-                                Modifier
+                                else -> Modifier
                             },
                             contentAlignment = Alignment.Center,
                         ) {
+                            val orbVisual: (@Composable (Boolean) -> Unit)? = if (useAuroraVoiceOrb) {
+                                { active ->
+                                    AuroraVoiceOrb(
+                                        size = 38.dp,
+                                        active = active,
+                                    )
+                                }
+                            } else {
+                                null
+                            }
                             if (isEditingMessage) {
                                 ChatSpeechIndicator(
                                     textFieldState = textFieldState,
                                     showGeneration = showMorphLoading,
                                     interactionBlocked = drawerBlocksIme,
                                     resetKey = isStreaming to isEditingMessage,
+                                    customVisual = orbVisual,
                                 )
                             } else {
                                 VoiceEntryButton(
@@ -638,6 +684,7 @@ internal fun AgentChatInputBar(
                                     voiceState = voiceState,
                                     onStartVoiceMode = onStartVoiceMode,
                                     onStopVoiceMode = onStopVoiceMode,
+                                    customVisual = orbVisual,
                                 )
                             }
                         }
@@ -736,11 +783,55 @@ internal fun AgentChatInputBar(
                                     animationSpec = tween(durationMillis = 160),
                                     label = "send_button_color",
                                 )
-                                Box(
-                                    modifier = Modifier
+                                val sendCircleModifier = if (overlayMode) {
+                                    when (sendMode) {
+                                        "send", "continue" -> Modifier
+                                            .size(38.dp)
+                                            .clip(CircleShape)
+                                            .background(
+                                                brush = Brush.linearGradient(
+                                                    listOf(
+                                                        LiquidGlassAuroraCyan,
+                                                        LiquidGlassAuroraViolet,
+                                                        LiquidGlassAuroraPink,
+                                                    ),
+                                                ),
+                                                shape = CircleShape,
+                                            )
+                                            .border(
+                                                width = 1.2.dp,
+                                                color = Color.White.copy(alpha = 0.85f),
+                                                shape = CircleShape,
+                                            )
+                                        "stop" -> Modifier
+                                            .size(38.dp)
+                                            .clip(CircleShape)
+                                            .background(
+                                                brush = Brush.linearGradient(
+                                                    listOf(
+                                                        LiquidGlassStopRoseLight,
+                                                        LiquidGlassStopRose,
+                                                    ),
+                                                ),
+                                                shape = CircleShape,
+                                            )
+                                            .border(
+                                                width = 1.2.dp,
+                                                color = Color.White.copy(alpha = 0.80f),
+                                                shape = CircleShape,
+                                            )
+                                        else -> Modifier
+                                            .size(38.dp)
+                                            .liquidGlassCircle(rimWidth = 0.9.dp)
+                                    }
+                                } else {
+                                    Modifier
                                         .size(36.dp)
                                         .clip(CircleShape)
-                                        .background(sendButtonColor),
+                                        .background(sendButtonColor)
+                                }
+                                Box(
+                                    modifier = sendCircleModifier,
                                     contentAlignment = Alignment.Center,
                                 ) {
                                     AnimatedContent(
@@ -771,12 +862,19 @@ internal fun AgentChatInputBar(
                                                 else -> stringResource(R.string.chat_send)
                                             },
                                             modifier = Modifier.size(
-                                                if (mode == "stop") 12.dp else 18.dp
+                                                if (mode == "stop") 14.dp else 18.dp
                                             ),
-                                            tint = when (mode) {
-                                                "send", "continue" -> MiuixTheme.colorScheme.onPrimary
-                                                "stop" -> MiuixTheme.colorScheme.surface
-                                                else -> MiuixTheme.colorScheme.onSurfaceVariantActions
+                                            tint = if (overlayMode) {
+                                                when (mode) {
+                                                    "send", "continue", "stop" -> Color.White
+                                                    else -> overlayHintColor
+                                                }
+                                            } else {
+                                                when (mode) {
+                                                    "send", "continue" -> MiuixTheme.colorScheme.onPrimary
+                                                    "stop" -> MiuixTheme.colorScheme.surface
+                                                    else -> MiuixTheme.colorScheme.onSurfaceVariantActions
+                                                }
                                             },
                                         )
                                     }
@@ -1435,6 +1533,7 @@ private fun VoiceEntryButton(
     voiceState: VoiceModeState,
     onStartVoiceMode: (VoiceEntryMode) -> Unit,
     onStopVoiceMode: () -> Unit,
+    customVisual: (@Composable (active: Boolean) -> Unit)? = null,
 ) {
     val view = LocalView.current
     val context = LocalContext.current
@@ -1526,6 +1625,7 @@ private fun VoiceEntryButton(
             onStartRequested = { rememberMode(VoiceEntryMode.DICTATION) },
             suspendCapture = picker,
             forceVisible = true,
+            customVisual = customVisual,
         )
     } else {
         Box(
@@ -1556,10 +1656,14 @@ private fun VoiceEntryButton(
                 ) else Modifier),
             contentAlignment = Alignment.Center,
         ) {
-            ContainedMorphLoadingIndicator(
-                indicatorSize = if (active) 40.dp else 24.dp,
-                animate = showGeneration || active,
-            )
+            if (customVisual != null) {
+                customVisual(showGeneration || active)
+            } else {
+                ContainedMorphLoadingIndicator(
+                    indicatorSize = if (active) 40.dp else 24.dp,
+                    animate = showGeneration || active,
+                )
+            }
         }
     }
     VoiceEntryPickerDialog(
