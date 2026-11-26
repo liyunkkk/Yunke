@@ -49,13 +49,18 @@ internal data class AgentExecutionState(
         const val LIVE_UPDATE_MIN_SDK = 36
 
         /**
-         * 是否把当前通知提升为 Live Update。
+         * 是否把当前通知提升为 Android 16 原生 Live Update。
          *
-         * 只有运行态（非 IDLE）且未被悬浮胶囊/静默定时任务抑制时才提升；
+         * 只有非 HyperOS 优先（[preferMiuiFocus] 为 false）、Android 16+、运行态（非 IDLE）
+         * 且未被悬浮胶囊/静默定时任务抑制时才提升；
+         * 小米 HyperOS 走原生焦点通知（miui.focus.param v3）以避免系统把 Live Update 塞进深色壳配黑字；
          * 终端会话、PRoot/Linux 启动等长驻任务不发布 [AgentExecutionState]，因此永远不会进入提升分支。
          */
-        internal fun shouldPromoteToLiveUpdate(state: AgentExecutionState, sdkInt: Int): Boolean =
-            sdkInt >= LIVE_UPDATE_MIN_SDK && state.isRunning && !state.suppressLiveUpdate
+        internal fun shouldPromoteToLiveUpdate(
+            state: AgentExecutionState,
+            sdkInt: Int,
+            preferMiuiFocus: Boolean = false,
+        ): Boolean = !preferMiuiFocus && sdkInt >= LIVE_UPDATE_MIN_SDK && state.isRunning && !state.suppressLiveUpdate
 
         internal fun capsuleText(phase: AgentExecutionPhase, title: String?): String {
             if (phase == AgentExecutionPhase.IDLE) return ""

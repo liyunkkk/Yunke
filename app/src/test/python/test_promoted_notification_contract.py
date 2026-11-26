@@ -44,7 +44,7 @@ class PromotedNotificationContract(unittest.TestCase):
         self.assertIn("fun miuiFocusKeys(promoted: Boolean): List<String> = if (promoted) emptyList() else MIUI_FOCUS_KEYS", source)
         # 通知构建处必须按 promote 取计划，不能无条件写 MIUI 键。
         self.assertIn("val miuiFocusKeys = ExecutionNotificationPlan.miuiFocusKeys(promote)", source)
-        self.assertIn("if (miuiFocusKeys.isNotEmpty()) { applyMiuiFocusExtras(builder, miuiFocusKeys, appTitle, actionText) }", source)
+        self.assertIn("if (miuiFocusKeys.isNotEmpty()) { applyMiuiFocusExtras(", source)
 
     def test_every_miui_key_is_written_through_the_plan(self):
         source = squeeze(SERVICE)
@@ -60,9 +60,33 @@ class PromotedNotificationContract(unittest.TestCase):
         source = squeeze(SERVICE)
         self.assertIn('PROMOTED_ONGOING_EXTRA = "android.requestPromotedOngoing"', source)
         self.assertIn("builder.extras.putBoolean(PROMOTED_ONGOING_EXTRA, true)", source)
-        # 提升只在 Android 16+ 且运行态发生，并且有显式版本闸门。
-        self.assertIn("AgentExecutionState.shouldPromoteToLiveUpdate(state, Build.VERSION.SDK_INT)", source)
+        # 提升只在非小米优先且 Android 16+ 运行态发生，并且有显式版本闸门。
+        self.assertIn("private val preferMiuiFocus: Boolean by lazy { isMiuiFamily() }", source)
+        self.assertIn("AgentExecutionState.shouldPromoteToLiveUpdate(state, Build.VERSION.SDK_INT, preferMiuiFocus)", source)
         self.assertIn("if (promote && Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA)", source)
+
+    def test_hyperos_focus_card_has_day_night_colors_and_real_actions(self):
+        source = squeeze(SERVICE)
+        # 必须走 baseInfo + textButton 显式声明日/夜双套色值，解决 HyperOS 4 深底黑字。
+        for token in (
+            '"baseInfo"',
+            '"colorTitle"',
+            '"colorTitleDark"',
+            '"colorContent"',
+            '"colorContentDark"',
+            '"textButton"',
+            '"actionBgColor"',
+            '"actionBgColorDark"',
+            '"actionTitleColor"',
+            '"actionTitleColorDark"',
+            '.put("enableFloat", false)',
+            '.put("islandFirstFloat", false)',
+            '.put("isShowNotification", true)',
+        ):
+            self.assertIn(token, source)
+        # miui.focus.actions 必须绑定真实 Notification.Action，不再传 Bundle.EMPTY。
+        self.assertIn("focusActions(", source)
+        self.assertNotIn("builder.extras.putBundle(key, Bundle.EMPTY)", source)
 
     def test_no_progress_style_anywhere(self):
         # 无进度的 ProgressStyle 会在提升卡下方渲染空进度白条（注释里提到这个名字是允许的）。

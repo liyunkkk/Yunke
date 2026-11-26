@@ -20,6 +20,7 @@ import io.github.mangi.eta.R
 import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.core.safeLogType
 import java.util.concurrent.atomic.AtomicLong
+import org.json.JSONArray
 import org.json.JSONObject
 
 /** 只在用户任务存活期间持有前台执行生命周期；进程被系统停止后不重放任务。 */
@@ -28,6 +29,7 @@ internal class AgentExecutionService : Service() {
         AndroidAgentLogger.warn("Execution task stop failed: type=${failure.safeLogType()}")
     }
     private val owner = ownerSequence.incrementAndGet()
+    private val preferMiuiFocus: Boolean by lazy { isMiuiFamily() }
     private var foregroundActive = false
     @Volatile private var startRejected = false
 
@@ -135,12 +137,18 @@ internal class AgentExecutionService : Service() {
             .setOngoing(true)
             .setOnlyAlertOnce(true)
 
+        val openLabel = getString(R.string.execution_action_open)
+        val stopLabel = if (state.isRunning) {
+            getString(R.string.execution_action_stop)
+        } else {
+            getString(R.string.execution_stop)
+        }
         if (state.isRunning) {
             builder
-                .addAction(Notification.Action.Builder(null, getString(R.string.execution_action_open), open).build())
-                .addAction(Notification.Action.Builder(null, getString(R.string.execution_action_stop), stop).build())
+                .addAction(Notification.Action.Builder(null, openLabel, open).build())
+                .addAction(Notification.Action.Builder(null, stopLabel, stop).build())
         } else {
-            builder.addAction(Notification.Action.Builder(null, getString(R.string.execution_stop), stop).build())
+            builder.addAction(Notification.Action.Builder(null, stopLabel, stop).build())
         }
 
         if (state.showChronometer && state.startedAtElapsedRealtime > 0L) {
@@ -153,7 +161,7 @@ internal class AgentExecutionService : Service() {
         }
 
         val expanded = state.expandedSnippet?.takeIf { it.isNotBlank() }
-        val promote = AgentExecutionState.shouldPromoteToLiveUpdate(state, Build.VERSION.SDK_INT)
+        val promote = AgentExecutionState.shouldPromoteToLiveUpdate(state, Build.VERSION.SDK_INT, preferMiuiFocus)
         // 提升态不设 subText：Eta 的构建链里只有 title/contentText，没有 subText；而且 subText 与
         // BigTextStyle().setSummaryText(actionText) 是同一句话，展开卡上会重复一行。非提升态保持原样。
         if (!promote) {
@@ -171,11 +179,23 @@ internal class AgentExecutionService : Service() {
             )
         }
 
-        // 提升态一个 miui.* 扩展都不写：HyperOS 的 FocusNotifPreHandler 只要看到 miui.focus.* 就自己接管渲染，
-        // 原生 Live Update 提升会被压掉。非提升态保持原有 MIUI 焦点通知（超级岛）行为，键集合与写入顺序不变。
+        // 提升态（非小米 Android 16+）一个 miui.* 扩展都不写；
+        // 小米 HyperOS 走原生焦点通知（miui.focus.param v3），由系统按日/夜模式原生渲染浅/深卡片并支持双按钮，
+        // 彻底避免 HyperOS 把 Android 16 Live Update 塞进深炭灰展开壳再配日间黑字。
         val miuiFocusKeys = ExecutionNotificationPlan.miuiFocusKeys(promote)
         if (miuiFocusKeys.isNotEmpty()) {
-            applyMiuiFocusExtras(builder, miuiFocusKeys, appTitle, actionText)
+            applyMiuiFocusExtras(
+                builder = builder,
+                keys = miuiFocusKeys,
+                appTitle = appTitle,
+                actionText = actionText,
+                detailText = expanded ?: detailWithVirtualDisplay,
+                openLabel = openLabel,
+                openIntent = open,
+                stopLabel = stopLabel,
+                stopIntent = stop,
+                isRunning = state.isRunning,
+            )
         }
 
         // 判断逻辑是纯函数（可单测）；这里同时保留显式版本闸门，保证低版本一行 API 36 代码都不碰。
@@ -197,27 +217,31 @@ internal class AgentExecutionService : Service() {
      *      两者都没有则直接 return false，通知永远渲染不出岛。
      * 只写 isFocus / ticker 只能过①，过不了②，所以必须同时提供 miui.focus.param。
      * 下方 JSON 按 param_v2（protocol 3）组织，命中 V3 模板路径（不需要 scene）。
-     * 图片经 miui.focus.pics（Bundle: pic 名 -> Icon）提供，JSON 中 pic/src/aodPic 引用同名键。
+     * 图片经 miui.focus.pics（Bundle: pic 名 -> Icon）提供，JSON 中 pic/picFunction/aodPic 引用同名键。
+     * 按钮经 miui.focus.actions（Bundle: action 名 -> Notification.Action）提供，JSON 中 textButton 引用同名键。
      * 旧 key（miui.focusNotification / .subTitle）保留，兼容 HyperOS 3 / MIUI 14-15。
      * miui.enableFloat 在 HyperOS 3/4 的 ExpandedNotification.canFloat() 中均被读取，保持 false 不弹浮窗。
      *
-     * 只在非提升态调用；提升态交给系统原生 Live Update，这些键一个都不写。
+     * 小米系设备统一走本路径；非小米 Android 16+ 提升态不写任何 miui.* 键。
      */
     private fun applyMiuiFocusExtras(
         builder: Notification.Builder,
         keys: List<String>,
         appTitle: String,
         actionText: String,
+        detailText: String,
+        openLabel: String,
+        openIntent: PendingIntent,
+        stopLabel: String,
+        stopIntent: PendingIntent,
+        isRunning: Boolean,
     ) {
         // 顶部虚拟屏悬浮胶囊或静默定时任务接管视觉位时，HyperOS 焦点岛同样退避，避免顶部双胶囊打架。
         if (suppressLiveUpdateFlag) return
-        // Android 16+ 执行会话刚启动、尚未收到首条 RunStarted 前的短暂 IDLE 帧不写 miui.focus.*，
-        // 防止 HyperOS 焦点插件先开岛、毫秒后又被原生 Live Update 替换引发自动展开。
+        // 执行会话刚启动、尚未收到首条 RunStarted 前的短暂 IDLE 帧不写 miui.focus.*，
+        // 防止 HyperOS 焦点插件先以空闲态上岛、毫秒后又被运行态覆盖引发闪烁或抖动。
         // 仅开终端会话时 countsAsExecutingSession = false（executingSessionCount == 0），不受影响。
-        if (Build.VERSION.SDK_INT >= AgentExecutionState.LIVE_UPDATE_MIN_SDK &&
-            !executionState.isRunning &&
-            leases.executingSessionCount() > 0
-        ) return
+        if (!executionState.isRunning && leases.executingSessionCount() > 0) return
         val capsuleShort = executionState.islandShortText()
             .ifBlank { AgentExecutionState.clampCapsuleText(actionText, AgentExecutionState.ISLAND_RIGHT_MAX_CHARS) }
         for (key in keys) {
@@ -233,11 +257,31 @@ internal class AgentExecutionService : Service() {
                 ExecutionNotificationPlan.MIUI_ENABLE_FLOAT ->
                     builder.extras.putBoolean(key, false)
                 ExecutionNotificationPlan.MIUI_FOCUS_PARAM ->
-                    builder.extras.putString(key, focusParamJson(appTitle, actionText, capsuleShort))
+                    builder.extras.putString(
+                        key,
+                        focusParamJson(
+                            title = appTitle,
+                            actionText = actionText,
+                            detailText = detailText,
+                            islandRight = capsuleShort,
+                            openLabel = openLabel,
+                            stopLabel = stopLabel,
+                            isRunning = isRunning,
+                        ),
+                    )
                 ExecutionNotificationPlan.MIUI_FOCUS_PICS ->
                     builder.extras.putBundle(key, focusPics())
                 ExecutionNotificationPlan.MIUI_FOCUS_ACTIONS ->
-                    builder.extras.putBundle(key, Bundle.EMPTY)
+                    builder.extras.putBundle(
+                        key,
+                        focusActions(
+                            openLabel = openLabel,
+                            openIntent = openIntent,
+                            stopLabel = stopLabel,
+                            stopIntent = stopIntent,
+                            isRunning = isRunning,
+                        ),
+                    )
                 else -> Unit
             }
         }
@@ -260,11 +304,26 @@ internal class AgentExecutionService : Service() {
     }
 
     /**
-     * HyperOS 4 焦点通知 protocol 3 参数：
-     * - 状态栏大岛左侧仅展示图标（不再重复写 YUNKe 挤占宽度），右侧仅展示 ≤6 字的动作短词，杜绝半截截断；
-     * - 展开卡标题展示任务/会话名，正文展示当前精准动作。
+     * HyperOS 3/4 焦点通知 protocol 3 参数：
+     * - 状态栏大岛左侧仅展示图标（不再重复写 YUNKe 挤占宽度），右侧仅展示固定 6 字宽动作短词；
+     * - 展开卡与通知栏/锁屏统一走 baseInfo（显式声明日间浅色卡深字 + 夜间深色卡浅字双套色值），
+     *   彻底消除 HyperOS 4 日间模式下原生 Live Update「深炭灰壳配纯黑字」的可读性问题；
+     * - 底部挂载原生 textButton 双按钮（查看对话 / 停止任务），日/夜配色独立且点击直达真实 PendingIntent；
+     * - enableFloat=false + islandFirstFloat=false 保证静默上岛，绝不在开始或更新任务时自动展开。
      */
-    private fun focusParamJson(title: String, content: String, islandRight: String): String {
+    private fun focusParamJson(
+        title: String,
+        actionText: String,
+        detailText: String,
+        islandRight: String,
+        openLabel: String,
+        stopLabel: String,
+        isRunning: Boolean,
+    ): String {
+        val safeTitle = title.trim().take(FOCUS_MAX_TITLE_CHARS)
+        val safeAction = actionText.trim().take(FOCUS_MAX_SUBTITLE_CHARS)
+        val safeDetail = detailText.trim().take(FOCUS_MAX_CONTENT_CHARS)
+
         val picInfo = JSONObject()
             .put("type", 1)
             .put("pic", FOCUS_PIC_ICON)
@@ -284,7 +343,7 @@ internal class AgentExecutionService : Service() {
         val paramIsland = JSONObject()
             .put("islandProperty", 1)
             .put("islandPriority", 2)
-            .put("islandTimeout", 999)
+            .put("islandTimeout", 3600)
             .put("islandOrder", false)
             .put("dismissIsland", false)
             .put("maxSize", false)
@@ -292,34 +351,109 @@ internal class AgentExecutionService : Service() {
             .put("bigIslandArea", bigIslandArea)
             .put("smallIslandArea", JSONObject().put("picInfo", picInfo))
             .put("outEffectSrc", "outer_glow")
+
+        val baseInfo = JSONObject()
+            .put("type", 2)
+            .put("title", safeTitle)
+            .put("content", safeDetail)
+            .put("picFunction", FOCUS_PIC_CARD)
+            .put("colorTitle", ExecutionNotificationPlan.FOCUS_COLOR_TITLE_LIGHT)
+            .put("colorTitleDark", ExecutionNotificationPlan.FOCUS_COLOR_TITLE_DARK)
+            .put("colorContent", ExecutionNotificationPlan.FOCUS_COLOR_CONTENT_LIGHT)
+            .put("colorContentDark", ExecutionNotificationPlan.FOCUS_COLOR_CONTENT_DARK)
+        if (safeAction.isNotEmpty() && safeAction != safeTitle) {
+            baseInfo
+                .put("subTitle", safeAction)
+                .put("colorSubTitle", ExecutionNotificationPlan.FOCUS_COLOR_SUBTITLE_LIGHT)
+                .put("colorSubTitleDark", ExecutionNotificationPlan.FOCUS_COLOR_SUBTITLE_DARK)
+        }
+
+        val textButtons = JSONArray()
+        if (isRunning) {
+            textButtons.put(
+                JSONObject()
+                    .put("type", 1)
+                    .put("action", FOCUS_ACTION_OPEN)
+                    .put("actionIntent", FOCUS_ACTION_OPEN)
+                    .put("actionIntentType", 1)
+                    .put("actionTitle", openLabel)
+                    .put("actionBgColor", ExecutionNotificationPlan.FOCUS_ACTION_OPEN_BG_LIGHT)
+                    .put("actionBgColorDark", ExecutionNotificationPlan.FOCUS_ACTION_OPEN_BG_DARK)
+                    .put("actionTitleColor", ExecutionNotificationPlan.FOCUS_ACTION_OPEN_TEXT_LIGHT)
+                    .put("actionTitleColorDark", ExecutionNotificationPlan.FOCUS_ACTION_OPEN_TEXT_DARK),
+            )
+        }
+        textButtons.put(
+            JSONObject()
+                .put("type", 1)
+                .put("action", FOCUS_ACTION_STOP)
+                .put("actionIntent", FOCUS_ACTION_STOP)
+                .put("actionIntentType", 3)
+                .put("actionTitle", stopLabel)
+                .put("actionBgColor", ExecutionNotificationPlan.FOCUS_ACTION_STOP_BG_LIGHT)
+                .put("actionBgColorDark", ExecutionNotificationPlan.FOCUS_ACTION_STOP_BG_DARK)
+                .put("actionTitleColor", ExecutionNotificationPlan.FOCUS_ACTION_STOP_TEXT_LIGHT)
+                .put("actionTitleColorDark", ExecutionNotificationPlan.FOCUS_ACTION_STOP_TEXT_DARK),
+        )
+
         val paramV2 = JSONObject()
             .put("protocol", 3)
             .put("business", "hyper_island_dispatch")
             .put("updatable", true)
             .put("ticker", islandRight)
+            .put("tickerPic", FOCUS_PIC_TICKER_LIGHT)
+            .put("tickerPicDark", FOCUS_PIC_TICKER_DARK)
             .put("enableFloat", false)
-            .put("isShowNotification", false)
             .put("islandFirstFloat", false)
+            .put("isShowNotification", true)
+            .put("filterWhenNoPermission", false)
+            .put("timeout", 720)
+            .put("reopen", "reopen")
             .put("param_island", paramIsland)
-            .put(
-                "iconTextInfo",
-                JSONObject()
-                    .put(
-                        "animIconInfo",
-                        JSONObject().put("type", 0).put("src", FOCUS_PIC_ICON).put("loop", true).put("autoplay", true),
-                    )
-                    .put("title", title)
-                    .put("content", content),
-            )
+            .put("baseInfo", baseInfo)
+            .put("textButton", textButtons)
             .put("outEffectSrc", "outer_glow")
             .put("aodTitle", islandRight)
             .put("aodPic", FOCUS_PIC_ICON)
         return JSONObject().put("param_v2", paramV2).put("isShowNotification", true).toString()
     }
 
-    /** miui.focus.pics：键为 JSON 中引用的 pic / src / aodPic 名，值为 Icon。 */
+    /** miui.focus.pics：键为 JSON 中引用的 pic / tickerPic / picFunction / aodPic 名，值为 Icon。 */
     private fun focusPics(): Bundle = Bundle().apply {
-        putParcelable(FOCUS_PIC_ICON, Icon.createWithResource(this@AgentExecutionService, R.drawable.ic_notification))
+        val whiteIcon = Icon.createWithResource(this@AgentExecutionService, R.drawable.ic_notification)
+            .apply { setTint(FOCUS_ICON_TINT_WHITE) }
+        val darkIcon = Icon.createWithResource(this@AgentExecutionService, R.drawable.ic_notification)
+            .apply { setTint(FOCUS_ICON_TINT_DARK) }
+        val accentIcon = Icon.createWithResource(this@AgentExecutionService, R.drawable.ic_notification)
+            .apply { setTint(FOCUS_ICON_TINT_ACCENT) }
+        putParcelable(FOCUS_PIC_ICON, whiteIcon)
+        putParcelable(FOCUS_PIC_TICKER_LIGHT, darkIcon)
+        putParcelable(FOCUS_PIC_TICKER_DARK, whiteIcon)
+        putParcelable(FOCUS_PIC_CARD, accentIcon)
+    }
+
+    /** miui.focus.actions：键为 JSON 中 textButton 引用的 action 名，值为真实 Notification.Action。 */
+    private fun focusActions(
+        openLabel: String,
+        openIntent: PendingIntent,
+        stopLabel: String,
+        stopIntent: PendingIntent,
+        isRunning: Boolean,
+    ): Bundle = Bundle().apply {
+        val placeholderIcon = Icon.createWithResource(
+            this@AgentExecutionService,
+            android.R.drawable.screen_background_light_transparent,
+        )
+        if (isRunning) {
+            putParcelable(
+                FOCUS_ACTION_OPEN,
+                Notification.Action.Builder(placeholderIcon, openLabel, openIntent).build(),
+            )
+        }
+        putParcelable(
+            FOCUS_ACTION_STOP,
+            Notification.Action.Builder(placeholderIcon, stopLabel, stopIntent).build(),
+        )
     }
 
 
@@ -352,7 +486,18 @@ internal class AgentExecutionService : Service() {
 
         const val CHANNEL_COMPLETED = "eta_completed"
         private const val COMPLETION_NOTIFICATION_ID_BASE = 20000
-        private const val FOCUS_PIC_ICON = "eta_island_icon"
+        private const val FOCUS_PIC_ICON = "miui.focus.pic_eta_island_icon"
+        private const val FOCUS_PIC_TICKER_LIGHT = "miui.focus.pic_eta_ticker_light"
+        private const val FOCUS_PIC_TICKER_DARK = "miui.focus.pic_eta_ticker_dark"
+        private const val FOCUS_PIC_CARD = "miui.focus.pic_eta_card_icon"
+        private const val FOCUS_ACTION_OPEN = "miui.focus.action_open"
+        private const val FOCUS_ACTION_STOP = "miui.focus.action_stop"
+        private const val FOCUS_MAX_TITLE_CHARS = 48
+        private const val FOCUS_MAX_SUBTITLE_CHARS = 32
+        private const val FOCUS_MAX_CONTENT_CHARS = 140
+        private const val FOCUS_ICON_TINT_WHITE = 0xFFFFFFFF.toInt()
+        private const val FOCUS_ICON_TINT_DARK = 0xFF1A1D24.toInt()
+        private const val FOCUS_ICON_TINT_ACCENT = 0xFF2563EB.toInt()
         @Volatile private var executionState = AgentExecutionState()
         /** 最近一次真正下发给通知的执行状态，用于同值去重（避免流式增量把通知推到系统限流）。 */
         @Volatile private var publishedExecutionState: AgentExecutionState? = null
@@ -606,6 +751,22 @@ internal object ExecutionNotificationPlan {
     internal const val MIUI_FOCUS_PARAM = "miui.focus.param"
     internal const val MIUI_FOCUS_PICS = "miui.focus.pics"
     internal const val MIUI_FOCUS_ACTIONS = "miui.focus.actions"
+
+    /** HyperOS 焦点通知展开卡与通知栏的日/夜高对比色值（杜绝深底黑字与淡色看不清按钮）。 */
+    internal const val FOCUS_COLOR_TITLE_LIGHT = "#1A1D24"
+    internal const val FOCUS_COLOR_TITLE_DARK = "#F5F7FA"
+    internal const val FOCUS_COLOR_SUBTITLE_LIGHT = "#2563EB"
+    internal const val FOCUS_COLOR_SUBTITLE_DARK = "#60A5FA"
+    internal const val FOCUS_COLOR_CONTENT_LIGHT = "#525866"
+    internal const val FOCUS_COLOR_CONTENT_DARK = "#C4CBD6"
+    internal const val FOCUS_ACTION_OPEN_BG_LIGHT = "#E8F0FE"
+    internal const val FOCUS_ACTION_OPEN_BG_DARK = "#25334A"
+    internal const val FOCUS_ACTION_OPEN_TEXT_LIGHT = "#1D4ED8"
+    internal const val FOCUS_ACTION_OPEN_TEXT_DARK = "#93C5FD"
+    internal const val FOCUS_ACTION_STOP_BG_LIGHT = "#FDECEC"
+    internal const val FOCUS_ACTION_STOP_BG_DARK = "#3D2327"
+    internal const val FOCUS_ACTION_STOP_TEXT_LIGHT = "#DC2626"
+    internal const val FOCUS_ACTION_STOP_TEXT_DARK = "#FCA5A5"
 
     /** 非提升态要写的 MIUI 焦点通知键，顺序即写入顺序。 */
     internal val MIUI_FOCUS_KEYS = listOf(

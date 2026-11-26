@@ -60,11 +60,38 @@ class AgentExecutionNotificationPlanTest {
     @Test
     fun testAndroid16RunningStateDropsMiuiExtrasAndPromotes() {
         val running = AgentExecutionState(phase = AgentExecutionPhase.TOOL_EXECUTING, title = "⚡ 点击屏幕")
-        val promote = AgentExecutionState.shouldPromoteToLiveUpdate(running, 36)
+        val promote = AgentExecutionState.shouldPromoteToLiveUpdate(running, 36, preferMiuiFocus = false)
         assertTrue(promote)
         // 提升态：零 miui.*，BigTextStyle。
         assertEquals(emptyList<String>(), ExecutionNotificationPlan.miuiFocusKeys(promote))
         assertEquals(ExecutionNotificationStyle.BIG_TEXT, ExecutionNotificationPlan.style(promote, hasExpandedSnippet = false))
+    }
+
+    @Test
+    fun testHyperOsPrefersMiuiFocusOverLiveUpdateOnAndroid16() {
+        val running = AgentExecutionState(phase = AgentExecutionPhase.THINKING, title = "🧠 深度思考…")
+        val promote = AgentExecutionState.shouldPromoteToLiveUpdate(running, 36, preferMiuiFocus = true)
+        assertFalse(promote)
+        assertEquals(expectedMiuiKeys, ExecutionNotificationPlan.miuiFocusKeys(promote))
+    }
+
+    @Test
+    fun testFocusDayNightColorsAreDistinctValidHex() {
+        val pairs = listOf(
+            ExecutionNotificationPlan.FOCUS_COLOR_TITLE_LIGHT to ExecutionNotificationPlan.FOCUS_COLOR_TITLE_DARK,
+            ExecutionNotificationPlan.FOCUS_COLOR_SUBTITLE_LIGHT to ExecutionNotificationPlan.FOCUS_COLOR_SUBTITLE_DARK,
+            ExecutionNotificationPlan.FOCUS_COLOR_CONTENT_LIGHT to ExecutionNotificationPlan.FOCUS_COLOR_CONTENT_DARK,
+            ExecutionNotificationPlan.FOCUS_ACTION_OPEN_BG_LIGHT to ExecutionNotificationPlan.FOCUS_ACTION_OPEN_BG_DARK,
+            ExecutionNotificationPlan.FOCUS_ACTION_OPEN_TEXT_LIGHT to ExecutionNotificationPlan.FOCUS_ACTION_OPEN_TEXT_DARK,
+            ExecutionNotificationPlan.FOCUS_ACTION_STOP_BG_LIGHT to ExecutionNotificationPlan.FOCUS_ACTION_STOP_BG_DARK,
+            ExecutionNotificationPlan.FOCUS_ACTION_STOP_TEXT_LIGHT to ExecutionNotificationPlan.FOCUS_ACTION_STOP_TEXT_DARK,
+        )
+        val hexRegex = Regex("^#[0-9A-Fa-f]{6}$")
+        for ((light, dark) in pairs) {
+            assertTrue("invalid light color $light", hexRegex.matches(light))
+            assertTrue("invalid dark color $dark", hexRegex.matches(dark))
+            assertFalse("light/dark color should differ: $light", light.equals(dark, ignoreCase = true))
+        }
     }
 
     @Test

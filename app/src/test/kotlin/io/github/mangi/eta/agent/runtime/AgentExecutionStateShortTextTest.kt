@@ -161,6 +161,16 @@ class AgentExecutionStateShortTextTest {
     }
 
     @Test
+    fun testPreferMiuiFocusBlocksLiveUpdatePromotion() {
+        val running = AgentExecutionState(
+            phase = AgentExecutionPhase.THINKING,
+            title = "🧠 深度思考…",
+        )
+        assertTrue(AgentExecutionState.shouldPromoteToLiveUpdate(running, 36, preferMiuiFocus = false))
+        assertFalse(AgentExecutionState.shouldPromoteToLiveUpdate(running, 36, preferMiuiFocus = true))
+    }
+
+    @Test
     fun testIslandShortTextStaysFixedSixChars() {
         val longTool = AgentExecutionState(
             phase = AgentExecutionPhase.TOOL_EXECUTING,
