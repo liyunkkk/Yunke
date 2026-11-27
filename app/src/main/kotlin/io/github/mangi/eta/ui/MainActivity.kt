@@ -1,5 +1,6 @@
 package io.github.mangi.eta.ui
 
+import android.app.ActivityManager
 import android.content.Intent
 import android.os.Parcelable
 import android.os.Trace
@@ -16,10 +17,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
+import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.voice.EtaAssistantOverlayService
 import io.github.mangi.eta.data.repository.AppearanceSettingsRepository
 import io.github.mangi.eta.ui.app.AgentAppRoot
 import io.github.mangi.eta.ui.app.AgentAppTheme
+import io.github.mangi.eta.ui.app.AppIconManager
 import io.github.mangi.eta.ui.app.PredictiveBackController
 import kotlinx.coroutines.launch
 
@@ -58,6 +61,16 @@ class MainActivity : ComponentActivity() {
                     ) {
                         appliedPredictiveBackEnabled = enabled
                         recreateWithoutTransition()
+                    }
+                }
+
+                LaunchedEffect(appearance.appIcon) {
+                    runCatching {
+                        val taskDesc = ActivityManager.TaskDescription.Builder()
+                            .setLabel(getString(R.string.app_name))
+                            .setIcon(AppIconManager.mipmapRes(appearance.appIcon))
+                            .build()
+                        setTaskDescription(taskDesc)
                     }
                 }
 

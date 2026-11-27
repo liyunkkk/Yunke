@@ -33,6 +33,7 @@ import io.github.mangi.eta.data.model.AssistantProfile
 import io.github.mangi.eta.data.repository.AssistantRepository
 import io.github.mangi.eta.ui.app.AppIconManager
 import io.github.mangi.eta.ui.app.LocalAppearanceSettings
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import top.yukonga.miuix.kmp.basic.Icon
@@ -107,18 +108,21 @@ internal fun AssistantAvatar(
     }
 }
 
+private val defaultAvatarCache = ConcurrentHashMap<AppearanceAppIcon, ImageBitmap>()
+
 private fun rasterizeDefaultAvatar(context: Context, appIcon: AppearanceAppIcon): ImageBitmap? {
+    defaultAvatarCache[appIcon]?.let { return it }
     val drawable = ContextCompat.getDrawable(context, AppIconManager.previewDrawableRes(appIcon))
         ?: ContextCompat.getDrawable(context, AppIconManager.mipmapRes(appIcon))
         ?: ContextCompat.getDrawable(context, R.drawable.ic_assistant_default)
         ?: ContextCompat.getDrawable(context, R.mipmap.ic_launcher)
         ?: return null
-    val size = maxOf(drawable.intrinsicWidth, drawable.intrinsicHeight, 128)
+    val size = maxOf(drawable.intrinsicWidth, drawable.intrinsicHeight, 128).coerceAtMost(512)
     return runCatching {
         val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
         drawable.setBounds(0, 0, size, size)
         drawable.draw(canvas)
         bitmap.asImageBitmap()
-    }.getOrNull()
+    }.getOrNull()?.also { defaultAvatarCache[appIcon] = it }
 }

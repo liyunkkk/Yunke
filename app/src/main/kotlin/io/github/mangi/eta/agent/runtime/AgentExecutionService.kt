@@ -331,7 +331,7 @@ internal class AgentExecutionService : Service() {
             title = title,
             content = content,
         )
-        val iconRes = AppIconManager.mipmapRes(AppIconManager.currentIcon(this@AgentExecutionService))
+        val iconRes = AppIconManager.previewDrawableRes(AppIconManager.currentIcon(this@AgentExecutionService))
         val pics = Bundle().apply {
             putParcelable(FOCUS_PIC_ICON, Icon.createWithResource(this@AgentExecutionService, iconRes))
         }
