@@ -193,7 +193,8 @@ class AgentChatComposerProductionRegressionTest {
 
     private fun show() = compose.setContent {
         MiuixTheme(colors = if (dark.value) darkColorScheme() else lightColorScheme()) {
-            SideEffect { focusRef = LocalFocusManager.current }
+            val testFocusManager = LocalFocusManager.current
+            SideEffect { focusRef = testFocusManager }
             CompositionLocalProvider(LocalDensity provides Density(LocalDensity.current.density, fontScale.value)) {
                 val currentHistory = history.value
                 SideEffect { appliedHistory = currentHistory.lastOrNull()?.content.orEmpty() }
