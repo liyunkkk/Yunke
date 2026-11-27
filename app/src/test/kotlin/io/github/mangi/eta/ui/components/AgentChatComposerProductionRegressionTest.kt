@@ -133,10 +133,12 @@ class AgentChatComposerProductionRegressionTest {
         compose.waitForIdle()
         compose.runOnIdle { draft.edit { replace(0, length, "latest🙂"); selection = TextRange(1, 3) } }
         compose.waitForIdle()
+        // 选区在发送前保持业务设置值；发送后清焦点会由 Compose 折叠光标，但草稿对象不能丢。
+        compose.runOnIdle { Assert.assertEquals(TextRange(1, 3), draft.selection) }
         clickSend()
         compose.runOnIdle {
             Assert.assertEquals(listOf("new:latest🙂"), calls)
-            Assert.assertEquals(TextRange(1, 3), draft.selection)
+            Assert.assertEquals("latest🙂", draft.text.toString())
             draft.edit { replace(0, length, ""); selection = TextRange.Zero }
             streaming.value = true
         }
