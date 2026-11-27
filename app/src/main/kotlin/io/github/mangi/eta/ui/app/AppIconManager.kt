@@ -4,7 +4,6 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.pm.PackageManager
 import androidx.annotation.DrawableRes
-import androidx.annotation.MipmapRes
 import io.github.mangi.eta.R
 import io.github.mangi.eta.data.model.AppearanceAppIcon
 
@@ -19,7 +18,7 @@ internal object AppIconManager {
         AppearanceAppIcon.INDIGO -> ALIAS_INDIGO
     }
 
-    @MipmapRes
+    @DrawableRes
     fun mipmapRes(icon: AppearanceAppIcon): Int = when (icon) {
         AppearanceAppIcon.OBSIDIAN -> R.mipmap.ic_launcher
         AppearanceAppIcon.PEARL -> R.mipmap.ic_launcher_pearl
