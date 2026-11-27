@@ -66,9 +66,19 @@ class MainActivity : ComponentActivity() {
 
                 LaunchedEffect(appearance.appIcon) {
                     runCatching {
+                        val launcherIcon = AppIconManager.currentIcon(this@MainActivity)
+                        if (launcherIcon != appearance.appIcon) {
+                            AppearanceSettingsRepository.update { current ->
+                                if (current.appIcon == appearance.appIcon) {
+                                    current.copy(appIcon = launcherIcon)
+                                } else {
+                                    current
+                                }
+                            }
+                        }
                         val taskDesc = ActivityManager.TaskDescription.Builder()
                             .setLabel(getString(R.string.app_name))
-                            .setIcon(AppIconManager.mipmapRes(appearance.appIcon))
+                            .setIcon(AppIconManager.mipmapRes(launcherIcon))
                             .build()
                         setTaskDescription(taskDesc)
                     }

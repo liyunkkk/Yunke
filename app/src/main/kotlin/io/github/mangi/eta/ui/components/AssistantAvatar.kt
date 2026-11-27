@@ -114,8 +114,8 @@ private fun rasterizeDefaultAvatar(context: Context, appIcon: AppearanceAppIcon)
     defaultAvatarCache[appIcon]?.let { return it }
     val drawable = ContextCompat.getDrawable(context, AppIconManager.previewDrawableRes(appIcon))
         ?: ContextCompat.getDrawable(context, AppIconManager.mipmapRes(appIcon))
-        ?: ContextCompat.getDrawable(context, R.drawable.ic_assistant_default)
-        ?: ContextCompat.getDrawable(context, R.mipmap.ic_launcher)
+        ?: ContextCompat.getDrawable(context, R.drawable.ic_assistant_default_pearl)
+        ?: ContextCompat.getDrawable(context, R.mipmap.ic_launcher_pearl)
         ?: return null
     val size = maxOf(drawable.intrinsicWidth, drawable.intrinsicHeight, 128).coerceAtMost(512)
     return runCatching {

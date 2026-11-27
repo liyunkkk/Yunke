@@ -134,11 +134,13 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
     }
 
     val appIcons = AppearanceAppIcon.entries
-    val appIconLabels = listOf(
-        stringResource(R.string.appearance_icon_obsidian),
-        stringResource(R.string.appearance_icon_pearl),
-        stringResource(R.string.appearance_icon_indigo),
-    )
+    val appIconLabels = appIcons.map { icon ->
+        when (icon) {
+            AppearanceAppIcon.PEARL -> stringResource(R.string.appearance_icon_pearl)
+            AppearanceAppIcon.OBSIDIAN -> stringResource(R.string.appearance_icon_obsidian)
+            AppearanceAppIcon.INDIGO -> stringResource(R.string.appearance_icon_indigo)
+        }
+    }
 
     val uiStyles = remember { AppearanceUiStyle.entries.sortedBy { it != AppearanceUiStyle.Default } }
     val uiStyleLabels = uiStyles.map { style ->

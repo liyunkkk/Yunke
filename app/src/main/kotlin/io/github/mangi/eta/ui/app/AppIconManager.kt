@@ -43,7 +43,7 @@ internal object AppIconManager {
                 return candidate
             }
         }
-        return AppearanceAppIcon.OBSIDIAN
+        return AppearanceAppIcon.PEARL
     }
 
     fun apply(context: Context, icon: AppearanceAppIcon) {
@@ -55,7 +55,7 @@ internal object AppIconManager {
         val alreadyApplied = runCatching {
             val targetState = pm.getComponentEnabledSetting(targetComponent)
             val targetEnabled = targetState == PackageManager.COMPONENT_ENABLED_STATE_ENABLED ||
-                (icon == AppearanceAppIcon.OBSIDIAN && targetState == PackageManager.COMPONENT_ENABLED_STATE_DEFAULT)
+                (icon == AppearanceAppIcon.PEARL && targetState == PackageManager.COMPONENT_ENABLED_STATE_DEFAULT)
             if (!targetEnabled) return@runCatching false
             AppearanceAppIcon.entries.all { other ->
                 if (other == icon) {
@@ -63,7 +63,7 @@ internal object AppIconManager {
                 } else {
                     val otherState = pm.getComponentEnabledSetting(ComponentName(pkg, aliasName(other)))
                     otherState == PackageManager.COMPONENT_ENABLED_STATE_DISABLED ||
-                        (other != AppearanceAppIcon.OBSIDIAN && otherState == PackageManager.COMPONENT_ENABLED_STATE_DEFAULT)
+                        (other != AppearanceAppIcon.PEARL && otherState == PackageManager.COMPONENT_ENABLED_STATE_DEFAULT)
                 }
             }
         }.getOrDefault(false)

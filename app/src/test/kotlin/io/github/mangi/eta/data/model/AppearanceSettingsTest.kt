@@ -19,7 +19,7 @@ class AppearanceSettingsTest {
         assertTrue(settings.swipeDismissEnabled)
         assertEquals(false, settings.predictiveBackEnabled)
         assertEquals(DEFAULT_INTERFACE_SCALE, settings.interfaceScale)
-        assertEquals(AppearanceAppIcon.OBSIDIAN, settings.appIcon)
+        assertEquals(AppearanceAppIcon.PEARL, settings.appIcon)
     }
 
     @Test
@@ -31,7 +31,10 @@ class AppearanceSettingsTest {
             AppearanceTopBarBlurStyle.GAUSSIAN,
             AppearanceTopBarBlurStyle.fromPersistedValue("future_style"),
         )
-        assertEquals(AppearanceAppIcon.OBSIDIAN, AppearanceAppIcon.fromPersistedValue("unknown"))
+        assertEquals(AppearanceAppIcon.PEARL, AppearanceAppIcon.fromPersistedValue(null))
+        assertEquals(AppearanceAppIcon.PEARL, AppearanceAppIcon.fromPersistedValue(""))
+        assertEquals(AppearanceAppIcon.PEARL, AppearanceAppIcon.fromPersistedValue("unknown"))
+        assertEquals(AppearanceAppIcon.OBSIDIAN, AppearanceAppIcon.fromPersistedValue("obsidian"))
         assertEquals(AppearanceAppIcon.PEARL, AppearanceAppIcon.fromPersistedValue("pearl"))
         assertEquals(AppearanceAppIcon.INDIGO, AppearanceAppIcon.fromPersistedValue("indigo"))
     }

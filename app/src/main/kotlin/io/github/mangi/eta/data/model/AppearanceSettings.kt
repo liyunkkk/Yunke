@@ -29,7 +29,7 @@ data class AppearanceSettings(
      * 用户手动点开/收起过的分组始终优先于本策略；[AnswerFoldLevel.NONE] 则完全不自动收起。
      */
     val answerFoldLevel: AnswerFoldLevel = AnswerFoldLevel.AGGRESSIVE,
-    val appIcon: AppearanceAppIcon = AppearanceAppIcon.OBSIDIAN,
+    val appIcon: AppearanceAppIcon = AppearanceAppIcon.PEARL,
 ) {
     fun normalized(): AppearanceSettings = copy(
         interfaceScale = normalizeInterfaceScale(interfaceScale),
@@ -148,7 +148,7 @@ enum class AppearanceAppIcon(val persistedValue: String) {
 
     companion object {
         fun fromPersistedValue(value: String?): AppearanceAppIcon =
-            entries.firstOrNull { it.persistedValue == value } ?: OBSIDIAN
+            entries.firstOrNull { it.persistedValue == value } ?: PEARL
     }
 }
 
