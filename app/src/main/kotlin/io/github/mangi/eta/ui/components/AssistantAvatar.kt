@@ -28,8 +28,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Dp
 import androidx.core.content.ContextCompat
 import io.github.mangi.eta.R
+import io.github.mangi.eta.data.model.AppearanceAppIcon
 import io.github.mangi.eta.data.model.AssistantProfile
 import io.github.mangi.eta.data.repository.AssistantRepository
+import io.github.mangi.eta.ui.app.AppIconManager
+import io.github.mangi.eta.ui.app.LocalAppearanceSettings
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import top.yukonga.miuix.kmp.basic.Icon
@@ -73,11 +76,12 @@ internal fun AssistantAvatar(
     shape: Shape = CircleShape,
 ) {
     val context = LocalContext.current
-    val imageBitmap = remember(bitmap, context) {
+    val appIcon = LocalAppearanceSettings.current.appIcon
+    val imageBitmap = remember(bitmap, context, appIcon) {
         bitmap
             ?.takeUnless { it.isRecycled }
             ?.let { runCatching { it.asImageBitmap() }.getOrNull() }
-            ?: rasterizeDefaultAvatar(context)
+            ?: rasterizeDefaultAvatar(context, appIcon)
     }
     Box(
         modifier = modifier
@@ -103,8 +107,10 @@ internal fun AssistantAvatar(
     }
 }
 
-private fun rasterizeDefaultAvatar(context: Context): ImageBitmap? {
-    val drawable = ContextCompat.getDrawable(context, R.drawable.ic_assistant_default)
+private fun rasterizeDefaultAvatar(context: Context, appIcon: AppearanceAppIcon): ImageBitmap? {
+    val drawable = ContextCompat.getDrawable(context, AppIconManager.previewDrawableRes(appIcon))
+        ?: ContextCompat.getDrawable(context, AppIconManager.mipmapRes(appIcon))
+        ?: ContextCompat.getDrawable(context, R.drawable.ic_assistant_default)
         ?: ContextCompat.getDrawable(context, R.mipmap.ic_launcher)
         ?: return null
     val size = maxOf(drawable.intrinsicWidth, drawable.intrinsicHeight, 128)

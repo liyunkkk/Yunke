@@ -216,8 +216,11 @@
   <string name="settings_clear_logs_confirm_summary">已保存的日志文件将被删除，此操作无法撤销。</string>
   <string name="appearance_title">外观与主题</string>
   <string name="appearance_group_color">颜色与主题</string>
-  <string name="appearance_icon">图标</string>
-  <string name="appearance_icon_summary">浅色、暗色和猫咪颜色</string>
+  <string name="appearance_icon">应用图标</string>
+  <string name="appearance_icon_summary">极光云缎 · 切换桌面与默认头像风格</string>
+  <string name="appearance_icon_obsidian">暗夜曜石</string>
+  <string name="appearance_icon_pearl">珠光瓷白</string>
+  <string name="appearance_icon_indigo">深海星蓝</string>
   <string name="appearance_icon_light">浅色</string>
   <string name="appearance_icon_dark">暗色</string>
   <string name="appearance_icon_cat">猫咪颜色</string>

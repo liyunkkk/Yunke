@@ -22,6 +22,7 @@ import androidx.annotation.RequiresApi
 import io.github.mangi.eta.R
 import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.core.safeLogType
+import io.github.mangi.eta.ui.app.AppIconManager
 import java.util.concurrent.atomic.AtomicLong
 import org.json.JSONObject
 
@@ -330,8 +331,9 @@ internal class AgentExecutionService : Service() {
             title = title,
             content = content,
         )
+        val iconRes = AppIconManager.mipmapRes(AppIconManager.currentIcon(this@AgentExecutionService))
         val pics = Bundle().apply {
-            putParcelable(FOCUS_PIC_ICON, Icon.createWithResource(this@AgentExecutionService, R.mipmap.ic_launcher))
+            putParcelable(FOCUS_PIC_ICON, Icon.createWithResource(this@AgentExecutionService, iconRes))
         }
         for (key in keys) {
             when (key) {

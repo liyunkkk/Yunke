@@ -85,10 +85,6 @@
             android:theme="@style/Theme.Eta"
             android:windowSoftInputMode="adjustResize|stateUnchanged">
             <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-            <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="*/*" />
@@ -144,6 +140,48 @@
                 <data android:pathPattern=".*\\..*\\..*\\..*\\.zip" />
             </intent-filter>
         </activity>
+
+        <activity-alias
+            android:name=".ui.MainActivityObsidian"
+            android:enabled="true"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher"
+            android:label="@string/app_name"
+            android:roundIcon="@mipmap/ic_launcher_round"
+            android:targetActivity=".ui.MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".ui.MainActivityPearl"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher_pearl"
+            android:label="@string/app_name"
+            android:roundIcon="@mipmap/ic_launcher_pearl_round"
+            android:targetActivity=".ui.MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".ui.MainActivityIndigo"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher_indigo"
+            android:label="@string/app_name"
+            android:roundIcon="@mipmap/ic_launcher_indigo_round"
+            android:targetActivity=".ui.MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
 
         <activity
             android:name=".ui.AgentTaskSurfaceDialogActivity"

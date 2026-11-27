@@ -5,6 +5,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -29,10 +31,15 @@ import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import com.itos.coui.theme.CouiPresets
 import com.itos.coui.theme.CouiTheme
+import io.github.mangi.eta.ui.app.AppIconManager
 import io.github.mangi.eta.ui.app.seedColor
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import androidx.compose.foundation.text.KeyboardOptions
@@ -51,6 +58,7 @@ import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.data.model.AnswerFoldLevel
 import io.github.mangi.eta.data.model.AppearanceAccentColor
+import io.github.mangi.eta.data.model.AppearanceAppIcon
 import io.github.mangi.eta.data.model.AppearancePaletteStyle
 import io.github.mangi.eta.data.model.AppearanceSettings
 import io.github.mangi.eta.data.model.AppearanceThemeMode
@@ -92,6 +100,7 @@ import io.github.mangi.eta.ui.components.AdaptiveConfirmDialog
 @Composable
 internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
     val appearance = LocalAppearanceSettings.current
+    val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     var scaleDraft by remember(appearance.interfaceScale) {
         mutableFloatStateOf(appearance.interfaceScale * 100f)
@@ -118,6 +127,18 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
             AppearanceSettingsRepository.selectUiStyle(uiStyle)
         }
     }
+
+    fun selectAppIcon(appIcon: AppearanceAppIcon) {
+        update { current -> current.copy(appIcon = appIcon) }
+        AppIconManager.apply(context, appIcon)
+    }
+
+    val appIcons = AppearanceAppIcon.entries
+    val appIconLabels = listOf(
+        stringResource(R.string.appearance_icon_obsidian),
+        stringResource(R.string.appearance_icon_pearl),
+        stringResource(R.string.appearance_icon_indigo),
+    )
 
     val uiStyles = remember { AppearanceUiStyle.entries.sortedBy { it != AppearanceUiStyle.Default } }
     val uiStyleLabels = uiStyles.map { style ->
@@ -185,10 +206,13 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
             themeModeLabels = themeModeLabels,
             accentColors = accentColors,
             accentLabels = accentLabels,
+            appIcons = appIcons,
+            appIconLabels = appIconLabels,
             foldLabels = foldLabels,
             scaleDraft = scaleDraft,
             onScaleDraftChange = { scaleDraft = it },
             onSelectUiStyle = ::selectUiStyle,
+            onSelectAppIcon = ::selectAppIcon,
             onUpdate = ::update,
             onCommitScale = ::commitScale,
             onOpenScaleDialog = {
@@ -273,6 +297,13 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
                 )
                 }
                 }
+                AppIconPickerPreference(
+                    selected = appearance.appIcon,
+                    appIcons = appIcons,
+                    appIconLabels = appIconLabels,
+                    accentColor = MiuixTheme.colorScheme.primary,
+                    onSelect = ::selectAppIcon,
+                )
             }
         }
 
@@ -490,10 +521,13 @@ private fun CouiAppearanceSettingsContent(
     themeModeLabels: List<String>,
     accentColors: List<AppearanceAccentColor>,
     accentLabels: List<String>,
+    appIcons: List<AppearanceAppIcon>,
+    appIconLabels: List<String>,
     foldLabels: List<String>,
     scaleDraft: Float,
     onScaleDraftChange: (Float) -> Unit,
     onSelectUiStyle: (AppearanceUiStyle) -> Unit,
+    onSelectAppIcon: (AppearanceAppIcon) -> Unit,
     onUpdate: ((AppearanceSettings) -> AppearanceSettings) -> Unit,
     onCommitScale: (Float) -> Unit,
     onOpenScaleDialog: () -> Unit,
@@ -530,6 +564,14 @@ private fun CouiAppearanceSettingsContent(
                 onSelect = { accent ->
                     onUpdate { it.copy(accentColor = accent) }
                 },
+            )
+            Divider()
+            AppIconPickerPreference(
+                selected = appearance.appIcon,
+                appIcons = appIcons,
+                appIconLabels = appIconLabels,
+                accentColor = CouiTheme.colorScheme.accent,
+                onSelect = onSelectAppIcon,
             )
         }
 
@@ -583,6 +625,136 @@ private fun CouiAppearanceSettingsContent(
         }
 
         CouiPageBottomSpacer()
+    }
+}
+
+@Composable
+private fun AppIconPickerPreference(
+    selected: AppearanceAppIcon,
+    appIcons: List<AppearanceAppIcon>,
+    appIconLabels: List<String>,
+    accentColor: Color,
+    onSelect: (AppearanceAppIcon) -> Unit,
+) {
+    val view = LocalView.current
+    val selectedLabel = appIconLabels.getOrElse(selected.ordinal) { "" }
+    val checkTint = if (accentColor.luminance() > 0.55f) Color(0xE6000000) else Color.White
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.appearance_icon),
+                    style = MiuixTheme.textStyles.headline1,
+                    color = MiuixTheme.colorScheme.onSurface,
+                )
+                Text(
+                    text = stringResource(R.string.appearance_icon_summary),
+                    style = MiuixTheme.textStyles.footnote1,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                )
+            }
+            Text(
+                text = selectedLabel,
+                style = MiuixTheme.textStyles.body2,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            )
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            appIcons.forEachIndexed { index, icon ->
+                val isSelected = icon == selected
+                val label = appIconLabels.getOrElse(index) { icon.persistedValue }
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(
+                            if (isSelected) accentColor.copy(alpha = 0.10f) else Color.Transparent,
+                        )
+                        .clickable {
+                            TouchHaptics.click(view)
+                            onSelect(icon)
+                        }
+                        .padding(vertical = 10.dp, horizontal = 6.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(64.dp)
+                            .clip(RoundedCornerShape(18.dp))
+                            .then(
+                                if (isSelected) {
+                                    Modifier.border(2.dp, accentColor, RoundedCornerShape(18.dp))
+                                } else {
+                                    Modifier
+                                },
+                            )
+                            .padding(4.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clip(RoundedCornerShape(14.dp))
+                                .border(
+                                    width = 0.5.dp,
+                                    color = Color(0x2E8892A8),
+                                    shape = RoundedCornerShape(14.dp),
+                                ),
+                        ) {
+                            Image(
+                                painter = painterResource(AppIconManager.previewDrawableRes(icon)),
+                                contentDescription = label,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                        }
+                        if (isSelected) {
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.BottomEnd)
+                                    .size(18.dp)
+                                    .clip(CircleShape)
+                                    .background(accentColor),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Check,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(12.dp),
+                                    tint = checkTint,
+                                )
+                            }
+                        }
+                    }
+                    Text(
+                        text = label,
+                        style = MiuixTheme.textStyles.footnote1,
+                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                        color = if (isSelected) accentColor else MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
     }
 }
 

@@ -187,8 +187,11 @@
   <string name="settings_clear_logs_confirm_summary">Saved log files will be deleted. This cannot be undone.</string>
   <string name="appearance_title">Appearance &amp; Theme</string>
   <string name="appearance_group_color">Colors &amp; Theme</string>
-  <string name="appearance_icon">Icon</string>
-  <string name="appearance_icon_summary">Light background, dark background, and the cat</string>
+  <string name="appearance_icon">App icon</string>
+  <string name="appearance_icon_summary">Aurora Silk · Switch launcher &amp; default avatar style</string>
+  <string name="appearance_icon_obsidian">Obsidian</string>
+  <string name="appearance_icon_pearl">Pearl</string>
+  <string name="appearance_icon_indigo">Starlight Blue</string>
   <string name="appearance_icon_light">Light</string>
   <string name="appearance_icon_dark">Dark</string>
   <string name="appearance_icon_cat">Cat</string>
