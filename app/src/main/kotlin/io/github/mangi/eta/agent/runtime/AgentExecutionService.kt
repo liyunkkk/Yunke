@@ -185,9 +185,9 @@ internal class AgentExecutionService : Service() {
         val appTitle = state.subtitle?.takeIf { it.isNotBlank() }
             ?: getString(R.string.app_name)
         val baseStatus = if (state.isRunning) {
-            state.cleanStatusLine().ifBlank { getString(R.string.execution_running_title, count) }
+            state.cleanStatusLine().ifBlank { getString(R.string.execution_title) }
         } else {
-            getString(R.string.execution_running_title, count)
+            getString(R.string.execution_summary, count)
         }
         val statusWithCount = if (state.isRunning && count > 1) {
             "$baseStatus · ${count} 个任务"
@@ -267,7 +267,7 @@ internal class AgentExecutionService : Service() {
 
     /** 锁屏隐藏敏感内容时的公开版本（对齐 DSH Go publicVersion：不泄露会话标题与正文）。 */
     private fun publicVersion(state: AgentExecutionState, open: PendingIntent): Notification {
-        val publicText = if (state.isRunning) "YUNKe 正在运行" else getString(R.string.execution_running_title, 1)
+        val publicText = getString(R.string.execution_title)
         val builder = Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(getString(R.string.app_name))
