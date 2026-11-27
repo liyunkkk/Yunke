@@ -716,28 +716,30 @@ private fun UserMessageBubble(
             )
             else -> MiuixTheme.colorScheme.surfaceContainerHigh
         }
+        val bubbleShape = RoundedCornerShape(
+            topStart = 20.dp,
+            topEnd = 20.dp,
+            bottomEnd = 6.dp,
+            bottomStart = 20.dp,
+        )
         Column(
             modifier = Modifier
                 .widthIn(max = 320.dp)
-                .squircleSurface(
-                    // 气泡底色同步跟随主题强调色，浅/深色模式下与文字保持清晰对比度。
-                    color = bubbleFillColor,
-                    topStart = 20.dp,
-                    topEnd = 20.dp,
-                    bottomEnd = 6.dp,
-                    bottomStart = 20.dp,
-                )
+                // 底色填充、裁剪与描边必须共享同一个不对称圆角形状（右下角 6.dp），
+                // 避免 squircleBorder(cornerRadius = 20.dp) 沿 20.dp 弧线切过右下角造成断层伪影。
+                .clip(bubbleShape)
+                .background(bubbleFillColor, bubbleShape)
                 .then(
                     when {
-                        isEditing -> Modifier.squircleBorder(
+                        isEditing -> Modifier.border(
                             width = 1.dp,
                             color = bubblePrimary,
-                            cornerRadius = 20.dp,
+                            shape = bubbleShape,
                         )
-                        isCouiBubble -> Modifier.squircleBorder(
+                        isCouiBubble -> Modifier.border(
                             width = 0.5.dp,
                             color = bubblePrimary.copy(alpha = if (isDarkBubble) 0.22f else 0.14f),
-                            cornerRadius = 20.dp,
+                            shape = bubbleShape,
                         )
                         else -> Modifier
                     }
