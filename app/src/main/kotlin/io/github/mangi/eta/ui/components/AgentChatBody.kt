@@ -671,6 +671,9 @@ internal fun AgentChatScaffold(
     var voiceOverlayCollapsed by remember { mutableStateOf(false) }
     // 输入框是否持有焦点：只有它聚焦时，点消息区才收起双态输入框，避免影响对话里的其它输入控件。
     var composerFocused by remember { mutableStateOf(false) }
+    val keyboard = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
+    val view = LocalView.current
     LaunchedEffect(voiceState.active) {
         if (voiceState.active) voiceOverlayCollapsed = false
     }
