@@ -8,6 +8,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.LinkInteractionListener
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.lifecycle.compose.LifecycleStartEffect
 import io.github.mangi.eta.ui.components.KeepActiveStreamingRow
 import io.github.mangi.eta.ui.components.shouldKeepStreamingRow
 import io.github.mangi.eta.ui.components.StreamingMarkdownRestoreState
@@ -151,8 +152,13 @@ internal fun DocumentStreamingMarkdown(
         else if (animate) state.revealCoordinator.resumeAnimationsWithoutCatchingUp()
         else state.revealCoordinator.restoreHistoryThrough(currentContent.length)
         onPauseOrDispose {
-            if (routeCoveredNow.value) state.restoreState.holdCovered()
-            else {
+            state.restoreState.holdCovered()
+            if (!routeCoveredNow.value) state.revealCoordinator.holdAnimations()
+        }
+    }
+    LifecycleStartEffect(state) {
+        onStopOrDispose {
+            if (!routeCoveredNow.value) {
                 state.restoreState.pause()
                 state.revealCoordinator.pauseAnimationsAndCatchUp()
             }

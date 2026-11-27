@@ -154,32 +154,31 @@ internal class AgentExecutionNotificationTracker(
             }
             is AgentEvent.AssistantBlockDelta -> {
                 if (runStartedAt == 0L) runStartedAt = SystemClock.elapsedRealtime()
-                if (event.kind == AgentEvent.AssistantBlockKind.THINKING) {
-                    thinkingBuffer.append(event.delta)
-                    val preview = extractSingleLinePreview(thinkingBuffer)
+                // 对齐 DSH Go（LiveActivity / live_activity.dart）：流式文本增量只关心阶段切换，
+                // 不逐 token 拷贝整段缓冲区、也不每秒高频轰炸 NotificationManager.notify()，
+                // 避免退回桌面动画期间主线程与 SystemUI 灵动岛渲染被通知更新打断卡顿。
+                if (event.kind == AgentEvent.AssistantBlockKind.THINKING && currentPhase != AgentExecutionPhase.THINKING) {
+                    currentPhase = AgentExecutionPhase.THINKING
                     emitThrottled(
                         AgentExecutionState(
                             phase = AgentExecutionPhase.THINKING,
                             title = context.getString(R.string.execution_phase_thinking),
                             subtitle = taskSubtitle,
-                            detail = preview.ifBlank { context.getString(R.string.execution_phase_thinking_detail) },
+                            detail = context.getString(R.string.execution_phase_thinking_detail),
                             startedAtElapsedRealtime = runStartedAt,
                             showChronometer = true,
-                            expandedSnippet = extractTail(thinkingBuffer),
                         ),
                     )
-                } else if (event.kind == AgentEvent.AssistantBlockKind.TEXT) {
-                    generatingBuffer.append(event.delta)
-                    val preview = extractSingleLinePreview(generatingBuffer)
+                } else if (event.kind == AgentEvent.AssistantBlockKind.TEXT && currentPhase != AgentExecutionPhase.GENERATING) {
+                    currentPhase = AgentExecutionPhase.GENERATING
                     emitThrottled(
                         AgentExecutionState(
                             phase = AgentExecutionPhase.GENERATING,
                             title = context.getString(R.string.execution_phase_generating),
                             subtitle = taskSubtitle,
-                            detail = preview.ifBlank { context.getString(R.string.execution_phase_generating_detail) },
+                            detail = context.getString(R.string.execution_phase_generating_detail),
                             startedAtElapsedRealtime = runStartedAt,
                             showChronometer = true,
-                            expandedSnippet = extractTail(generatingBuffer),
                         ),
                     )
                 }

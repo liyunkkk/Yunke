@@ -217,6 +217,10 @@ internal fun AgentAppRoot(
             when (event) {
                 Lifecycle.Event.ON_PAUSE -> {
                     io.github.mangi.eta.agent.voice.tts.SpeechPlayback.stopUiBound("pause")
+                }
+                Lifecycle.Event.ON_STOP -> {
+                    // 键盘收起与焦点清理延后到退场动画完成后的 ON_STOP，
+                    // 避免任务进行中上滑回桌面时在 ON_PAUSE 触发焦点重组与 IME 过渡卡顿。
                     keyboard?.hide()
                     focusManager.clearFocus(force = true)
                 }

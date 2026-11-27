@@ -161,13 +161,32 @@ class AgentExecutionStateShortTextTest {
     }
 
     @Test
-    fun testPreferMiuiFocusBlocksLiveUpdatePromotion() {
-        val running = AgentExecutionState(
+    fun testLiveChipWordsYieldsToChronometerWhileTimed() {
+        val timed = AgentExecutionState(
             phase = AgentExecutionPhase.THINKING,
             title = "🧠 深度思考…",
+            startedAtElapsedRealtime = 1000L,
+            showChronometer = true,
         )
-        assertTrue(AgentExecutionState.shouldPromoteToLiveUpdate(running, 36, preferMiuiFocus = false))
-        assertFalse(AgentExecutionState.shouldPromoteToLiveUpdate(running, 36, preferMiuiFocus = true))
+        assertEquals(null, timed.liveChipWords())
+
+        val untimed = AgentExecutionState(
+            phase = AgentExecutionPhase.TOOL_EXECUTING,
+            title = "⚡ 点击屏幕",
+            showChronometer = false,
+        )
+        assertEquals("正在点击屏幕", untimed.liveChipWords())
+        assertEquals(null, AgentExecutionState().liveChipWords())
+    }
+
+    @Test
+    fun testCleanStatusLineIsMinimal() {
+        assertEquals("正在思考", AgentExecutionState(phase = AgentExecutionPhase.THINKING).cleanStatusLine())
+        assertEquals("正在回复", AgentExecutionState(phase = AgentExecutionPhase.GENERATING).cleanStatusLine())
+        assertEquals(
+            "正在点击屏幕 · 微信",
+            AgentExecutionState(phase = AgentExecutionPhase.TOOL_EXECUTING, title = "⚡ 点击屏幕", detail = "微信").cleanStatusLine(),
+        )
     }
 
     @Test

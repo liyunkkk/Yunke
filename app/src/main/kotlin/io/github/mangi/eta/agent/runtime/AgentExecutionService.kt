@@ -9,18 +9,20 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
+import android.provider.Settings
 import androidx.annotation.RequiresApi
 import io.github.mangi.eta.R
 import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.core.safeLogType
 import java.util.concurrent.atomic.AtomicLong
-import org.json.JSONArray
 import org.json.JSONObject
 
 /** 只在用户任务存活期间持有前台执行生命周期；进程被系统停止后不重放任务。 */
@@ -29,9 +31,17 @@ internal class AgentExecutionService : Service() {
         AndroidAgentLogger.warn("Execution task stop failed: type=${failure.safeLogType()}")
     }
     private val owner = ownerSequence.incrementAndGet()
-    private val preferMiuiFocus: Boolean by lazy { isMiuiFamily() }
     private var foregroundActive = false
     @Volatile private var startRejected = false
+    @Volatile private var lastNotifiedAtMs = 0L
+    @Volatile private var cachedOpenKey: Pair<String, String?>? = null
+    @Volatile private var cachedOpenIntent: PendingIntent? = null
+
+    private val applyNotificationTask = Runnable { performBackgroundRefresh() }
+    private val periodicRepostTask = Runnable {
+        publishedExecutionState = null
+        scheduleNotificationRefresh(immediate = true)
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -48,8 +58,14 @@ internal class AgentExecutionService : Service() {
         if (foregroundActive || startRejected) return
         leases.attachOwner(owner)
         try {
-            startForeground(NOTIFICATION_ID, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+            // startForeground 必须在主线程同步完成；此处不查询跨进程焦点白名单，避免阻塞主线程动画。
+            startForeground(
+                NOTIFICATION_ID,
+                notification(allowFocusQuery = false),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+            )
             foregroundActive = true
+            lastNotifiedAtMs = SystemClock.elapsedRealtime()
         } catch (failure: RuntimeException) {
             startRejected = true
             AndroidAgentLogger.warn("Execution service foreground failed: type=${failure.safeLogType()}")
@@ -61,8 +77,14 @@ internal class AgentExecutionService : Service() {
         if (intent?.action == ACTION_STOP) {
             stopTasks()
         } else {
+            val justStarted = !foregroundActive
             ensureForeground()
-            refreshNotification()
+            if (!justStarted || Build.VERSION.SDK_INT < AgentExecutionState.LIVE_UPDATE_MIN_SDK) {
+                scheduleNotificationRefresh(immediate = false)
+            } else if (executionState.isRunning) {
+                notifyHandler.removeCallbacks(periodicRepostTask)
+                notifyHandler.postDelayed(periodicRepostTask, LIVE_REFRESH_MS)
+            }
         }
         return START_NOT_STICKY
     }
@@ -70,6 +92,8 @@ internal class AgentExecutionService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        notifyHandler.removeCallbacks(applyNotificationTask)
+        notifyHandler.removeCallbacks(periodicRepostTask)
         if (instance === this) instance = null
         // 销毁时同样收回本服务拥有的任务。回收在独立有界工作线程上完成，不阻塞 Main。
         stopQueue.close(leases.drainOwner(owner))
@@ -79,76 +103,118 @@ internal class AgentExecutionService : Service() {
     private fun stopTasks(startFailed: Boolean = false) {
         val callbacks = leases.drain(startFailed)
         stopQueue.submit(callbacks) {
-            mainHandler.post { if (instance === this) refreshNotification() }
+            scheduleNotificationRefresh(immediate = true)
         }
     }
 
-    private fun refreshNotification() {
-        if (leases.closeOwnerIfIdle(owner)) {
-            foregroundActive = false
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+    /**
+     * 对齐 DSH Go `LiveActivity.refresh()`：所有通知构建、焦点白名单查询与 `NotificationManager.notify()`
+     * 全部移到独立后台 `HandlerThread("eta-live-notify")`，并保留 600ms 最小间隔节流，
+     * 彻底避免任务运行期间划回桌面/切后台时主线程被 Binder IPC 阻塞造成动画卡顿。
+     */
+    private fun scheduleNotificationRefresh(immediate: Boolean = false) {
+        notifyHandler.removeCallbacks(applyNotificationTask)
+        if (immediate) {
+            notifyHandler.post(applyNotificationTask)
+            return
+        }
+        val waitMs = (lastNotifiedAtMs + MIN_NOTIFY_GAP_MS - SystemClock.elapsedRealtime()).coerceAtLeast(0L)
+        if (waitMs == 0L) {
+            notifyHandler.post(applyNotificationTask)
         } else {
-            getSystemService(NotificationManager::class.java)?.notify(NOTIFICATION_ID, notification())
+            notifyHandler.postDelayed(applyNotificationTask, waitMs)
         }
     }
 
-    private fun notification(): Notification {
+    private fun performBackgroundRefresh() {
+        if (leases.closeOwnerIfIdle(owner)) {
+            notifyHandler.removeCallbacks(periodicRepostTask)
+            mainHandler.post {
+                if (instance === this) {
+                    foregroundActive = false
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                }
+            }
+            return
+        }
+        val built = runCatching { notification(allowFocusQuery = true) }.getOrNull() ?: return
+        runCatching {
+            getSystemService(NotificationManager::class.java)?.notify(NOTIFICATION_ID, built)
+        }
+        lastNotifiedAtMs = SystemClock.elapsedRealtime()
+        notifyHandler.removeCallbacks(periodicRepostTask)
+        if (executionState.isRunning) {
+            notifyHandler.postDelayed(periodicRepostTask, LIVE_REFRESH_MS)
+        }
+    }
+
+    private fun openConversationPendingIntent(): PendingIntent {
+        val source = currentSource
+        val conversationKey = currentConversationKey?.takeIf(String::isNotBlank)
+        val cacheKey = source to conversationKey
+        cachedOpenIntent?.takeIf { cachedOpenKey == cacheKey }?.let { return it }
         val openIntent = Intent(this, AgentNotificationTrampolineActivity::class.java).apply {
-            putExtra(AgentNotificationTrampolineActivity.EXTRA_SOURCE, currentSource)
-            currentConversationKey?.takeIf(String::isNotBlank)?.let { key ->
+            putExtra(AgentNotificationTrampolineActivity.EXTRA_SOURCE, source)
+            conversationKey?.let { key ->
                 putExtra(io.github.mangi.eta.agent.voice.EtaAssistantOverlayService.EXTRA_CONVERSATION_KEY, key)
             }
         }
-        val open = PendingIntent.getActivity(
-            this, 0, openIntent,
+        return PendingIntent.getActivity(
+            this,
+            0,
+            openIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-        val stop = PendingIntent.getService(
-            this, 1, Intent(this, AgentExecutionService::class.java).setAction(ACTION_STOP),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
+        ).also {
+            cachedOpenKey = cacheKey
+            cachedOpenIntent = it
+        }
+    }
+
+    private fun progressAccentColor(): Int {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            runCatching { return getColor(android.R.color.system_accent1_500) }
+        }
+        return DEFAULT_PROGRESS_ACCENT
+    }
+
+    private fun notification(allowFocusQuery: Boolean): Notification {
+        val open = openConversationPendingIntent()
         val state = if (suppressLiveUpdateFlag) executionState.copy(suppressLiveUpdate = true) else executionState
-        val cleanAction = state.title?.let(AgentExecutionState::stripCapsulePrefix)?.takeIf { it.isNotEmpty() }
+        val count = leases.count().coerceAtLeast(1)
         val appTitle = state.subtitle?.takeIf { it.isNotBlank() }
-            ?: cleanAction
             ?: getString(R.string.app_name)
-        val actionText = cleanAction ?: getString(R.string.execution_phase_thinking)
-        val detailText = state.detail ?: if (leases.executingSessionCount() == 0) {
-            getString(R.string.execution_summary_idle)
+        val baseStatus = if (state.isRunning) {
+            state.cleanStatusLine().ifBlank { getString(R.string.execution_running_title, count) }
         } else {
-            getString(R.string.execution_summary, leases.executingSessionCount())
+            getString(R.string.execution_running_title, count)
         }
-        // 副屏存活时在既有常驻通知上补一行状态，不新增通知渠道。
-        // 注意：这里绝不能调 VirtualDisplaySession.viewerStatus()——它是 @Synchronized，
-        // 而本函数在主线程被 publishExecutionState 调用。工具线程正在做全分辨率截图时
-        // 会长时间持锁，主线程就跟着卡在 futex 上；改读运行时服务推送过来的非阻塞缓存标记。
-        val virtualDisplayActive = virtualDisplayActiveFlag
-        val detailWithVirtualDisplay = if (virtualDisplayActive) {
-            detailText + " · " + getString(R.string.execution_virtual_display_active)
+        val statusWithCount = if (state.isRunning && count > 1) {
+            "$baseStatus · ${count} 个任务"
         } else {
-            detailText
+            baseStatus
         }
+        val statusLine = if (virtualDisplayActiveFlag) {
+            "后台运行中 · $statusWithCount"
+        } else {
+            statusWithCount
+        }
+
+        // 对齐 DSH Go + 用户要求：任何状态都不挂操作按钮（无 addAction），点击卡片直接回到对应对话；
+        // 不调用 Notification.Builder.setColor / setLargeIcon，保留 HyperOS 4 液态玻璃原生通透底色与圆角应用图标。
         val builder = Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(appTitle)
-            .setContentText(detailWithVirtualDisplay)
+            .setContentText(statusLine)
             .setContentIntent(open)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
+            .setCategory(if (state.isRunning) Notification.CATEGORY_PROGRESS else Notification.CATEGORY_STATUS)
+            .setVisibility(Notification.VISIBILITY_PRIVATE)
+            .setPublicVersion(publicVersion(state, open))
 
-        val openLabel = getString(R.string.execution_action_open)
-        val stopLabel = if (state.isRunning) {
-            getString(R.string.execution_action_stop)
-        } else {
-            getString(R.string.execution_stop)
-        }
         if (state.isRunning) {
-            builder
-                .addAction(Notification.Action.Builder(null, openLabel, open).build())
-                .addAction(Notification.Action.Builder(null, stopLabel, stop).build())
-        } else {
-            builder.addAction(Notification.Action.Builder(null, stopLabel, stop).build())
+            builder.setTimeoutAfter(LIVE_TIMEOUT_MS)
         }
 
         if (state.showChronometer && state.startedAtElapsedRealtime > 0L) {
@@ -161,301 +227,176 @@ internal class AgentExecutionService : Service() {
         }
 
         val expanded = state.expandedSnippet?.takeIf { it.isNotBlank() }
-        val promote = AgentExecutionState.shouldPromoteToLiveUpdate(state, Build.VERSION.SDK_INT, preferMiuiFocus)
-        // 提升态不设 subText：Eta 的构建链里只有 title/contentText，没有 subText；而且 subText 与
-        // BigTextStyle().setSummaryText(actionText) 是同一句话，展开卡上会重复一行。非提升态保持原样。
-        if (!promote) {
-            builder.setSubText(actionText)
-        }
-        // 一律 BigTextStyle：刻意不用无进度的 ProgressStyle，否则提升卡下方会渲染出一条空进度白条。
-        // 不设 setColor：用户实测这台机器会把品牌色渲染成深色不透明卡片（纯黑底看不清字），
-        // 去掉后由系统按液态玻璃样式着色。
-        if (ExecutionNotificationPlan.style(promote, expanded != null) == ExecutionNotificationStyle.BIG_TEXT) {
-            builder.setStyle(
-                Notification.BigTextStyle()
-                    .setBigContentTitle(appTitle)
-                    .bigText(expanded ?: detailWithVirtualDisplay)
-                    .setSummaryText(actionText),
-            )
+        val promote = AgentExecutionState.shouldPromoteToLiveUpdate(state, Build.VERSION.SDK_INT)
+
+        when (ExecutionNotificationPlan.style(promote, expanded != null)) {
+            ExecutionNotificationStyle.PROGRESS -> {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
+                    applyLiveProgressStyle(builder)
+                }
+            }
+            ExecutionNotificationStyle.BIG_TEXT -> {
+                builder.setStyle(
+                    Notification.BigTextStyle()
+                        .setBigContentTitle(appTitle)
+                        .bigText(expanded ?: statusLine),
+                )
+            }
+            ExecutionNotificationStyle.NONE -> Unit
         }
 
-        // 提升态（非小米 Android 16+）一个 miui.* 扩展都不写；
-        // 小米 HyperOS 走原生焦点通知（miui.focus.param v3），由系统按日/夜模式原生渲染浅/深卡片并支持双按钮，
-        // 彻底避免 HyperOS 把 Android 16 Live Update 塞进深炭灰展开壳再配日间黑字。
+        // Android 16+ 提升态（promote == true）一个 miui.* 键都不写，完全交给原生 Live Update（HyperOS 3.1+/4 原生上岛）；
+        // 仅非提升态且 SystemUI 显式放行 canShowFocus 时，才附带 DSH Go 同款极简 protocol 1 焦点参数。
         val miuiFocusKeys = ExecutionNotificationPlan.miuiFocusKeys(promote)
-        if (miuiFocusKeys.isNotEmpty()) {
-            applyMiuiFocusExtras(
+        if (miuiFocusKeys.isNotEmpty() && allowFocusQuery) {
+            applyXiaomiFocusExtras(
                 builder = builder,
                 keys = miuiFocusKeys,
-                appTitle = appTitle,
-                actionText = actionText,
-                detailText = expanded ?: detailWithVirtualDisplay,
-                openLabel = openLabel,
-                openIntent = open,
-                stopLabel = stopLabel,
-                stopIntent = stop,
-                isRunning = state.isRunning,
+                state = state,
+                title = appTitle,
+                content = statusLine,
             )
         }
 
-        // 判断逻辑是纯函数（可单测）；这里同时保留显式版本闸门，保证低版本一行 API 36 代码都不碰。
         if (promote && Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
-            promoteToLiveUpdate(builder, state.shortText())
+            promoteToLiveUpdate(builder, state.liveChipWords())
         }
 
         return builder.build()
     }
 
+    /** 锁屏隐藏敏感内容时的公开版本（对齐 DSH Go publicVersion：不泄露会话标题与正文）。 */
+    private fun publicVersion(state: AgentExecutionState, open: PendingIntent): Notification {
+        val publicText = if (state.isRunning) "YUNKe 正在运行" else getString(R.string.execution_running_title, 1)
+        val builder = Notification.Builder(this, CHANNEL)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(getString(R.string.app_name))
+            .setContentText(publicText)
+            .setContentIntent(open)
+            .setOngoing(true)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
+            state.liveChipWords()?.let(builder::setShortCriticalText)
+        }
+        return builder.build()
+    }
+
     /**
-     * 写入 MIUI 焦点通知（灵动岛）扩展。HyperOS 4 的上岛判定分两个进程、两道闸门：
-     *   ① SystemUI 主进程 FocusUtils.isFocusNotification：只认
-     *      extras["miui.focus.rv"] 是 RemoteViews，或 extras["miui.focus.isFocus"] 为 true；
-     *      随后 showOnStatusBar 还要求 miui.focus.ticker 非空（或 miui.focus.rvBar 是 RemoteViews）。
-     *   ② 系统插件 miui.systemui.plugin 的 FocusNotifPreHandler.onNotificationPosted：
-     *      有 miui.focus.rv 走 buildNoParamsFocusNotification，
-     *      否则读 extras["miui.focus.param"]（protocol 3 JSON）走 buildParamsFocusNotification；
-     *      两者都没有则直接 return false，通知永远渲染不出岛。
-     * 只写 isFocus / ticker 只能过①，过不了②，所以必须同时提供 miui.focus.param。
-     * 下方 JSON 按 param_v2（protocol 3）组织，命中 V3 模板路径（不需要 scene）。
-     * 图片经 miui.focus.pics（Bundle: pic 名 -> Icon）提供，JSON 中 pic/picFunction/aodPic 引用同名键。
-     * 按钮经 miui.focus.actions（Bundle: action 名 -> Notification.Action）提供，JSON 中 textButton 引用同名键。
-     * 旧 key（miui.focusNotification / .subTitle）保留，兼容 HyperOS 3 / MIUI 14-15。
-     * miui.enableFloat 在 HyperOS 3/4 的 ExpandedNotification.canFloat() 中均被读取，保持 false 不弹浮窗。
-     *
-     * 小米系设备统一走本路径；非小米 Android 16+ 提升态不写任何 miui.* 键。
+     * 对齐 DSH Go `LiveActivity.post()`：API 36+ 运行态使用不定进度 `Notification.ProgressStyle`，
+     * 仅给单段进度轨着雾蓝/壁纸取色，不设通知整体 setColor，保持液态玻璃通透卡片。
      */
-    private fun applyMiuiFocusExtras(
+    @RequiresApi(Build.VERSION_CODES.BAKLAVA)
+    private fun applyLiveProgressStyle(builder: Notification.Builder) {
+        val accent = progressAccentColor()
+        builder.setStyle(
+            Notification.ProgressStyle()
+                .setProgressSegments(listOf(Notification.ProgressStyle.Segment(1).setColor(accent)))
+                .setProgressIndeterminate(true),
+        )
+    }
+
+    /**
+     * 申请 Android 16 原生 Live Update 提升：
+     * - 正在正计时时 `chipWords` 为 null，顶部胶囊直接显示实时计时器（如 00:18）；
+     * - 仅非计时状态才设置 `setShortCriticalText`。
+     */
+    @RequiresApi(Build.VERSION_CODES.BAKLAVA)
+    private fun promoteToLiveUpdate(builder: Notification.Builder, chipWords: String?) {
+        chipWords?.takeIf { it.isNotEmpty() }?.let(builder::setShortCriticalText)
+        builder.extras.putBoolean(PROMOTED_ONGOING_EXTRA, true)
+    }
+
+    /**
+     * 对齐 DSH Go `XiaomiFocus.kt`：仅在非提升态（Android <= 15）且 SystemUI `canShowFocus` 放行时写入
+     * 最简 protocol 1 模板（仅 `miui.focus.param` + `miui.focus.pics`），零彩虹光边、零自定义撞色、零按钮。
+     * 必须在后台通知线程调用，不可阻塞主线程。
+     */
+    private fun applyXiaomiFocusExtras(
         builder: Notification.Builder,
         keys: List<String>,
-        appTitle: String,
-        actionText: String,
-        detailText: String,
-        openLabel: String,
-        openIntent: PendingIntent,
-        stopLabel: String,
-        stopIntent: PendingIntent,
-        isRunning: Boolean,
+        state: AgentExecutionState,
+        title: String,
+        content: String,
     ) {
-        // 顶部虚拟屏悬浮胶囊或静默定时任务接管视觉位时，HyperOS 焦点岛同样退避，避免顶部双胶囊打架。
         if (suppressLiveUpdateFlag) return
-        // 执行会话刚启动、尚未收到首条 RunStarted 前的短暂 IDLE 帧不写 miui.focus.*，
-        // 防止 HyperOS 焦点插件先以空闲态上岛、毫秒后又被运行态覆盖引发闪烁或抖动。
-        // 仅开终端会话时 countsAsExecutingSession = false（executingSessionCount == 0），不受影响。
-        if (!executionState.isRunning && leases.executingSessionCount() > 0) return
-        val capsuleShort = executionState.islandShortText()
-            .ifBlank { AgentExecutionState.clampCapsuleText(actionText, AgentExecutionState.ISLAND_RIGHT_MAX_CHARS) }
+        if (!state.isRunning) return
+        if (!isXiaomiFocusAllowed(this)) return
+        val word = state.islandShortText()
+            .trim()
+            .ifBlank { content.trim() }
+            .take(AgentExecutionState.ISLAND_RIGHT_MAX_CHARS)
+        val paramJson = xiaomiFocusParamJson(
+            phase = state.phase,
+            word = word,
+            title = title,
+            content = content,
+        )
+        val pics = Bundle().apply {
+            putParcelable(FOCUS_PIC_ICON, Icon.createWithResource(this@AgentExecutionService, R.mipmap.ic_launcher))
+        }
         for (key in keys) {
             when (key) {
-                ExecutionNotificationPlan.MIUI_FOCUS_NOTIFICATION ->
-                    builder.extras.putBoolean(key, true)
-                ExecutionNotificationPlan.MIUI_FOCUS_NOTIFICATION_SUBTITLE ->
-                    builder.extras.putString(key, capsuleShort)
-                ExecutionNotificationPlan.MIUI_FOCUS_IS_FOCUS ->
-                    builder.extras.putBoolean(key, true)
-                ExecutionNotificationPlan.MIUI_FOCUS_TICKER ->
-                    builder.extras.putString(key, capsuleShort)
-                ExecutionNotificationPlan.MIUI_ENABLE_FLOAT ->
-                    builder.extras.putBoolean(key, false)
-                ExecutionNotificationPlan.MIUI_FOCUS_PARAM ->
-                    builder.extras.putString(
-                        key,
-                        focusParamJson(
-                            title = appTitle,
-                            actionText = actionText,
-                            detailText = detailText,
-                            islandRight = capsuleShort,
-                            openLabel = openLabel,
-                            stopLabel = stopLabel,
-                            isRunning = isRunning,
-                        ),
-                    )
-                ExecutionNotificationPlan.MIUI_FOCUS_PICS ->
-                    builder.extras.putBundle(key, focusPics())
-                ExecutionNotificationPlan.MIUI_FOCUS_ACTIONS ->
-                    builder.extras.putBundle(
-                        key,
-                        focusActions(
-                            openLabel = openLabel,
-                            openIntent = openIntent,
-                            stopLabel = stopLabel,
-                            stopIntent = stopIntent,
-                            isRunning = isRunning,
-                        ),
-                    )
+                ExecutionNotificationPlan.MIUI_FOCUS_PARAM -> builder.extras.putString(key, paramJson)
+                ExecutionNotificationPlan.MIUI_FOCUS_PICS -> builder.extras.putBundle(key, pics)
                 else -> Unit
             }
         }
     }
 
     /**
-     * 把通知标记为 Live Update：胶囊短文本 + 提升 extra。
-     *
-     * 请求提升的公开方法（requestPromotedOngoing）到 API 36.1 才公开，所以这里按 Eta 的做法
-     * 用标准 extra `android.requestPromotedOngoing`，API 36 的系统同样读取它。
-     *
-     * 不设大图标：用户实测这张卡上大图标会渲染成突兀的白色方块，按用户要求去掉。
+     * 对齐 DSH Go `XiaomiFocus.param()`：极简 protocol 1 模板，UTF-8 严格限制在 3072 字节以内。
+     * 零外发光特效、零按钮、零自定义颜色，100% 跟随系统主题。
      */
-    @RequiresApi(Build.VERSION_CODES.BAKLAVA)
-    private fun promoteToLiveUpdate(builder: Notification.Builder, shortText: String) {
-        if (shortText.isNotEmpty()) {
-            builder.setShortCriticalText(shortText)
-        }
-        builder.extras.putBoolean(PROMOTED_ONGOING_EXTRA, true)
-    }
-
-    /**
-     * HyperOS 3/4 焦点通知 protocol 3 参数：
-     * - 状态栏大岛左侧仅展示图标（不再重复写 YUNKe 挤占宽度），右侧仅展示固定 6 字宽动作短词；
-     * - 展开卡与通知栏/锁屏统一走 baseInfo（显式声明日间浅色卡深字 + 夜间深色卡浅字双套色值），
-     *   彻底消除 HyperOS 4 日间模式下原生 Live Update「深炭灰壳配纯黑字」的可读性问题；
-     * - 底部挂载原生 textButton 双按钮（查看对话 / 停止任务），日/夜配色独立且点击直达真实 PendingIntent；
-     * - enableFloat=false + islandFirstFloat=false 保证静默上岛，绝不在开始或更新任务时自动展开。
-     */
-    private fun focusParamJson(
+    private fun xiaomiFocusParamJson(
+        phase: AgentExecutionPhase,
+        word: String,
         title: String,
-        actionText: String,
-        detailText: String,
-        islandRight: String,
-        openLabel: String,
-        stopLabel: String,
-        isRunning: Boolean,
+        content: String,
     ): String {
-        val safeTitle = title.trim().take(FOCUS_MAX_TITLE_CHARS)
-        val safeAction = actionText.trim().take(FOCUS_MAX_SUBTITLE_CHARS)
-        val safeDetail = detailText.trim().take(FOCUS_MAX_CONTENT_CHARS)
-
-        val picInfo = JSONObject()
-            .put("type", 1)
-            .put("pic", FOCUS_PIC_ICON)
-            .put("loop", false)
-            .put("autoplay", false)
-            .put("number", 0)
-        val rightText = JSONObject()
-            .put("title", islandRight)
-            .put("showHighlightColor", false)
-            .put("narrowFont", false)
-        val bigIslandArea = JSONObject()
-            .put(
-                "imageTextInfoLeft",
-                JSONObject().put("type", 1).put("picInfo", picInfo),
-            )
-            .put("imageTextInfoRight", JSONObject().put("type", 2).put("textInfo", rightText))
-        val paramIsland = JSONObject()
-            .put("islandProperty", 1)
-            .put("islandPriority", 2)
-            .put("islandTimeout", 3600)
-            .put("islandOrder", false)
-            .put("dismissIsland", false)
-            .put("maxSize", false)
-            .put("needCloseAnimation", true)
-            .put("bigIslandArea", bigIslandArea)
-            .put("smallIslandArea", JSONObject().put("picInfo", picInfo))
-            .put("outEffectSrc", "outer_glow")
-
-        val baseInfo = JSONObject()
-            .put("type", 2)
-            .put("title", safeTitle)
-            .put("content", safeDetail)
-            .put("picFunction", FOCUS_PIC_CARD)
-            .put("colorTitle", ExecutionNotificationPlan.FOCUS_COLOR_TITLE_LIGHT)
-            .put("colorTitleDark", ExecutionNotificationPlan.FOCUS_COLOR_TITLE_DARK)
-            .put("colorContent", ExecutionNotificationPlan.FOCUS_COLOR_CONTENT_LIGHT)
-            .put("colorContentDark", ExecutionNotificationPlan.FOCUS_COLOR_CONTENT_DARK)
-        if (safeAction.isNotEmpty() && safeAction != safeTitle) {
-            baseInfo
-                .put("subTitle", safeAction)
-                .put("colorSubTitle", ExecutionNotificationPlan.FOCUS_COLOR_SUBTITLE_LIGHT)
-                .put("colorSubTitleDark", ExecutionNotificationPlan.FOCUS_COLOR_SUBTITLE_DARK)
+        var safeTitle = title.trim()
+        var safeContent = content.trim()
+        while (true) {
+            val pic = JSONObject().put("type", 1).put("pic", FOCUS_PIC_ICON)
+            val paramIsland = JSONObject()
+                .put("islandProperty", 1)
+                .put(
+                    "bigIslandArea",
+                    JSONObject().put(
+                        "imageTextInfoLeft",
+                        JSONObject()
+                            .put("type", 1)
+                            .put("picInfo", pic)
+                            .put("textInfo", JSONObject().put("title", word)),
+                    ),
+                )
+                .put("smallIslandArea", JSONObject().put("picInfo", pic))
+            val paramV2 = JSONObject()
+                .put("protocol", 1)
+                .put("business", "eta_live_${phase.name.lowercase()}")
+                .put("updatable", true)
+                .put("enableFloat", false)
+                .put("ticker", "$word · $safeTitle")
+                .put("aodTitle", word)
+                .put("param_island", paramIsland)
+                .put(
+                    "baseInfo",
+                    JSONObject()
+                        .put("type", 2)
+                        .put("title", safeTitle)
+                        .put("content", safeContent),
+                )
+            val json = JSONObject().put("param_v2", paramV2).toString()
+            if (json.toByteArray(Charsets.UTF_8).size <= FOCUS_PARAM_MAX_BYTES ||
+                (safeTitle.length <= 8 && safeContent.isEmpty())
+            ) {
+                return json
+            }
+            if (safeContent.isNotEmpty()) {
+                safeContent = safeContent.take(safeContent.length / 2)
+            } else {
+                safeTitle = safeTitle.take(safeTitle.length / 2)
+            }
         }
-
-        val textButtons = JSONArray()
-        if (isRunning) {
-            textButtons.put(
-                JSONObject()
-                    .put("type", 1)
-                    .put("action", FOCUS_ACTION_OPEN)
-                    .put("actionIntent", FOCUS_ACTION_OPEN)
-                    .put("actionIntentType", 1)
-                    .put("actionTitle", openLabel)
-                    .put("actionBgColor", ExecutionNotificationPlan.FOCUS_ACTION_OPEN_BG_LIGHT)
-                    .put("actionBgColorDark", ExecutionNotificationPlan.FOCUS_ACTION_OPEN_BG_DARK)
-                    .put("actionTitleColor", ExecutionNotificationPlan.FOCUS_ACTION_OPEN_TEXT_LIGHT)
-                    .put("actionTitleColorDark", ExecutionNotificationPlan.FOCUS_ACTION_OPEN_TEXT_DARK),
-            )
-        }
-        textButtons.put(
-            JSONObject()
-                .put("type", 1)
-                .put("action", FOCUS_ACTION_STOP)
-                .put("actionIntent", FOCUS_ACTION_STOP)
-                .put("actionIntentType", 3)
-                .put("actionTitle", stopLabel)
-                .put("actionBgColor", ExecutionNotificationPlan.FOCUS_ACTION_STOP_BG_LIGHT)
-                .put("actionBgColorDark", ExecutionNotificationPlan.FOCUS_ACTION_STOP_BG_DARK)
-                .put("actionTitleColor", ExecutionNotificationPlan.FOCUS_ACTION_STOP_TEXT_LIGHT)
-                .put("actionTitleColorDark", ExecutionNotificationPlan.FOCUS_ACTION_STOP_TEXT_DARK),
-        )
-
-        val paramV2 = JSONObject()
-            .put("protocol", 3)
-            .put("business", "hyper_island_dispatch")
-            .put("updatable", true)
-            .put("ticker", islandRight)
-            .put("tickerPic", FOCUS_PIC_TICKER_LIGHT)
-            .put("tickerPicDark", FOCUS_PIC_TICKER_DARK)
-            .put("enableFloat", false)
-            .put("islandFirstFloat", false)
-            .put("isShowNotification", true)
-            .put("filterWhenNoPermission", false)
-            .put("timeout", 720)
-            .put("reopen", "reopen")
-            .put("param_island", paramIsland)
-            .put("baseInfo", baseInfo)
-            .put("textButton", textButtons)
-            .put("outEffectSrc", "outer_glow")
-            .put("aodTitle", islandRight)
-            .put("aodPic", FOCUS_PIC_ICON)
-        return JSONObject().put("param_v2", paramV2).put("isShowNotification", true).toString()
     }
-
-    /** miui.focus.pics：键为 JSON 中引用的 pic / tickerPic / picFunction / aodPic 名，值为 Icon。 */
-    private fun focusPics(): Bundle = Bundle().apply {
-        val whiteIcon = Icon.createWithResource(this@AgentExecutionService, R.drawable.ic_notification)
-            .apply { setTint(FOCUS_ICON_TINT_WHITE) }
-        val darkIcon = Icon.createWithResource(this@AgentExecutionService, R.drawable.ic_notification)
-            .apply { setTint(FOCUS_ICON_TINT_DARK) }
-        val accentIcon = Icon.createWithResource(this@AgentExecutionService, R.drawable.ic_notification)
-            .apply { setTint(FOCUS_ICON_TINT_ACCENT) }
-        putParcelable(FOCUS_PIC_ICON, whiteIcon)
-        putParcelable(FOCUS_PIC_TICKER_LIGHT, darkIcon)
-        putParcelable(FOCUS_PIC_TICKER_DARK, whiteIcon)
-        putParcelable(FOCUS_PIC_CARD, accentIcon)
-    }
-
-    /** miui.focus.actions：键为 JSON 中 textButton 引用的 action 名，值为真实 Notification.Action。 */
-    private fun focusActions(
-        openLabel: String,
-        openIntent: PendingIntent,
-        stopLabel: String,
-        stopIntent: PendingIntent,
-        isRunning: Boolean,
-    ): Bundle = Bundle().apply {
-        val placeholderIcon = Icon.createWithResource(
-            this@AgentExecutionService,
-            android.R.drawable.screen_background_light_transparent,
-        )
-        if (isRunning) {
-            putParcelable(
-                FOCUS_ACTION_OPEN,
-                Notification.Action.Builder(placeholderIcon, openLabel, openIntent).build(),
-            )
-        }
-        putParcelable(
-            FOCUS_ACTION_STOP,
-            Notification.Action.Builder(placeholderIcon, stopLabel, stopIntent).build(),
-        )
-    }
-
 
     companion object {
         const val CHANNEL = "eta_execution_v2"
@@ -464,17 +405,33 @@ internal class AgentExecutionService : Service() {
         private const val ACTION_STOP = "io.github.mangi.eta.action.STOP_USER_EXECUTION"
         /** API 36 系统读取的提升标记；公开的 requestPromotedOngoing() 到 36.1 才存在。 */
         private const val PROMOTED_ONGOING_EXTRA = "android.requestPromotedOngoing"
+        /** DSH Go 同款默认雾蓝进度条色值（Android 12+ 优先读取壁纸动态取色 system_accent1_500）。 */
+        private const val DEFAULT_PROGRESS_ACCENT = 0xFF4B67B4.toInt()
+        private const val MIN_NOTIFY_GAP_MS = 600L
+        private const val LIVE_REFRESH_MS = 4 * 60_000L
+        private const val LIVE_TIMEOUT_MS = 10 * 60_000L
+        private const val FOCUS_PARAM_MAX_BYTES = 3072
+        private const val FOCUS_CHECK_TTL_MS = 60_000L
+        private const val FOCUS_PROTOCOL_SETTING = "notification_focus_protocol"
+        private const val FOCUS_PROVIDER_URI = "content://miui.statusbar.notification.public"
+        private const val FOCUS_PIC_ICON = "miui.focus.pic_icon"
+
         private val leases = ExecutionLeaseRegistry()
         private val ownerSequence = AtomicLong()
-        private val mainHandler = Handler(Looper.getMainLooper())
+        private val mainHandler: Handler by lazy { Handler(Looper.getMainLooper()) }
+        private val notifyHandler: Handler by lazy {
+            val thread = HandlerThread("eta-live-notify").apply { start() }
+            Handler(thread.looper)
+        }
         @Volatile private var instance: AgentExecutionService? = null
+        @Volatile private var focusAllowedCache: Pair<Long, Boolean>? = null
 
         @Volatile var backupMaintenance: Boolean = false
             private set
 
-        /** 外观里换过图标后，刷新正在执行的通知（大图标跟随当前启动图标）。 */
+        /** 外观里换过图标后，异步刷新正在执行的通知。 */
         fun refreshIcon() {
-            mainHandler.post { instance?.refreshNotification() }
+            instance?.scheduleNotificationRefresh(immediate = false)
         }
 
         @Synchronized fun beginBackupMaintenance() {
@@ -486,31 +443,22 @@ internal class AgentExecutionService : Service() {
 
         const val CHANNEL_COMPLETED = "eta_completed"
         private const val COMPLETION_NOTIFICATION_ID_BASE = 20000
-        private const val FOCUS_PIC_ICON = "miui.focus.pic_eta_island_icon"
-        private const val FOCUS_PIC_TICKER_LIGHT = "miui.focus.pic_eta_ticker_light"
-        private const val FOCUS_PIC_TICKER_DARK = "miui.focus.pic_eta_ticker_dark"
-        private const val FOCUS_PIC_CARD = "miui.focus.pic_eta_card_icon"
-        private const val FOCUS_ACTION_OPEN = "miui.focus.action_open"
-        private const val FOCUS_ACTION_STOP = "miui.focus.action_stop"
-        private const val FOCUS_MAX_TITLE_CHARS = 48
-        private const val FOCUS_MAX_SUBTITLE_CHARS = 32
-        private const val FOCUS_MAX_CONTENT_CHARS = 140
-        private const val FOCUS_ICON_TINT_WHITE = 0xFFFFFFFF.toInt()
-        private const val FOCUS_ICON_TINT_DARK = 0xFF1A1D24.toInt()
-        private const val FOCUS_ICON_TINT_ACCENT = 0xFF2563EB.toInt()
         @Volatile private var executionState = AgentExecutionState()
         /** 最近一次真正下发给通知的执行状态，用于同值去重（避免流式增量把通知推到系统限流）。 */
         @Volatile private var publishedExecutionState: AgentExecutionState? = null
         /**
          * 副屏是否活跃。由 AgentRuntimeService 在快照变化时写入；
-         * 通知构建路径只读这个标记，避免在主线程上抢 VirtualDisplaySession 的监视器锁。
+         * 通知构建路径只读这个标记，避免抢 VirtualDisplaySession 的监视器锁。
          */
         @Volatile private var virtualDisplayActiveFlag = false
         @Volatile private var suppressLiveUpdateFlag = false
         @Volatile private var currentConversationKey: String? = null
 
         fun setVirtualDisplayActive(active: Boolean) {
+            if (virtualDisplayActiveFlag == active) return
             virtualDisplayActiveFlag = active
+            publishedExecutionState = null
+            instance?.scheduleNotificationRefresh(immediate = false)
         }
 
         /**
@@ -521,7 +469,7 @@ internal class AgentExecutionService : Service() {
             if (suppressLiveUpdateFlag == suppressed) return
             suppressLiveUpdateFlag = suppressed
             publishedExecutionState = null
-            mainHandler.post { instance?.refreshNotification() }
+            instance?.scheduleNotificationRefresh(immediate = false)
         }
 
         fun setConversationKey(conversationKey: String?) {
@@ -530,18 +478,36 @@ internal class AgentExecutionService : Service() {
         @Volatile private var currentSource: String = AgentNotificationTrampolineActivity.SOURCE_MAIN
 
         /**
-         * 探测焦点通知（超级岛）可用性。
-         *
-         * 本项目没有 Number444 的 `AgentIslandNotifier`，上岛能力全部由本服务在
-         * [notification] 里通过 `miui.focus.*` extras 提供（HyperOS 3/4、MIUI 14+）。
-         * 因此这里按「系统是否小米系 + 通知是否开启」判定，不去反射系统插件类：
-         * 插件内部类名随版本变动，反射失败会把「支持」误报成「不支持」。
+         * 探测焦点通知 / 实时活动可用性（对齐 DSH Go `LiveActivity.status()`）：
+         * Android 16+ 原生 Live Update 或小米系 HyperOS 均支持上岛。
          */
         fun islandAvailability(context: Context): IslandAvailability {
-            if (!isMiuiFamily()) return IslandAvailability.UNSUPPORTED
+            val supported = Build.VERSION.SDK_INT >= AgentExecutionState.LIVE_UPDATE_MIN_SDK || isMiuiFamily()
+            if (!supported) return IslandAvailability.UNSUPPORTED
             val enabled = androidx.core.app.NotificationManagerCompat.from(context)
                 .areNotificationsEnabled()
             return if (enabled) IslandAvailability.SUPPORTED else IslandAvailability.NO_PERMISSION
+        }
+
+        /** 对齐 DSH Go `XiaomiFocus.allowed()`：查协议版本与 SystemUI `canShowFocus`，缓存 60s（仅在后台线程调用）。 */
+        private fun isXiaomiFocusAllowed(context: Context): Boolean {
+            val now = SystemClock.elapsedRealtime()
+            focusAllowedCache?.let { (at, ok) -> if (now - at < FOCUS_CHECK_TTL_MS) return ok }
+            val protocol = if (isMiuiFamily()) {
+                runCatching {
+                    Settings.System.getInt(context.contentResolver, FOCUS_PROTOCOL_SETTING, 0)
+                }.getOrDefault(0)
+            } else {
+                0
+            }
+            val ok = protocol >= 1 && runCatching {
+                val extras = Bundle().apply { putString("package", context.packageName) }
+                context.contentResolver
+                    .call(Uri.parse(FOCUS_PROVIDER_URI), "canShowFocus", null, extras)
+                    ?.getBoolean("canShowFocus", false) == true
+            }.getOrDefault(false)
+            focusAllowedCache = now to ok
+            return ok
         }
 
         /** 小米系 ROM 判定：HyperOS / MIUI 都会带 miui 或 mi.os 版本属性。 */
@@ -567,6 +533,8 @@ internal class AgentExecutionService : Service() {
             ).apply {
                 setSound(null, null)
                 enableVibration(false)
+                setShowBadge(false)
+                lockscreenVisibility = Notification.VISIBILITY_PRIVATE
             }
             val completedChannel = NotificationChannel(
                 CHANNEL_COMPLETED,
@@ -576,27 +544,6 @@ internal class AgentExecutionService : Service() {
             manager.createNotificationChannel(executionChannel)
             manager.createNotificationChannel(completedChannel)
         }
-
-        fun agentNotificationCard(
-            context: Context,
-            title: String,
-            status: String,
-            body: String,
-            actionLabel: String?,
-            actionIntent: android.app.PendingIntent?,
-        ): android.widget.RemoteViews =
-            android.widget.RemoteViews(context.packageName, R.layout.notification_agent_card).apply {
-                setTextViewText(R.id.agent_notification_title, title)
-                setTextViewText(R.id.agent_notification_status, status)
-                setTextViewText(R.id.agent_notification_body, body)
-                if (!actionLabel.isNullOrBlank() && actionIntent != null) {
-                    setTextViewText(R.id.agent_notification_action, actionLabel)
-                    setViewVisibility(R.id.agent_notification_action, android.view.View.VISIBLE)
-                    setOnClickPendingIntent(R.id.agent_notification_action, actionIntent)
-                } else {
-                    setViewVisibility(R.id.agent_notification_action, android.view.View.GONE)
-                }
-            }
 
         fun postCompletionNotification(
             context: Context,
@@ -630,6 +577,7 @@ internal class AgentExecutionService : Service() {
             val displayContent = content.ifBlank {
                 if (isError) "" else context.getString(R.string.execution_completed_default)
             }.let(ExecutionNotificationPlan::completionBody)
+            // 纯原生系统样式（零自定义 RemoteViews、零按钮），与 HyperOS 液态玻璃锁屏/通知栏完美融合。
             val builder = Notification.Builder(context, CHANNEL_COMPLETED)
                 .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle(displayTitle)
@@ -644,40 +592,22 @@ internal class AgentExecutionService : Service() {
             // 显式写 false（不是省略）：同一套 extras 模板里避免继承/复制粘贴出提升标记。
             builder.extras.putBoolean(PROMOTED_ONGOING_EXTRA, false)
             val notificationId = COMPLETION_NOTIFICATION_ID_BASE + (runId.hashCode() and 0x7FFF)
-            builder.setCustomContentView(agentNotificationCard(
-                context = context,
-                title = displayTitle,
-                status = "已完成",
-                body = displayContent,
-                actionLabel = "查看",
-                actionIntent = open,
-            ))
-            builder.setCustomBigContentView(agentNotificationCard(
-                context = context,
-                title = displayTitle,
-                status = "已完成",
-                body = displayContent,
-                actionLabel = "查看",
-                actionIntent = open,
-            ))
             manager.notify(notificationId, builder.build())
         }
 
         fun updateExecutionState(state: AgentExecutionState) {
             executionState = state
-            // 流式增量常常产出完全相同的状态（同一段文案、同一 phase），重复下发只会撞系统限流；
-            // 真正的节流在 AgentExecutionNotificationTracker 里（≥1s 一次），这里只做同值去重。
+            // 同值去重：避免重复下发撞系统限流或干扰退回桌面动画。
             if (publishedExecutionState == state) return
             publishedExecutionState = state
-            mainHandler.post { instance?.refreshNotification() }
+            instance?.scheduleNotificationRefresh(immediate = false)
         }
 
         /**
          * 只清状态，不主动重发通知。
          *
          * 运行结束时 Runtime 紧接着调 [release]，由那里决定"还有别的会话 → 重画"或"没有会话 →
-         * 撤掉前台通知"。此前这里也刷一次，会把 1107 号通知从运行态改成空闲态再刷一遍（非提升态会带
-         * miui.focus.* 参数），HyperOS 见到焦点通知就把灵动岛展开——正是用户反馈的"任务完成自动展开"。
+         * 撤掉前台通知"。
          */
         fun resetExecutionState() {
             executionState = AgentExecutionState()
@@ -715,81 +645,52 @@ internal class AgentExecutionService : Service() {
                 currentConversationKey = null
                 currentSource = AgentNotificationTrampolineActivity.SOURCE_MAIN
             }
-            mainHandler.post { instance?.refreshNotification() }
+            instance?.scheduleNotificationRefresh(immediate = true)
         }
     }
 }
 
 /**
- * 焦点通知（超级岛）在设置页展示的可用性。
- *
- * 放在顶层：它需要被 `io.github.mangi.eta.ui` 包引用，而嵌套在 companion 里的类型
- * 跨文件限定名容易歧义（`AgentExecutionService.IslandAvailability` 与
- * `AgentExecutionService.Companion.IslandAvailability` 两种写法行为不一致）。
+ * 焦点通知（超级岛 / 实时活动）在设置页展示的可用性。
  */
 enum class IslandAvailability {
-    /** 系统支持焦点通知，且通知权限已授予。 */
+    /** 系统支持实时活动 / 焦点通知，且通知权限已授予。 */
     SUPPORTED,
     /** 系统支持，但用户关闭了本应用的通知。 */
     NO_PERMISSION,
-    /** 非小米系/HyperOS 系统，或版本过低，焦点通知不会上岛。 */
+    /** 系统不支持。 */
     UNSUPPORTED,
 }
 
 /**
  * 执行通知的构建规划：哪些 extras 该写、用哪种样式。
  *
- * 抽成纯函数是为了让「提升态不写 miui.*」「低版本样式不变」这两条能在 JVM 单测里直接断言，
- * 不必把 Notification.Builder / Bundle 拖进测试。
+ * 抽成纯函数是为了让「提升态不写 miui.*」「提升态走 ProgressStyle」「非提升态仅写最简 XiaomiFocus 键」
+ * 能在 JVM 单测里直接断言，不必把 Notification.Builder / Bundle 拖进测试。
  */
 internal object ExecutionNotificationPlan {
-    internal const val MIUI_FOCUS_NOTIFICATION = "miui.focusNotification"
-    internal const val MIUI_FOCUS_NOTIFICATION_SUBTITLE = "miui.focusNotification.subTitle"
-    internal const val MIUI_FOCUS_IS_FOCUS = "miui.focus.isFocus"
-    internal const val MIUI_FOCUS_TICKER = "miui.focus.ticker"
-    internal const val MIUI_ENABLE_FLOAT = "miui.enableFloat"
     internal const val MIUI_FOCUS_PARAM = "miui.focus.param"
     internal const val MIUI_FOCUS_PICS = "miui.focus.pics"
-    internal const val MIUI_FOCUS_ACTIONS = "miui.focus.actions"
 
-    /** HyperOS 焦点通知展开卡与通知栏的日/夜高对比色值（杜绝深底黑字与淡色看不清按钮）。 */
-    internal const val FOCUS_COLOR_TITLE_LIGHT = "#1A1D24"
-    internal const val FOCUS_COLOR_TITLE_DARK = "#F5F7FA"
-    internal const val FOCUS_COLOR_SUBTITLE_LIGHT = "#2563EB"
-    internal const val FOCUS_COLOR_SUBTITLE_DARK = "#60A5FA"
-    internal const val FOCUS_COLOR_CONTENT_LIGHT = "#525866"
-    internal const val FOCUS_COLOR_CONTENT_DARK = "#C4CBD6"
-    internal const val FOCUS_ACTION_OPEN_BG_LIGHT = "#E8F0FE"
-    internal const val FOCUS_ACTION_OPEN_BG_DARK = "#25334A"
-    internal const val FOCUS_ACTION_OPEN_TEXT_LIGHT = "#1D4ED8"
-    internal const val FOCUS_ACTION_OPEN_TEXT_DARK = "#93C5FD"
-    internal const val FOCUS_ACTION_STOP_BG_LIGHT = "#FDECEC"
-    internal const val FOCUS_ACTION_STOP_BG_DARK = "#3D2327"
-    internal const val FOCUS_ACTION_STOP_TEXT_LIGHT = "#DC2626"
-    internal const val FOCUS_ACTION_STOP_TEXT_DARK = "#FCA5A5"
-
-    /** 非提升态要写的 MIUI 焦点通知键，顺序即写入顺序。 */
+    /** 对齐 DSH Go `XiaomiFocus.kt`：非提升态兜底仅写 param 与 pics 两项，不强行劫持渲染。 */
     internal val MIUI_FOCUS_KEYS = listOf(
-        MIUI_FOCUS_NOTIFICATION,
-        MIUI_FOCUS_NOTIFICATION_SUBTITLE,
-        MIUI_FOCUS_IS_FOCUS,
-        MIUI_FOCUS_TICKER,
-        MIUI_ENABLE_FLOAT,
         MIUI_FOCUS_PARAM,
         MIUI_FOCUS_PICS,
-        MIUI_FOCUS_ACTIONS,
     )
 
     /**
      * 提升态恒为空：HyperOS 的 FocusNotifPreHandler 见到 miui.focus.* 就接管渲染，
-     * 原生 Live Update 会被压掉。非提升态保持原有全部键。
+     * 原生 Live Update 会被压掉。非提升态仅返回最简两键。
      */
     internal fun miuiFocusKeys(promoted: Boolean): List<String> =
         if (promoted) emptyList() else MIUI_FOCUS_KEYS
 
-    /** 提升态与「有展开正文」态用 BigTextStyle；其余不设样式（改动前行为）。 */
-    internal fun style(promoted: Boolean, hasExpandedSnippet: Boolean): ExecutionNotificationStyle =
-        if (promoted || hasExpandedSnippet) ExecutionNotificationStyle.BIG_TEXT else ExecutionNotificationStyle.NONE
+    /** 对齐 DSH Go：提升态走不定进度 ProgressStyle；非提升态有展开正文走 BigTextStyle，其余不设样式。 */
+    internal fun style(promoted: Boolean, hasExpandedSnippet: Boolean): ExecutionNotificationStyle = when {
+        promoted -> ExecutionNotificationStyle.PROGRESS
+        hasExpandedSnippet -> ExecutionNotificationStyle.BIG_TEXT
+        else -> ExecutionNotificationStyle.NONE
+    }
 
     /**
      * 完成通知正文字数上限：展开卡片够读一段完整回复，同时保持有界
@@ -807,8 +708,9 @@ internal object ExecutionNotificationPlan {
     }
 }
 
-/** 执行通知的样式种类；刻意不提供无进度的 ProgressStyle（会渲染空进度白条）。 */
+/** 执行通知的样式种类。 */
 internal enum class ExecutionNotificationStyle {
+    PROGRESS,
     BIG_TEXT,
     NONE,
 }

@@ -7,20 +7,14 @@ import org.junit.Test
 
 class AgentExecutionNotificationPlanTest {
     private val expectedMiuiKeys = listOf(
-        "miui.focusNotification",
-        "miui.focusNotification.subTitle",
-        "miui.focus.isFocus",
-        "miui.focus.ticker",
-        "miui.enableFloat",
         "miui.focus.param",
         "miui.focus.pics",
-        "miui.focus.actions",
     )
 
     @Test
-    fun testMiuiFocusKeysCoverEveryLegacyExtra() {
+    fun testMiuiFocusKeysMatchMinimalDshGoFallback() {
         assertEquals(expectedMiuiKeys, ExecutionNotificationPlan.MIUI_FOCUS_KEYS)
-        assertEquals(8, ExecutionNotificationPlan.MIUI_FOCUS_KEYS.size)
+        assertEquals(2, ExecutionNotificationPlan.MIUI_FOCUS_KEYS.size)
     }
 
     @Test
@@ -28,31 +22,23 @@ class AgentExecutionNotificationPlanTest {
         val keys = ExecutionNotificationPlan.miuiFocusKeys(promoted = true)
         assertTrue(keys.isEmpty())
         assertFalse(keys.any { it.startsWith("miui.") })
-        assertFalse(keys.contains("miui.focusNotification"))
-        assertFalse(keys.contains("miui.focus.isFocus"))
-        assertFalse(keys.contains("miui.focus.ticker"))
-        assertFalse(keys.contains("miui.focus.param"))
-        assertFalse(keys.contains("miui.focus.pics"))
-        assertFalse(keys.contains("miui.focus.actions"))
-        assertFalse(keys.contains("miui.enableFloat"))
     }
 
     @Test
-    fun testNonPromotedStateKeepsEveryMiuiFocusExtra() {
+    fun testNonPromotedStateKeepsMinimalXiaomiFocusKeys() {
         val keys = ExecutionNotificationPlan.miuiFocusKeys(promoted = false)
         assertEquals(expectedMiuiKeys, keys)
         assertTrue(keys.all { it.startsWith("miui.") })
     }
 
     @Test
-    fun testPromotedStateUsesBigTextStyle() {
-        assertEquals(ExecutionNotificationStyle.BIG_TEXT, ExecutionNotificationPlan.style(promoted = true, hasExpandedSnippet = false))
-        assertEquals(ExecutionNotificationStyle.BIG_TEXT, ExecutionNotificationPlan.style(promoted = true, hasExpandedSnippet = true))
+    fun testPromotedStateUsesIndeterminateProgressStyle() {
+        assertEquals(ExecutionNotificationStyle.PROGRESS, ExecutionNotificationPlan.style(promoted = true, hasExpandedSnippet = false))
+        assertEquals(ExecutionNotificationStyle.PROGRESS, ExecutionNotificationPlan.style(promoted = true, hasExpandedSnippet = true))
     }
 
     @Test
     fun testNonPromotedStyleMatchesPreviousBehavior() {
-        // 改动前：有展开正文才设 BigTextStyle，没有就完全不设样式。
         assertEquals(ExecutionNotificationStyle.BIG_TEXT, ExecutionNotificationPlan.style(promoted = false, hasExpandedSnippet = true))
         assertEquals(ExecutionNotificationStyle.NONE, ExecutionNotificationPlan.style(promoted = false, hasExpandedSnippet = false))
     }
@@ -60,49 +46,20 @@ class AgentExecutionNotificationPlanTest {
     @Test
     fun testAndroid16RunningStateDropsMiuiExtrasAndPromotes() {
         val running = AgentExecutionState(phase = AgentExecutionPhase.TOOL_EXECUTING, title = "⚡ 点击屏幕")
-        val promote = AgentExecutionState.shouldPromoteToLiveUpdate(running, 36, preferMiuiFocus = false)
+        val promote = AgentExecutionState.shouldPromoteToLiveUpdate(running, 36)
         assertTrue(promote)
-        // 提升态：零 miui.*，BigTextStyle。
         assertEquals(emptyList<String>(), ExecutionNotificationPlan.miuiFocusKeys(promote))
-        assertEquals(ExecutionNotificationStyle.BIG_TEXT, ExecutionNotificationPlan.style(promote, hasExpandedSnippet = false))
+        assertEquals(ExecutionNotificationStyle.PROGRESS, ExecutionNotificationPlan.style(promote, hasExpandedSnippet = false))
     }
 
     @Test
-    fun testHyperOsPrefersMiuiFocusOverLiveUpdateOnAndroid16() {
-        val running = AgentExecutionState(phase = AgentExecutionPhase.THINKING, title = "🧠 深度思考…")
-        val promote = AgentExecutionState.shouldPromoteToLiveUpdate(running, 36, preferMiuiFocus = true)
-        assertFalse(promote)
-        assertEquals(expectedMiuiKeys, ExecutionNotificationPlan.miuiFocusKeys(promote))
-    }
-
-    @Test
-    fun testFocusDayNightColorsAreDistinctValidHex() {
-        val pairs = listOf(
-            ExecutionNotificationPlan.FOCUS_COLOR_TITLE_LIGHT to ExecutionNotificationPlan.FOCUS_COLOR_TITLE_DARK,
-            ExecutionNotificationPlan.FOCUS_COLOR_SUBTITLE_LIGHT to ExecutionNotificationPlan.FOCUS_COLOR_SUBTITLE_DARK,
-            ExecutionNotificationPlan.FOCUS_COLOR_CONTENT_LIGHT to ExecutionNotificationPlan.FOCUS_COLOR_CONTENT_DARK,
-            ExecutionNotificationPlan.FOCUS_ACTION_OPEN_BG_LIGHT to ExecutionNotificationPlan.FOCUS_ACTION_OPEN_BG_DARK,
-            ExecutionNotificationPlan.FOCUS_ACTION_OPEN_TEXT_LIGHT to ExecutionNotificationPlan.FOCUS_ACTION_OPEN_TEXT_DARK,
-            ExecutionNotificationPlan.FOCUS_ACTION_STOP_BG_LIGHT to ExecutionNotificationPlan.FOCUS_ACTION_STOP_BG_DARK,
-            ExecutionNotificationPlan.FOCUS_ACTION_STOP_TEXT_LIGHT to ExecutionNotificationPlan.FOCUS_ACTION_STOP_TEXT_DARK,
-        )
-        val hexRegex = Regex("^#[0-9A-Fa-f]{6}$")
-        for ((light, dark) in pairs) {
-            assertTrue("invalid light color $light", hexRegex.matches(light))
-            assertTrue("invalid dark color $dark", hexRegex.matches(dark))
-            assertFalse("light/dark color should differ: $light", light.equals(dark, ignoreCase = true))
-        }
-    }
-
-    @Test
-    fun testLowVersionAndIdleKeepMiuiExtras() {
+    fun testLowVersionAndIdleKeepMinimalMiuiFallback() {
         val running = AgentExecutionState(phase = AgentExecutionPhase.THINKING, title = "🧠 深度思考…")
         for (sdk in intArrayOf(34, 35)) {
             val promote = AgentExecutionState.shouldPromoteToLiveUpdate(running, sdk)
             assertFalse(promote)
             assertEquals(expectedMiuiKeys, ExecutionNotificationPlan.miuiFocusKeys(promote))
         }
-        // Android 16 但没有 Agent run 在跑（只剩终端/PRoot 会话）：同样保持 MIUI 岛行为。
         val idlePromote = AgentExecutionState.shouldPromoteToLiveUpdate(AgentExecutionState(), 36)
         assertFalse(idlePromote)
         assertEquals(expectedMiuiKeys, ExecutionNotificationPlan.miuiFocusKeys(idlePromote))
@@ -119,7 +76,6 @@ class AgentExecutionNotificationPlanTest {
 
     @Test
     fun testCompletionBodyIsBoundedButLongerThanBefore() {
-        // 提交流程过去把正文砍到 200 字；现在上限拉到 800，展开卡能看完整一段回复。
         assertEquals(800, ExecutionNotificationPlan.MAX_COMPLETION_BODY_CHARS)
         val medium = "一".repeat(400)
         assertEquals(medium, ExecutionNotificationPlan.completionBody(medium))

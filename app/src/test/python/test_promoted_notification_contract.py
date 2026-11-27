@@ -1,10 +1,12 @@
-"""Live Update（提升式常驻通知）契约。
+"""DSH Go 同款 Live Update（提升式常驻通知）契约。
 
-锁三件事：
-1. 清单里必须声明 POST_PROMOTED_NOTIFICATIONS——Android 16+ 缺这条权限时系统会静默拒绝提升；
-2. 提升态（Agent run 在跑 + Android 16+）一个 miui.focus.* / miui.enableFloat 都不写，
-   否则 HyperOS 的 FocusNotifPreHandler 会接管渲染、压掉原生 Live Update；
-3. 非提升态仍写全部 8 个 MIUI 键，且样式规划与改动前一致（有展开正文才设 BigTextStyle）。
+锁五件事：
+1. 清单里必须声明 POST_PROMOTED_NOTIFICATIONS；
+2. Android 16+ 提升态走原生 Live Update（ProgressStyle 不定进度条 + 实时计时胶囊），
+   一个 miui.* 都不写，避免劫持 HyperOS 原生液态玻璃上岛渲染；
+3. 任何状态都不添加操作按钮（无 addAction、无 textButton、无自定义 RemoteViews 按钮卡）；
+4. 通知构建与 NotificationManager.notify() 运行在后台 HandlerThread，不阻塞主线程切后台动画；
+5. 非提升态（Android <= 15）仅经 canShowFocus 校验后附最简 protocol 1 焦点参数，零光边零撞色。
 """
 
 import re
@@ -14,17 +16,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[4]
 SERVICE = (ROOT / "app/src/main/kotlin/io/github/mangi/eta/agent/runtime/AgentExecutionService.kt").read_text(encoding="utf-8")
 MANIFEST = (ROOT / "app/src/main/AndroidManifest.xml").read_text(encoding="utf-8")
-
-MIUI_KEYS = [
-    "miui.focusNotification",
-    "miui.focusNotification.subTitle",
-    "miui.focus.isFocus",
-    "miui.focus.ticker",
-    "miui.enableFloat",
-    "miui.focus.param",
-    "miui.focus.pics",
-    "miui.focus.actions",
-]
 
 
 def squeeze(text: str) -> str:
@@ -40,77 +31,46 @@ class PromotedNotificationContract(unittest.TestCase):
 
     def test_promoted_state_plans_no_miui_extras(self):
         source = squeeze(SERVICE)
-        # 计划函数：提升态返回空表，非提升态返回完整键表。
         self.assertIn("fun miuiFocusKeys(promoted: Boolean): List<String> = if (promoted) emptyList() else MIUI_FOCUS_KEYS", source)
-        # 通知构建处必须按 promote 取计划，不能无条件写 MIUI 键。
         self.assertIn("val miuiFocusKeys = ExecutionNotificationPlan.miuiFocusKeys(promote)", source)
-        self.assertIn("if (miuiFocusKeys.isNotEmpty()) { applyMiuiFocusExtras(", source)
+        self.assertIn("if (miuiFocusKeys.isNotEmpty() && allowFocusQuery)", source)
 
-    def test_every_miui_key_is_written_through_the_plan(self):
-        source = squeeze(SERVICE)
-        for key in MIUI_KEYS:
-            self.assertIn(f'internal const val', source)
-            self.assertIn(f'"{key}"', source)
-        # 直接写字符串键的旧写法必须消失（否则会绕过提升态闸门）。
-        self.assertNotIn('builder.extras.putBoolean("miui.focusNotification", true)', source)
-        self.assertNotIn('builder.extras.putString("miui.focus.ticker", actionText)', source)
-        self.assertNotIn('builder.extras.putBundle("miui.focus.pics", focusPics())', source)
-
-    def test_promoted_state_requests_ongoing_promotion(self):
+    def test_promoted_state_uses_indeterminate_progress_style_and_requests_promotion(self):
         source = squeeze(SERVICE)
         self.assertIn('PROMOTED_ONGOING_EXTRA = "android.requestPromotedOngoing"', source)
         self.assertIn("builder.extras.putBoolean(PROMOTED_ONGOING_EXTRA, true)", source)
-        # 提升只在非小米优先且 Android 16+ 运行态发生，并且有显式版本闸门。
-        self.assertIn("private val preferMiuiFocus: Boolean by lazy { isMiuiFamily() }", source)
-        self.assertIn("AgentExecutionState.shouldPromoteToLiveUpdate(state, Build.VERSION.SDK_INT, preferMiuiFocus)", source)
+        self.assertIn("AgentExecutionState.shouldPromoteToLiveUpdate(state, Build.VERSION.SDK_INT)", source)
         self.assertIn("if (promote && Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA)", source)
+        self.assertIn("Notification.ProgressStyle()", source)
+        self.assertIn(".setProgressIndeterminate(true)", source)
+        self.assertIn("Notification.ProgressStyle.Segment(1).setColor(accent)", source)
 
-    def test_hyperos_focus_card_has_day_night_colors_and_real_actions(self):
-        source = squeeze(SERVICE)
-        # 必须走 baseInfo + textButton 显式声明日/夜双套色值，解决 HyperOS 4 深底黑字。
-        for token in (
-            '"baseInfo"',
-            '"colorTitle"',
-            '"colorTitleDark"',
-            '"colorContent"',
-            '"colorContentDark"',
-            '"textButton"',
-            '"actionBgColor"',
-            '"actionBgColorDark"',
-            '"actionTitleColor"',
-            '"actionTitleColorDark"',
-            '.put("enableFloat", false)',
-            '.put("islandFirstFloat", false)',
-            '.put("isShowNotification", true)',
-        ):
-            self.assertIn(token, source)
-        # miui.focus.actions 必须绑定真实 Notification.Action，不再传 Bundle.EMPTY。
-        self.assertIn("focusActions(", source)
-        self.assertNotIn("builder.extras.putBundle(key, Bundle.EMPTY)", source)
+    def test_zero_buttons_in_every_notification_state(self):
+        self.assertNotIn(".addAction(", SERVICE)
+        self.assertNotIn('"textButton"', SERVICE)
+        self.assertNotIn("miui.focus.actions", SERVICE)
+        self.assertNotIn("setCustomContentView(", SERVICE)
+        self.assertNotIn("setCustomBigContentView(", SERVICE)
 
-    def test_no_progress_style_anywhere(self):
-        # 无进度的 ProgressStyle 会在提升卡下方渲染空进度白条（注释里提到这个名字是允许的）。
-        self.assertNotIn("Notification.ProgressStyle", SERVICE)
-        self.assertNotIn("setStyle(Notification.ProgressStyle", SERVICE)
-        self.assertNotIn("setProgress(", SERVICE)
-
-    def test_big_text_style_is_the_only_style(self):
-        self.assertIn("Notification.BigTextStyle()", SERVICE)
-        self.assertIn("ExecutionNotificationPlan.style(promote, expanded != null)", SERVICE)
-
-    def test_no_brand_color_and_no_large_icon(self):
-        # 用户实测：setColor 会让卡片渲染成深色不透明底，大图标渲染成白方块；两者都去掉。
-        self.assertNotIn("setColor(", SERVICE)
+    def test_no_builder_set_color_no_large_icon_no_outer_glow(self):
+        # 通知整体不设 setColor（仅进度轨 Segment 着色），不设大图标，不加彩虹外发光。
+        self.assertNotIn("builder.setColor(", SERVICE)
+        self.assertNotIn(".setColor(BRAND_COLOR)", SERVICE)
         self.assertNotIn("setLargeIcon(", SERVICE)
-        self.assertNotIn("launcherLargeIcon", SERVICE)
-        self.assertNotIn("BRAND_COLOR", SERVICE)
+        self.assertNotIn("outEffectSrc", SERVICE)
+        self.assertNotIn("colorSubTitle", SERVICE)
+
+    def test_notification_dispatch_runs_off_main_thread(self):
+        source = squeeze(SERVICE)
+        self.assertIn('HandlerThread("eta-live-notify")', source)
+        self.assertIn("private fun performBackgroundRefresh()", source)
+        self.assertIn("isXiaomiFocusAllowed(this)", source)
+        self.assertIn('"canShowFocus"', source)
 
     def test_completion_notification_never_promotes_or_expands(self):
         source = squeeze(SERVICE)
-        # 完成态：不占常驻位、只提醒一次、明确不申请提升。
         self.assertIn(".setOngoing(false) .setOnlyAlertOnce(true)", source)
         self.assertIn("builder.extras.putBoolean(PROMOTED_ONGOING_EXTRA, false)", source)
-        # 运行结束时只清状态、不主动重发通知（否则非提升态会带 miui.focus.* 把岛重新展开）。
         self.assertIn(
             "fun resetExecutionState() { executionState = AgentExecutionState() publishedExecutionState = null }",
             source,
@@ -128,10 +88,8 @@ class PromotedNotificationContract(unittest.TestCase):
             self.assertNotIn("result.content.trim().take(200)", text)
             self.assertIn("result.content.trim()", text)
 
-
     def test_execution_channel_is_low_importance_and_migrates_legacy_high_channel(self):
         source = squeeze(SERVICE)
-        # 对齐 Eta：执行通知渠道必须使用 IMPORTANCE_LOW，避免 HyperOS 每次启动任务自动展开灵动岛。
         self.assertIn('const val CHANNEL = "eta_execution_v2"', source)
         self.assertIn('manager.deleteNotificationChannel(LEGACY_CHANNEL)', source)
         self.assertIn("NotificationManager.IMPORTANCE_LOW", source)

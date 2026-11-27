@@ -131,6 +131,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.takeOrElse
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.lifecycle.compose.LifecycleStartEffect
 import com.mikepenz.markdown.annotator.annotatorSettings
 import com.mikepenz.markdown.annotator.buildMarkdownAnnotatedString
 import com.mikepenz.markdown.compose.LocalMarkdownA11yLabels
@@ -1238,10 +1239,20 @@ private fun LegacyStreamingMarkdown(
         }
         onPauseOrDispose {
             // 回调不在组合里，读进入回调前记住的最新值。半遮住时导航把聊天降到
-            // STARTED，页面还在组合里，继续逐字打。真正离开前台才追平，避免回来补播。
+            // STARTED，页面还在组合里，继续逐字打。切后台手势启动时窗口仍在播退场动画，
+            // ON_PAUSE 只轻量冻结帧时钟避免首帧追平重排卡顿；退场完成后在 ON_STOP 追平。
             if (routeCoveredNow.value) {
                 state.restoreState.holdCovered()
             } else {
+                state.restoreState.holdCovered()
+                revealCoordinator.holdAnimations()
+            }
+        }
+    }
+
+    LifecycleStartEffect(state) {
+        onStopOrDispose {
+            if (!routeCoveredNow.value) {
                 state.restoreState.pause()
                 revealCoordinator.pauseAnimationsAndCatchUp()
             }
