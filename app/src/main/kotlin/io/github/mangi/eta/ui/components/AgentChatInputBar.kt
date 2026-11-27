@@ -89,6 +89,9 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.SolidColor
@@ -210,6 +213,8 @@ internal fun AgentChatInputBar(
     onAssistantSelected: (String) -> Unit = {},
     /** 宿主可注入自己的 FocusRequester；浮窗用它驱动输入框聚焦。 */
     focusRequester: FocusRequester = remember { FocusRequester() },
+    /** 输入框焦点变化回调：宿主据此只在输入框聚焦时处理“点击外部收起”。 */
+    onInputFocusChanged: (Boolean) -> Unit = {},
     /** 浮窗（TYPE_APPLICATION_OVERLAY + Service context）没有 Activity 窗口 token，
      *  任何 WindowDialog/Dialog.show 都会抛 BadTokenException 并杀死进程。
      *  开启后弹层全部改走 Popup 路线（挂在 overlay 自己的窗口 token 下）。 */
@@ -224,6 +229,7 @@ internal fun AgentChatInputBar(
     SideEffect { StreamPerformanceDiagnostics.record("chat.input.compose") }
     val textFieldState = draftField ?: rememberTextFieldState(initialText = input)
     var wasEditingMessage by remember { mutableStateOf(isEditingMessage) }
+    var inputFocused by remember { mutableStateOf(false) }
     val draftText = textFieldState.text.toString()
     val skillAppContext = LocalContext.current.applicationContext
     val assistantProfiles by AssistantRepository.profiles.collectAsState()
@@ -293,6 +299,7 @@ internal fun AgentChatInputBar(
         .coerceAtLeast(ListPopupDefaults.MinPopupHeight)
 
     val keyboard = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
     val view = LocalView.current
     val drawerBlocksIme = LocalConversationDrawerBlocksIme.current
     // 附件入口与工具箱面板共用同一套选择器句柄：主界面走 Compose 选择器，
@@ -422,18 +429,21 @@ internal fun AgentChatInputBar(
             )
         }
 
-        // DSH Go 双态输入逻辑：未输入且空闲时呈单行浮动胶囊，输入文字或有附件/编辑/运行态时平滑展开为双行圆角卡片。
+        // DSH Go 双态输入逻辑：获得焦点立即展开；失焦后，普通草稿仍保留但收回单行胶囊。
+        // 附件、编辑和运行态继续强制展开，以保留其操作入口。
         val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
         val couiDark = CouiTheme.isDark
-        val isExpandedComposer = draftText.isNotEmpty() ||
-            pendingImages.isNotEmpty() ||
-            pendingFileReferences.isNotEmpty() ||
-            conversationMentions.pending.isNotEmpty() ||
-            isEditingMessage ||
-            isStreaming ||
-            isPaused ||
-            canContinueDisconnected ||
-            isCompressingContext
+        val isExpandedComposer = resolveComposerExpanded(
+            inputFocused = inputFocused,
+            hasPendingImages = pendingImages.isNotEmpty(),
+            hasPendingFileReferences = pendingFileReferences.isNotEmpty(),
+            hasPendingMentions = conversationMentions.pending.isNotEmpty(),
+            isEditingMessage = isEditingMessage,
+            isStreaming = isStreaming,
+            isPaused = isPaused,
+            canContinueDisconnected = canContinueDisconnected,
+            isCompressingContext = isCompressingContext,
+        )
         val containerCorner by animateDpAsState(
             targetValue = if (isExpandedComposer) 24.dp else 28.dp,
             animationSpec = tween(durationMillis = 160),
@@ -482,6 +492,7 @@ internal fun AgentChatInputBar(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
+                .testTag("agent-chat-input-container")
                 .onGloballyPositioned { coordinates ->
                     inputContainerTopPx = coordinates.positionInWindow().y.roundToInt()
                 },
@@ -578,6 +589,11 @@ internal fun AgentChatInputBar(
                                 state = textFieldState,
                                 modifier = Modifier
                                     .fillMaxWidth()
+                                    .testTag("agent-chat-input-field")
+                                    .onFocusChanged {
+                                        inputFocused = it.isFocused
+                                        onInputFocusChanged(it.isFocused)
+                                    }
                                     .focusRequester(focusRequester)
                                     .focusProperties { canFocus = !drawerBlocksIme },
                                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
@@ -595,7 +611,7 @@ internal fun AgentChatInputBar(
                                 ),
                                 lineLimits = TextFieldLineLimits.MultiLine(
                                     minHeightInLines = 1,
-                                    maxHeightInLines = 6,
+                                    maxHeightInLines = if (isExpandedComposer) 6 else 1,
                                 ),
                             )
                         }
@@ -761,6 +777,9 @@ internal fun AgentChatInputBar(
                                                     // Q1-A：浮窗未接入外部草稿（draftField == null）时，
                                                     // 提交后必须清空内部 TextFieldState，否则文字残留。
                                                     if (draftField == null) textFieldState.clearText()
+                                                    // 发送视同离开输入：清掉焦点，收起为单行胶囊。
+                                                    focusManager.clearFocus(force = true)
+                                                    keyboard?.hide()
                                                     onSubmit(submittedText)
                                                 }
                                             }
@@ -1491,6 +1510,32 @@ internal fun resolveChatComposerSendMode(
     canStartNewSend -> "send"
     else -> "idle"
 }
+
+/**
+ * 双态输入框是否展开。
+ *
+ * 普通输入只由焦点决定：聚焦立即展开，失焦立即收回单行胶囊；草稿文字本身不再决定展开态。
+ * 附件、编辑、流式、暂停、断线可继续和压缩中继续强制展开，否则这些状态下的操作入口会随小态消失。
+ */
+internal fun resolveComposerExpanded(
+    inputFocused: Boolean,
+    hasPendingImages: Boolean,
+    hasPendingFileReferences: Boolean,
+    hasPendingMentions: Boolean,
+    isEditingMessage: Boolean,
+    isStreaming: Boolean,
+    isPaused: Boolean,
+    canContinueDisconnected: Boolean,
+    isCompressingContext: Boolean,
+): Boolean = inputFocused ||
+    hasPendingImages ||
+    hasPendingFileReferences ||
+    hasPendingMentions ||
+    isEditingMessage ||
+    isStreaming ||
+    isPaused ||
+    canContinueDisconnected ||
+    isCompressingContext
 
 @Composable
 private fun VoiceEntryButton(

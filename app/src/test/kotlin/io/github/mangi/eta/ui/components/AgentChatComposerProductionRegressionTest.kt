@@ -7,7 +7,9 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusManager
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.text.TextRange
@@ -53,6 +55,7 @@ class AgentChatComposerProductionRegressionTest {
     private val fontScale = mutableStateOf(1f)
     private val streaming = mutableStateOf(false)
     private val paused = mutableStateOf(false)
+    private var focusRef: FocusManager? = null
     private val callback = mutableStateOf<(String) -> Unit>({ calls += "old:$it" })
     private val calls = mutableListOf<String>()
     private var appliedHistory = ""
@@ -77,6 +80,8 @@ class AgentChatComposerProductionRegressionTest {
     @Test fun unrelatedHistorySkipsRealInputAndReenablingBudgetUsesLatestHistory() {
         show()
         compose.waitForIdle()
+        // 双态输入现在由焦点决定展开；发送键位于展开态，先聚焦再断言/发送。
+        focusComposer()
         val originalText = draft.text.toString()
         val originalSelection = draft.selection
         Assert.assertTrue(takeCount() > 0) // probe is live, not a constant-zero false positive
@@ -117,6 +122,7 @@ class AgentChatComposerProductionRegressionTest {
 
     @Test fun callbacksDraftAndRequiredVisualStateStayLiveAcrossHistoryChanges() {
         show(); compose.waitForIdle(); clearCount()
+        focusComposer()
         compose.runOnIdle {
             callback.value = { calls += "new:$it" }
             dark.value = true; width.value = 300.dp; fontScale.value = 1.15f
@@ -145,6 +151,37 @@ class AgentChatComposerProductionRegressionTest {
         compose.runOnIdle { Assert.assertEquals("continue", calls.last()) }
     }
 
+    @Test fun composerExpandsOnFocusAndCollapsesOnBlurKeepingDraftText() {
+        show(); compose.waitForIdle()
+        val collapsedHeight = inputContainerHeight()
+        Assert.assertEquals("draft🙂", draft.text.toString())
+
+        compose.onNodeWithTag("agent-chat-input-field", useUnmergedTree = true).requestFocus()
+        compose.waitForIdle()
+        val expandedHeight = inputContainerHeight()
+        Assert.assertTrue(
+            "focus must expand the composer: collapsed=$collapsedHeight expanded=$expandedHeight",
+            expandedHeight > collapsedHeight,
+        )
+
+        compose.runOnIdle { focusRef?.clearFocus(force = true) }
+        compose.waitForIdle()
+        Assert.assertEquals(
+            "losing focus must collapse the composer back to the single-line capsule",
+            collapsedHeight,
+            inputContainerHeight(),
+        )
+        Assert.assertEquals("draft must survive blur", "draft🙂", draft.text.toString())
+    }
+
+    private fun inputContainerHeight(): Int =
+        compose.onNodeWithTag("agent-chat-input-container", useUnmergedTree = true).fetchSemanticsNode().size.height
+
+    private fun focusComposer() {
+        compose.onNodeWithTag("agent-chat-input-field", useUnmergedTree = true).requestFocus()
+        compose.waitForIdle()
+    }
+
     private fun takeCount(): Long {
         var count = -1L
         compose.runOnIdle { count = session.snapshot(false).stats["chat.input.compose"]?.count ?: 0L }
@@ -156,6 +193,7 @@ class AgentChatComposerProductionRegressionTest {
 
     private fun show() = compose.setContent {
         MiuixTheme(colors = if (dark.value) darkColorScheme() else lightColorScheme()) {
+            SideEffect { focusRef = LocalFocusManager.current }
             CompositionLocalProvider(LocalDensity provides Density(LocalDensity.current.density, fontScale.value)) {
                 val currentHistory = history.value
                 SideEffect { appliedHistory = currentHistory.lastOrNull()?.content.orEmpty() }

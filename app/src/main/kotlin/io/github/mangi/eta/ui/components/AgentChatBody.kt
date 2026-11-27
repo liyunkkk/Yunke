@@ -18,6 +18,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -667,6 +669,8 @@ internal fun AgentChatScaffold(
 
     // 「消息」按钮收起的浮层；再次进入语音态自动复位。
     var voiceOverlayCollapsed by remember { mutableStateOf(false) }
+    // 输入框是否持有焦点：只有它聚焦时，点消息区才收起双态输入框，避免影响对话里的其它输入控件。
+    var composerFocused by remember { mutableStateOf(false) }
     LaunchedEffect(voiceState.active) {
         if (voiceState.active) voiceOverlayCollapsed = false
     }
@@ -724,6 +728,7 @@ internal fun AgentChatScaffold(
                 voiceGlassBackdrop = voiceGlassBackdrop,
                 voiceOverlayCollapsed = voiceOverlayCollapsed,
                 onVoiceOverlayCollapsedChange = { voiceOverlayCollapsed = it },
+                onInputFocusChanged = { composerFocused = it },
                 onSubmit = onSubmit,
                 onReasoningEffortChange = onReasoningEffortChange,
                 onModelSelected = onModelSelected,
@@ -746,7 +751,19 @@ internal fun AgentChatScaffold(
         },
     ) { innerPadding ->
         val bottomPadding = innerPadding.calculateBottomPadding()
-        Box(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                // 点消息区任意位置即视为离开输入：失焦后双态输入框收回单行胶囊。
+                // Initial 阶段只观察不消费，点击、长按、滚动仍照常交给子节点。
+                .pointerInput(focusManager, keyboard, view, composerFocused) {
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                        // 仅输入框聚焦时处理；对话内其它输入控件拥有焦点时不动键盘。
+                        if (composerFocused) hideChatInputIme(focusManager, keyboard, view)
+                    }
+                },
+        ) {
         if (!hasMessages) {
             EmptyChatState(
                 showSuggestions = showEmptySuggestions,
@@ -2329,6 +2346,7 @@ private fun AgentChatBottomBar(
     voiceGlassBackdrop: LayerBackdrop? = null,
     voiceOverlayCollapsed: Boolean = false,
     onVoiceOverlayCollapsedChange: (Boolean) -> Unit = {},
+    onInputFocusChanged: (Boolean) -> Unit = {},
     onSubmit: (String) -> Unit,
     onReasoningEffortChange: (ReasoningEffort) -> Unit,
     onModelSelected: (String, String) -> Unit,
@@ -2466,6 +2484,7 @@ private fun AgentChatBottomBar(
                     gptSpeedMode = gptSpeedMode,
                     onCycleGptSpeedMode = onCycleGptSpeedMode,
                     focusRequester = composerFocus,
+                    onInputFocusChanged = onInputFocusChanged,
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
